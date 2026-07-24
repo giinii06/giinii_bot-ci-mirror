@@ -1,0 +1,9 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_PATH: /app/data/bot.sqlite
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
