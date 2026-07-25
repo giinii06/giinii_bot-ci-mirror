@@ -72,7 +72,7 @@ export async function renderLeaderboard(guildName: string, entries: LeaderboardE
   ctx.fillText(fitText(ctx, guildName, 700), 58, 61);
   ctx.fillStyle = "#ffffff";
   ctx.font = '700 44px "Gowun Dodum"';
-  ctx.fillText("XP 리더보드", 58, 116);
+  ctx.fillText("이벤트 경험치 리더보드", 58, 116);
   ctx.fillStyle = "#b9a7ee";
   ctx.font = '500 18px "Gowun Dodum"';
   ctx.fillText(`누적 XP 순위 · ${startRank}–${startRank + entries.length - 1}위`, 60, 151);
@@ -263,7 +263,7 @@ export function renderShop(guildName: string, entries: ShopEntry[], balance: num
   ctx.fillText(fitText(ctx, guildName, 700), 58, 61);
   ctx.fillStyle = "#ffffff";
   ctx.font = '700 44px "Gowun Dodum"';
-  ctx.fillText("XP 경험치 상점", 58, 116);
+  ctx.fillText("이벤트 경험치 상점", 58, 116);
   ctx.fillStyle = "#b9a7ee";
   ctx.font = '500 18px "Gowun Dodum"';
   ctx.fillText("보상을 선택하고 아래 구매 버튼을 누르세요", 60, 151);

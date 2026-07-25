@@ -399,7 +399,7 @@ async function handleInteraction(interaction: ChatInputCommandInteraction) {
 
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user?.tag}`);
-  await client.application?.commands.set(commands);
+  await syncCommands();
   db.exec("DELETE FROM voice_sessions"); // Downtime is never counted.
   for (const guild of client.guilds.cache.values()) {
     for (const state of guild.voiceStates.cache.values()) {
