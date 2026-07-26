@@ -108,7 +108,7 @@ const commands = [
   new SlashCommandBuilder().setName("관리자역할추가").setDescription("관리자 러시안 룰렛의 대상 역할을 추가합니다")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addRoleOption((o) => o.setName("역할").setDescription("관리자 러시안 룰렛 대상이 될 역할").setRequired(true)),
-  new SlashCommandBuilder().setName("관리자_러시안룰렛").setDescription("관리자를 대상으로 러시안 룰렛을 실행합니다"),
+  new SlashCommandBuilder().setName("관리자머리끄댕이").setDescription("관리자를 대상으로 러시안 룰렛을 실행합니다"),
   new SlashCommandBuilder().setName("송금").setDescription("XP를 다른 유저에게 보냅니다")
     .addNumberOption((o) => o.setName("얼마").setDescription("보낼 XP").setRequired(true).setMinValue(0.01))
     .addUserOption((o) => o.setName("유저").setDescription("받을 유저").setRequired(true)),
@@ -141,7 +141,7 @@ type ShopItem = { id: string; role_id?: string; price: number; name: string; pur
 const leaderboardPages = new Map<string, Buffer[]>();
 const rouletteRuns = new Map<string, Promise<unknown>>();
 const SHOP_PAGE_SIZE = 7;
-const ROULETTE_COOLDOWN_MS = 6 * 60 * 60 * 1_000;
+const ROULETTE_COOLDOWN_MS = 30 * 60 * 1_000;
 
 function sql<T>(query: string, ...params: SQLQueryBindings[]) { return db.query<T, SQLQueryBindings[]>(query).get(...params); }
 function all<T>(query: string, ...params: SQLQueryBindings[]) { return db.query<T, SQLQueryBindings[]>(query).all(...params); }
@@ -321,7 +321,7 @@ async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild:
   if (!voiceAudioPath || !existsSync(voiceAudioPath)) return interaction.editReply("음성 파일이 설정되지 않았습니다. VOICE_AUDIO_PATH를 확인하세요.");
 
   const invoker = guild.members.cache.get(interaction.user.id) ?? await guild.members.fetch(interaction.user.id);
-  if (!invoker.roles.cache.has(targetRole.id)) return interaction.editReply("타겟 역할이 있는 실행자만 사용할 수 있습니다.");
+  if (!invoker.roles.cache.has(targetRole.id)) return interaction.editReply("리더보드 경험치 상점에서 역할 구매 후 사용해주세요!");
   const adminTargetRoleIds = new Set(all<{ role_id: string }>("SELECT role_id FROM admin_target_roles WHERE guild_id = ?", guild.id).map(({ role_id }) => role_id));
   const admins = [...guild.voiceStates.cache.values()]
     .filter((state) => state.channelId && state.member && !state.member.user.bot &&
@@ -337,6 +337,9 @@ async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild:
   const target = lucky ? invoker : admins[Math.floor(Math.random() * admins.length)];
   const targetChannel = voiceChannel(guild, lucky ? invoker.voice.channelId : target.voice.channelId);
   if (!targetChannel) return interaction.editReply("대상 유저가 통화방에 없습니다.");
+  const countdownRoles = ["관리자", "이벤트팀"]
+    .map((name) => guild.roles.cache.find((role) => role.name === name))
+    .filter((role): role is Role => !!role);
 
   const cooldown = claimRouletteCooldown(guild.id, interaction.user.id);
   if (cooldown) return interaction.editReply(`${formatRouletteCooldown(cooldown)} 후에 다시 쓸 수 있어요. 아무래도 xp가 다는 아닌거죠 으!!@!@`);
@@ -347,11 +350,14 @@ async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild:
   });
   if (!updatedInvoker || updatedInvoker.roles.cache.has(targetRole.id)) return interaction.editReply("타겟 역할 제거에 실패했습니다.");
 
-  await interaction.editReply("3");
+  await interaction.editReply("3...");
   await sleep(1_000);
-  await interaction.followUp("2");
+  await interaction.followUp("2...");
   await sleep(1_000);
-  await interaction.followUp("1");
+  await interaction.followUp({
+    content: `1... ${countdownRoles.map((role) => role.toString()).join(" ")}`.trim(),
+    allowedMentions: { roles: countdownRoles.map((role) => role.id) },
+  });
   await sleep(1_000);
 
   if (lucky) {
@@ -488,7 +494,7 @@ async function handleInteraction(interaction: ChatInputCommandInteraction) {
     run("INSERT OR IGNORE INTO admin_target_roles (guild_id, role_id) VALUES (?, ?)", guild.id, role.id);
     return interaction.reply({ ephemeral: true, content: `${role}을(를) 관리자 타겟 역할로 추가했습니다.` });
   }
-  if (name === "관리자_러시안룰렛") {
+  if (name === "관리자머리끄댕이") {
     if (rouletteRuns.has(guild.id)) return interaction.reply({ ephemeral: true, content: "이미 진행 중인 관리자 러시안 룰렛이 있습니다." });
     const run = runAdminRoulette(interaction, guild);
     rouletteRuns.set(guild.id, run);
