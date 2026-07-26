@@ -81,6 +81,12 @@ db.exec(`
 if (!all<{ name: string }>("PRAGMA table_info(settings)").some((column) => column.name === "target_role_id")) {
   db.exec("ALTER TABLE settings ADD COLUMN target_role_id TEXT");
 }
+if (all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'roulette_target_roles'").length) {
+  for (const { guild_id, role_id } of all<{ guild_id: string; role_id: string }>("SELECT guild_id, MIN(role_id) AS role_id FROM roulette_target_roles GROUP BY guild_id")) {
+    run(`INSERT INTO settings (guild_id, target_role_id) VALUES (?, ?)
+      ON CONFLICT(guild_id) DO UPDATE SET target_role_id = excluded.target_role_id`, guild_id, role_id);
+  }
+}
 run("DELETE FROM shop WHERE default_key IS NOT NULL");
 run("UPDATE shop SET boost = 0");
 run("DELETE FROM user_bonuses");
