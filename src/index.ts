@@ -1,7 +1,17 @@
-import { mkdirSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { renderLeaderboard, renderLevelUp, renderRank, renderShop, renderShopPurchase, renderTransferReceipt } from "./leaderboard.js";
+import {
+  AudioPlayerStatus,
+  createAudioPlayer,
+  createAudioResource,
+  entersState,
+  joinVoiceChannel,
+  NoSubscriberBehavior,
+  StreamType,
+  VoiceConnectionStatus,
+} from "@discordjs/voice";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -19,12 +29,14 @@ import {
   type MessageCreateOptions,
   type Role,
   type StringSelectMenuInteraction,
+  type VoiceBasedChannel,
 } from "discord.js";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) throw new Error("DISCORD_TOKEN is required");
 
 const databasePath = process.env.DATABASE_PATH ?? "./data/bot.sqlite";
+const voiceAudioPath = process.env.VOICE_AUDIO_PATH ?? "./audio/roulette.ogg";
 mkdirSync(dirname(databasePath), { recursive: true });
 const db = new Database(databasePath, { create: true });
 const KST = 9 * 60 * 60 * 1000;
@@ -42,7 +54,7 @@ db.exec(`
     PRIMARY KEY (guild_id, user_id, bucket_type, bucket_key)
   );
   CREATE TABLE IF NOT EXISTS settings (
-    guild_id TEXT PRIMARY KEY, levelup_channel_id TEXT, shoplog_channel_id TEXT
+    guild_id TEXT PRIMARY KEY, levelup_channel_id TEXT, shoplog_channel_id TEXT, target_role_id TEXT
   );
   CREATE TABLE IF NOT EXISTS shop (
     guild_id TEXT NOT NULL, role_id TEXT NOT NULL, price REAL NOT NULL, boost REAL NOT NULL DEFAULT 0,
@@ -57,7 +69,18 @@ db.exec(`
     last_tick INTEGER NOT NULL, limited INTEGER NOT NULL, xp_ms REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, user_id)
   );
+  CREATE TABLE IF NOT EXISTS roulette_cooldowns (
+    guild_id TEXT NOT NULL, user_id TEXT NOT NULL, last_used_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
+  );
+  CREATE TABLE IF NOT EXISTS admin_target_roles (
+    guild_id TEXT NOT NULL, role_id TEXT NOT NULL,
+    PRIMARY KEY (guild_id, role_id)
+  );
 `);
+if (!all<{ name: string }>("PRAGMA table_info(settings)").some((column) => column.name === "target_role_id")) {
+  db.exec("ALTER TABLE settings ADD COLUMN target_role_id TEXT");
+}
 run("DELETE FROM shop WHERE default_key IS NOT NULL");
 run("UPDATE shop SET boost = 0");
 run("DELETE FROM user_bonuses");
@@ -73,6 +96,13 @@ const commands = [
     .addNumberOption((o) => o.setName("가격").setDescription("역할의 XP 가격").setRequired(true).setMinValue(1)),
   new SlashCommandBuilder().setName("경험치샵목록삭제").setDescription("경험치샵 판매 물품을 삭제합니다")
     .addRoleOption((o) => o.setName("물품").setDescription("삭제할 경험치샵 판매 역할").setRequired(true)),
+  new SlashCommandBuilder().setName("타겟역할설정").setDescription("관리자 러시안 룰렛의 타겟 역할을 설정합니다")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addRoleOption((o) => o.setName("역할").setDescription("러시안 룰렛 실행 시 제거할 역할").setRequired(true)),
+  new SlashCommandBuilder().setName("관리자역할추가").setDescription("관리자 러시안 룰렛의 대상 역할을 추가합니다")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addRoleOption((o) => o.setName("역할").setDescription("관리자 러시안 룰렛 대상이 될 역할").setRequired(true)),
+  new SlashCommandBuilder().setName("관리자_러시안룰렛").setDescription("관리자를 대상으로 러시안 룰렛을 실행합니다"),
   new SlashCommandBuilder().setName("송금").setDescription("XP를 다른 유저에게 보냅니다")
     .addNumberOption((o) => o.setName("얼마").setDescription("보낼 XP").setRequired(true).setMinValue(0.01))
     .addUserOption((o) => o.setName("유저").setDescription("받을 유저").setRequired(true)),
@@ -103,7 +133,9 @@ type Session = { guild_id: string; user_id: string; channel_id: string; last_tic
 type UserRow = { xp: number };
 type ShopItem = { id: string; role_id?: string; price: number; name: string; purchased: boolean };
 const leaderboardPages = new Map<string, Buffer[]>();
+const rouletteRuns = new Map<string, Promise<unknown>>();
 const SHOP_PAGE_SIZE = 7;
+const ROULETTE_COOLDOWN_MS = 6 * 60 * 60 * 1_000;
 
 function sql<T>(query: string, ...params: SQLQueryBindings[]) { return db.query<T, SQLQueryBindings[]>(query).get(...params); }
 function all<T>(query: string, ...params: SQLQueryBindings[]) { return db.query<T, SQLQueryBindings[]>(query).all(...params); }
@@ -207,6 +239,126 @@ function shopItems(guild: Guild, member: GuildMember): ShopItem[] {
       return role ? [{ ...item, id: `role:${item.role_id}`, name: role.name, purchased: member.roles.cache.has(item.role_id) }] : [];
     });
   return roles.sort((a, b) => b.price - a.price);
+}
+
+const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+function rouletteCooldownRemaining(guildId: string, userId: string, now = Date.now()) {
+  const row = sql<{ last_used_at: number }>("SELECT last_used_at FROM roulette_cooldowns WHERE guild_id = ? AND user_id = ?", guildId, userId);
+  return row ? Math.max(0, row.last_used_at + ROULETTE_COOLDOWN_MS - now) : 0;
+}
+
+function claimRouletteCooldown(guildId: string, userId: string, now = Date.now()) {
+  const claimed = run(`INSERT INTO roulette_cooldowns (guild_id, user_id, last_used_at) VALUES (?, ?, ?)
+    ON CONFLICT(guild_id, user_id) DO UPDATE SET last_used_at = excluded.last_used_at
+    WHERE roulette_cooldowns.last_used_at <= excluded.last_used_at - ?`,
+  guildId, userId, now, ROULETTE_COOLDOWN_MS).changes > 0;
+  return claimed ? 0 : rouletteCooldownRemaining(guildId, userId, now);
+}
+
+function formatRouletteCooldown(milliseconds: number) {
+  const seconds = Math.ceil(milliseconds / 1_000);
+  const hours = Math.floor(seconds / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const remainingSeconds = seconds % 60;
+  return [hours && `${hours}시간`, minutes && `${minutes}분`, remainingSeconds && `${remainingSeconds}초`].filter(Boolean).join(" ") || "1초";
+}
+
+function voiceChannel(guild: Guild, channelId: string | null): VoiceBasedChannel | null {
+  const channel = channelId ? guild.channels.cache.get(channelId) : null;
+  return channel?.isVoiceBased() ? channel : null;
+}
+
+async function playRouletteAudio(guild: Guild, channel: VoiceBasedChannel, member: GuildMember) {
+  if (!voiceAudioPath || !existsSync(voiceAudioPath)) throw new Error("VOICE_AUDIO_PATH is missing or points to a missing file");
+  const connection = joinVoiceChannel({ channelId: channel.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
+  try {
+    await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+    const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Stop } });
+    connection.subscribe(player);
+    const ended = new Promise<void>((resolve, reject) => {
+      const onStateChange = (_oldState: unknown, newState: { status: AudioPlayerStatus }) => {
+        if (newState.status !== AudioPlayerStatus.Idle) return;
+        player.off("stateChange", onStateChange);
+        player.off("error", onError);
+        resolve();
+      };
+      const onError = (error: Error) => {
+        player.off("stateChange", onStateChange);
+        player.off("error", onError);
+        reject(error);
+      };
+      player.on("stateChange", onStateChange);
+      player.once("error", onError);
+      const resource = voiceAudioPath.toLowerCase().endsWith(".ogg")
+        ? createAudioResource(createReadStream(voiceAudioPath), { inputType: StreamType.OggOpus })
+        : createAudioResource(voiceAudioPath);
+      player.play(resource);
+    });
+    await ended;
+  } finally {
+    // Start both Discord leave operations together so neither waits for the other.
+    await Promise.all([
+      Promise.resolve().then(() => connection.destroy()),
+      member.voice.disconnect("관리자 러시안 룰렛 종료"),
+    ]);
+  }
+}
+
+async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild: Guild) {
+  const initialCooldown = rouletteCooldownRemaining(guild.id, interaction.user.id);
+  if (initialCooldown) return interaction.reply(`${formatRouletteCooldown(initialCooldown)} 후에 다시 쓸 수 있어요. 아무래도 xp가 다는 아닌거죠 으!!@!@`);
+  await interaction.deferReply();
+  const settings = sql<{ target_role_id: string | null }>("SELECT target_role_id FROM settings WHERE guild_id = ?", guild.id);
+  const targetRole = settings?.target_role_id ? await guild.roles.fetch(settings.target_role_id).catch(() => null) : null;
+  if (!targetRole) return interaction.editReply("먼저 `/타겟역할설정`으로 타겟 역할을 설정하세요.");
+  if (!voiceAudioPath || !existsSync(voiceAudioPath)) return interaction.editReply("음성 파일이 설정되지 않았습니다. VOICE_AUDIO_PATH를 확인하세요.");
+
+  const invoker = guild.members.cache.get(interaction.user.id) ?? await guild.members.fetch(interaction.user.id);
+  if (!invoker.roles.cache.has(targetRole.id)) return interaction.editReply("타겟 역할이 있는 실행자만 사용할 수 있습니다.");
+  const adminTargetRoleIds = new Set(all<{ role_id: string }>("SELECT role_id FROM admin_target_roles WHERE guild_id = ?", guild.id).map(({ role_id }) => role_id));
+  const admins = [...guild.voiceStates.cache.values()]
+    .filter((state) => state.channelId && state.member && !state.member.user.bot &&
+      (state.member.permissions.has(PermissionFlagsBits.Administrator) || state.member.roles.cache.some((role) => adminTargetRoleIds.has(role.id))))
+    .map((state) => state.member!);
+  if (!admins.length) return interaction.editReply("통화방에 관리자가 없습니다.");
+
+  const botMember = guild.members.me;
+  if (targetRole.managed || !botMember || targetRole.position >= botMember.roles.highest.position) {
+    return interaction.editReply("타겟 역할이 봇 역할보다 높거나 관리되는 역할입니다.");
+  }
+  const lucky = Math.random() < 0.05 && !!invoker.voice.channelId;
+  const target = lucky ? invoker : admins[Math.floor(Math.random() * admins.length)];
+  const targetChannel = voiceChannel(guild, lucky ? invoker.voice.channelId : target.voice.channelId);
+  if (!targetChannel) return interaction.editReply("대상 유저가 통화방에 없습니다.");
+
+  const cooldown = claimRouletteCooldown(guild.id, interaction.user.id);
+  if (cooldown) return interaction.editReply(`${formatRouletteCooldown(cooldown)} 후에 다시 쓸 수 있어요. 아무래도 xp가 다는 아닌거죠 으!!@!@`);
+
+  const updatedInvoker = await invoker.roles.remove(targetRole, "관리자 러시안 룰렛 시작").catch((error) => {
+    console.error("Target role removal failed", error);
+    return null;
+  });
+  if (!updatedInvoker || updatedInvoker.roles.cache.has(targetRole.id)) return interaction.editReply("타겟 역할 제거에 실패했습니다.");
+
+  await interaction.editReply("3");
+  await sleep(1_000);
+  await interaction.followUp("2");
+  await sleep(1_000);
+  await interaction.followUp("1");
+  await sleep(1_000);
+
+  if (lucky) {
+    await interaction.followUp(`${interaction.user}님... 으!!@!@ 어딜 관리자한테 덤비죠?`);
+  } else {
+    await interaction.followUp(`${target}님이 당첨되었습니다! 으!!@!@`);
+  }
+  try {
+    await playRouletteAudio(guild, targetChannel, target);
+  } catch (error) {
+    console.error("Admin roulette voice playback failed", error);
+    await interaction.followUp("음성 재생에 실패했지만 룰렛은 종료되었습니다.");
+  }
 }
 
 function shopPage(items: ShopItem[], requestedPage: number) {
@@ -313,6 +465,33 @@ async function handleInteraction(interaction: ChatInputCommandInteraction) {
     if (!isAdmin(interaction)) return interaction.reply({ ephemeral: true, content: "관리자만 상점을 관리할 수 있습니다." });
     const role = interaction.options.getRole("물품", true) as Role;
     return interaction.reply({ ephemeral: true, content: removeShopRole(guild, role) ? `${role}을(를) 상점에서 삭제했습니다.` : "상점에 없는 역할입니다." });
+  }
+  if (name === "타겟역할설정") {
+    if (!isAdmin(interaction)) return interaction.reply({ ephemeral: true, content: "관리자만 설정할 수 있습니다." });
+    const role = interaction.options.getRole("역할", true) as Role;
+    const me = guild.members.me;
+    if (role.managed || !me || role.position >= me.roles.highest.position) return interaction.reply({ ephemeral: true, content: "봇 역할보다 낮고 관리되지 않은 역할만 설정할 수 있습니다." });
+    run(`INSERT INTO settings (guild_id, target_role_id) VALUES (?, ?)
+      ON CONFLICT(guild_id) DO UPDATE SET target_role_id = excluded.target_role_id`, guild.id, role.id);
+    return interaction.reply({ ephemeral: true, content: `${role}을(를) 타겟 역할로 설정했습니다.` });
+  }
+  if (name === "관리자역할추가") {
+    if (!isAdmin(interaction)) return interaction.reply({ ephemeral: true, content: "관리자만 설정할 수 있습니다." });
+    const role = interaction.options.getRole("역할", true) as Role;
+    if (role.id === guild.id) return interaction.reply({ ephemeral: true, content: "@everyone 역할은 추가할 수 없습니다." });
+    run("INSERT OR IGNORE INTO admin_target_roles (guild_id, role_id) VALUES (?, ?)", guild.id, role.id);
+    return interaction.reply({ ephemeral: true, content: `${role}을(를) 관리자 타겟 역할로 추가했습니다.` });
+  }
+  if (name === "관리자_러시안룰렛") {
+    if (rouletteRuns.has(guild.id)) return interaction.reply({ ephemeral: true, content: "이미 진행 중인 관리자 러시안 룰렛이 있습니다." });
+    const run = runAdminRoulette(interaction, guild);
+    rouletteRuns.set(guild.id, run);
+    try {
+      await run;
+    } finally {
+      if (rouletteRuns.get(guild.id) === run) rouletteRuns.delete(guild.id);
+    }
+    return;
   }
   if (name === "채널설치") {
     if (!isAdmin(interaction)) return interaction.reply({ ephemeral: true, content: "관리자만 설정할 수 있습니다." });
@@ -443,7 +622,8 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
 client.on("interactionCreate", (interaction) => {
   if (interaction.isChatInputCommand()) void handleInteraction(interaction).catch((error) => {
     console.error(error);
-    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "처리 중 오류가 발생했습니다." });
+    if (interaction.deferred) void interaction.editReply("처리 중 오류가 발생했습니다.");
+    else if (!interaction.replied) void interaction.reply({ ephemeral: true, content: "처리 중 오류가 발생했습니다." });
   });
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith("shop:select:") || interaction.isButton() && (interaction.customId.startsWith("shop:buy:") || interaction.customId.startsWith("shop:page:"))) void handleShopComponent(interaction).catch((error) => {
     console.error(error);
