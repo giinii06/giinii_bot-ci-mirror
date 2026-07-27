@@ -1,7 +1,8 @@
 import { createReadStream, existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { renderLeaderboard, renderLevelUp, renderRank, renderShop, renderShopPurchase, renderTransferReceipt } from "./leaderboard.js";
+import { renderHeartLetter, renderLeaderboard, renderLevelUp, renderMemory, renderRank, renderShop, renderShopPurchase, renderTransferReceipt } from "./leaderboard.js";
 import {
   AudioPlayerStatus,
   createAudioPlayer,
@@ -19,16 +20,23 @@ import {
   ChannelType,
   Client,
   GatewayIntentBits,
+  FileUploadBuilder,
+  LabelBuilder,
+  ModalBuilder,
   PermissionFlagsBits,
   SlashCommandBuilder,
   StringSelectMenuBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Guild,
   type GuildMember,
   type MessageCreateOptions,
+  type ModalSubmitInteraction,
   type Role,
   type StringSelectMenuInteraction,
+  type TextChannel,
   type VoiceBasedChannel,
 } from "discord.js";
 
@@ -54,7 +62,8 @@ db.exec(`
     PRIMARY KEY (guild_id, user_id, bucket_type, bucket_key)
   );
   CREATE TABLE IF NOT EXISTS settings (
-    guild_id TEXT PRIMARY KEY, levelup_channel_id TEXT, shoplog_channel_id TEXT, target_role_id TEXT
+    guild_id TEXT PRIMARY KEY, levelup_channel_id TEXT, shoplog_channel_id TEXT, target_role_id TEXT,
+    heart_letter_channel_id TEXT
   );
   CREATE TABLE IF NOT EXISTS shop (
     guild_id TEXT NOT NULL, role_id TEXT NOT NULL, price REAL NOT NULL, boost REAL NOT NULL DEFAULT 0,
@@ -77,9 +86,43 @@ db.exec(`
     guild_id TEXT NOT NULL, role_id TEXT NOT NULL,
     PRIMARY KEY (guild_id, role_id)
   );
+  CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+    creator_name TEXT NOT NULL, creator_avatar_url TEXT, event_name TEXT NOT NULL,
+    started_at INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, ended_at INTEGER, image_path TEXT
+  );
+  CREATE TABLE IF NOT EXISTS memory_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, memory_id INTEGER NOT NULL, user_id TEXT NOT NULL, display_name TEXT NOT NULL,
+    avatar_url TEXT, content TEXT NOT NULL, image_path TEXT,
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS memories_one_active_guild ON memories(guild_id) WHERE active = 1;
 `);
+for (const [table, column] of [["memories", "image_path"], ["memory_entries", "image_path"]]) {
+  if (!all<{ name: string }>(`PRAGMA table_info(${table})`).some((entry) => entry.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+  }
+}
+if (!all<{ name: string }>("PRAGMA table_info(memory_entries)").some((entry) => entry.name === "id")) {
+  db.exec(`
+    CREATE TABLE memory_entries_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, memory_id INTEGER NOT NULL, user_id TEXT NOT NULL,
+      display_name TEXT NOT NULL, avatar_url TEXT, content TEXT NOT NULL, image_path TEXT,
+      FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+    );
+    INSERT INTO memory_entries_new (memory_id, user_id, display_name, avatar_url, content, image_path)
+      SELECT memory_id, user_id, display_name, avatar_url, content, image_path FROM memory_entries ORDER BY rowid;
+    DROP TABLE memory_entries;
+    ALTER TABLE memory_entries_new RENAME TO memory_entries;
+  `);
+}
 if (!all<{ name: string }>("PRAGMA table_info(settings)").some((column) => column.name === "target_role_id")) {
   db.exec("ALTER TABLE settings ADD COLUMN target_role_id TEXT");
+}
+for (const column of ["heart_letter_channel_id"]) {
+  if (!all<{ name: string }>("PRAGMA table_info(settings)").some((entry) => entry.name === column)) {
+    db.exec(`ALTER TABLE settings ADD COLUMN ${column} TEXT`);
+  }
 }
 if (all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'roulette_target_roles'").length) {
   for (const { guild_id, role_id } of all<{ guild_id: string; role_id: string }>("SELECT guild_id, MIN(role_id) AS role_id FROM roulette_target_roles GROUP BY guild_id")) {
@@ -95,6 +138,17 @@ const commands = [
   new SlashCommandBuilder().setName("리더보드").setDescription("누적 XP 상위 20명을 봅니다"),
   new SlashCommandBuilder().setName("랭크").setDescription("내 XP와 서버 랭크를 봅니다")
     .addUserOption((o) => o.setName("유저").setDescription("랭크를 확인할 유저").setRequired(false)),
+  new SlashCommandBuilder().setName("추억만들기시작").setDescription("새로운 추억을 만들고 소감을 받습니다")
+    .addStringOption((o) => o.setName("이벤트").setDescription("추억의 이벤트 이름").setRequired(true).setMinLength(1).setMaxLength(100)),
+  new SlashCommandBuilder().setName("추억만들기종료").setDescription("진행 중인 추억을 이미지로 저장합니다"),
+  new SlashCommandBuilder().setName("추억조회").setDescription("저장된 추억을 다시 봅니다")
+    .addIntegerOption((o) => o.setName("번호").setDescription("조회할 추억 번호 (생략하면 가장 최근 추억)").setRequired(false).setMinValue(1)),
+  new SlashCommandBuilder().setName("마음의편지설치").setDescription("마음의 편지 쓰기 버튼을 설치합니다")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addChannelOption((o) => o.setName("채널").setDescription("버튼을 설치할 텍스트 채널").setRequired(true).addChannelTypes(ChannelType.GuildText)),
+  new SlashCommandBuilder().setName("마음의편지경로설치").setDescription("마음의 편지가 도착할 채널을 설정합니다")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addChannelOption((o) => o.setName("채널").setDescription("편지가 도착할 텍스트 채널").setRequired(true).addChannelTypes(ChannelType.GuildText)),
   new SlashCommandBuilder().setName("경험치샵").setDescription("역할을 XP로 구매합니다"),
   new SlashCommandBuilder().setName("경험치샵물품추가").setDescription("경험치샵에 판매 역할을 추가합니다")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -138,6 +192,11 @@ async function syncCommands() {
 type Session = { guild_id: string; user_id: string; channel_id: string; last_tick: number };
 type UserRow = { xp: number };
 type ShopItem = { id: string; role_id?: string; price: number; name: string; purchased: boolean };
+type Memory = {
+  id: number; guild_id: string; channel_id: string; creator_name: string; creator_avatar_url: string | null;
+  event_name: string; started_at: number; active: number; ended_at: number | null; image_path: string | null;
+};
+type MemoryEntry = { display_name: string; avatar_url: string | null; content: string; image_path: string | null };
 const leaderboardPages = new Map<string, Buffer[]>();
 const rouletteRuns = new Map<string, Promise<unknown>>();
 const SHOP_PAGE_SIZE = 7;
@@ -148,6 +207,13 @@ function all<T>(query: string, ...params: SQLQueryBindings[]) { return db.query<
 function run(query: string, ...params: SQLQueryBindings[]) { return db.query(query).run(...params); }
 function roundXp(value: number) { return Math.round(value * 100) / 100; }
 function pad(value: number) { return String(value).padStart(2, "0"); }
+
+function formatMemoryTime(time: number) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
+  }).formatToParts(new Date(time)).map(({ type, value }) => [type, value]));
+  return `${parts.year}년 ${parts.month}월 ${parts.day}일 ${parts.dayPeriod} ${Number(parts.hour)}시 ${parts.minute}분`;
+}
 
 function bucketAt(time: number, kind: "day" | "week" | "month" | "all") {
   if (kind === "all") return "all";
@@ -459,10 +525,200 @@ async function handleLeaderboardComponent(interaction: ButtonInteraction) {
   return interaction.update({ attachments: [], files: [{ attachment: pages[page], name: "leaderboard.png" }], components: leaderboardComponents(page, pages.length) });
 }
 
+function heartLetterComponents() {
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("heart-letter:write").setLabel("💌 마음의 편지 쓰기").setStyle(ButtonStyle.Primary),
+  )];
+}
+
+async function showHeartLetterModal(interaction: ButtonInteraction) {
+  const modal = new ModalBuilder().setCustomId("heart-letter:submit").setTitle("마음의 편지");
+  const input = new TextInputBuilder()
+    .setCustomId("content")
+    .setLabel("익명으로 전하고 싶은 마음을 적어주세요")
+    .setStyle(TextInputStyle.Paragraph)
+    .setPlaceholder("관리자에게 하고 싶은 말을 적어주세요")
+    .setMinLength(1)
+    .setMaxLength(2_000)
+    .setRequired(true);
+  modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+  return interaction.showModal(modal);
+}
+
+async function handleHeartLetterButton(interaction: ButtonInteraction) {
+  if (!interaction.inGuild()) return interaction.reply({ ephemeral: true, content: "서버에서만 사용할 수 있습니다." });
+  return showHeartLetterModal(interaction);
+}
+
+async function handleHeartLetterSubmit(interaction: ModalSubmitInteraction) {
+  if (!interaction.inGuild()) return interaction.reply({ ephemeral: true, content: "서버에서만 사용할 수 있습니다." });
+  const content = interaction.fields.getTextInputValue("content").trim();
+  if (!content) return interaction.reply({ ephemeral: true, content: "편지 내용을 입력해주세요." });
+  const guild = interaction.guild!;
+  const settings = sql<{ heart_letter_channel_id: string | null }>("SELECT heart_letter_channel_id FROM settings WHERE guild_id = ?", guild.id);
+  const channel = settings?.heart_letter_channel_id ? await guild.channels.fetch(settings.heart_letter_channel_id).catch(() => null) : null;
+  if (!channel?.isTextBased()) return interaction.reply({ ephemeral: true, content: "먼저 `/마음의편지경로설치`로 편지가 도착할 채널을 설정해주세요." });
+  await channel.send({
+    content: "💌 새로운 마음의 편지가 도착했어요~",
+    files: [{ attachment: renderHeartLetter(guild.name, content), name: "heart-letter.png" }],
+  });
+  return interaction.reply({ ephemeral: true, content: "마음의 편지를 익명으로 보냈습니다." });
+}
+
+async function handleHeartLetterInstall(interaction: ChatInputCommandInteraction, guild: Guild) {
+  if (!isAdmin(interaction)) return interaction.reply({ ephemeral: true, content: "관리자만 설치할 수 있습니다." });
+  const channel = interaction.options.getChannel("채널", true);
+  if (channel.type !== ChannelType.GuildText) return interaction.reply({ ephemeral: true, content: "텍스트 채널만 선택할 수 있습니다." });
+  await (channel as TextChannel).send({
+    content: "💌 **마음의 편지**\n익명으로 관리자에게 마음을 전해보세요. 아래 버튼을 눌러 편지를 작성할 수 있습니다.",
+    components: heartLetterComponents(),
+    allowedMentions: { parse: [] },
+  });
+  return interaction.reply({ ephemeral: true, content: `${channel}에 마음의 편지 버튼을 설치했습니다.` });
+}
+
+function memoryComponents(memoryId: number) {
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`memory:write:${memoryId}`).setLabel("소감 쓰기").setStyle(ButtonStyle.Primary),
+  )];
+}
+
+async function handleMemoryStart(interaction: ChatInputCommandInteraction, guild: Guild) {
+  if (sql<Memory>("SELECT * FROM memories WHERE guild_id = ? AND active = 1 LIMIT 1", guild.id)) {
+    return interaction.reply({ ephemeral: true, content: "이미 진행 중인 추억 만들기가 있습니다. 먼저 `/추억만들기종료`를 사용해주세요." });
+  }
+  const eventName = interaction.options.getString("이벤트", true).trim();
+  if (!eventName) return interaction.reply({ ephemeral: true, content: "이벤트 이름을 입력해주세요." });
+  const startedAt = Date.now();
+  const member = await guild.members.fetch(interaction.user.id);
+  const inserted = run(`INSERT INTO memories (guild_id, channel_id, creator_name, creator_avatar_url, event_name, started_at)
+    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, guild.id, interaction.channelId, member.displayName, member.displayAvatarURL({ extension: "png", size: 256 }), eventName, startedAt);
+  if (!inserted.changes) return interaction.reply({ ephemeral: true, content: "이미 진행 중인 추억 만들기가 있습니다. 먼저 `/추억만들기종료`를 사용해주세요." });
+  const memoryId = Number(inserted.lastInsertRowid);
+  return interaction.reply({ content: `**${eventName}** 추억을 시작합니다.\n소감을 작성해주세요!`, allowedMentions: { parse: [] }, components: memoryComponents(memoryId) });
+}
+
+async function handleMemoryButton(interaction: ButtonInteraction) {
+  if (!interaction.inGuild()) return interaction.reply({ ephemeral: true, content: "서버에서만 사용할 수 있습니다." });
+  const memoryId = Number(interaction.customId.slice("memory:write:".length));
+  const memory = sql<Memory>("SELECT * FROM memories WHERE id = ? AND active = 1", memoryId);
+  if (!memory) return interaction.reply({ ephemeral: true, content: "이미 종료된 추억 만들기입니다." });
+  const modal = new ModalBuilder().setCustomId(`memory:submit:${memoryId}`).setTitle("소감 쓰기");
+  const input = new TextInputBuilder()
+    .setCustomId("content")
+    .setLabel("소감을 작성해주세요")
+    .setStyle(TextInputStyle.Paragraph)
+    .setPlaceholder("이 순간에 대한 소감을 남겨주세요")
+    .setMinLength(1)
+    .setMaxLength(1_000)
+    .setRequired(true);
+  modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+  modal.addComponents(new LabelBuilder().setLabel("첨부 이미지 (선택)").setFileUploadComponent(
+    new FileUploadBuilder().setCustomId("image").setMaxValues(1).setRequired(false),
+  ));
+  return interaction.showModal(modal);
+}
+
+function memoryDataPath(memoryId: number, userId?: string) {
+  return join(dirname(databasePath), "memories", String(memoryId), userId ? `${userId}.png` : "memory.png");
+}
+
+function memoryPagePath(memoryId: number, page: number) {
+  return join(dirname(databasePath), "memories", String(memoryId), `memory-${page}.png`);
+}
+
+async function saveMemoryImage(memoryId: number, userId: string, attachment: { url: string; contentType: string | null }) {
+  if (!attachment.contentType?.startsWith("image/")) throw new Error("이미지 파일만 첨부할 수 있습니다.");
+  const response = await fetch(attachment.url);
+  if (!response.ok) throw new Error(`이미지 다운로드 실패: ${response.status}`);
+  const path = memoryDataPath(memoryId, userId);
+  mkdirSync(dirname(path), { recursive: true });
+  await writeFile(path, Buffer.from(await response.arrayBuffer()));
+  return path;
+}
+
+async function handleMemorySubmit(interaction: ModalSubmitInteraction) {
+  if (!interaction.inGuild()) return interaction.reply({ ephemeral: true, content: "서버에서만 사용할 수 있습니다." });
+  const memoryId = Number(interaction.customId.slice("memory:submit:".length));
+  const memory = sql<Memory>("SELECT * FROM memories WHERE id = ? AND active = 1", memoryId);
+  if (!memory) return interaction.reply({ ephemeral: true, content: "이미 종료된 추억 만들기입니다." });
+  const content = interaction.fields.getTextInputValue("content").trim();
+  if (!content) return interaction.reply({ ephemeral: true, content: "소감 내용을 입력해주세요." });
+  const member = await interaction.guild!.members.fetch(interaction.user.id);
+  const attachment = interaction.fields.getUploadedFiles("image");
+  const uploaded = attachment?.first();
+  const imagePath = uploaded ? await saveMemoryImage(memoryId, interaction.user.id, uploaded) : null;
+  run(`INSERT INTO memory_entries (memory_id, user_id, display_name, avatar_url, content, image_path)
+    VALUES (?, ?, ?, ?, ?, ?)`,
+  memoryId, interaction.user.id, member.displayName, member.displayAvatarURL({ extension: "png", size: 256 }), content, imagePath);
+  const count = sql<{ count: number }>("SELECT COUNT(*) AS count FROM memory_entries WHERE memory_id = ?", memoryId)!.count;
+  const channel = await interaction.guild!.channels.fetch(memory.channel_id).catch(() => null);
+  if (channel?.isTextBased()) await channel.send({
+    content: `${interaction.user}님이 소감을 작성하였습니다 (총 ${count}개)`,
+    allowedMentions: { users: [interaction.user.id] },
+  }).catch(() => undefined);
+  return interaction.reply({ ephemeral: true, content: "소감이 저장되었습니다." });
+}
+
+async function handleMemoryEnd(interaction: ChatInputCommandInteraction, guild: Guild) {
+  await interaction.deferReply();
+  const memory = sql<Memory>("SELECT * FROM memories WHERE guild_id = ? AND active = 1 ORDER BY started_at DESC LIMIT 1", guild.id);
+  if (!memory) return interaction.editReply("진행 중인 추억 만들기가 없습니다.");
+  if (!run("UPDATE memories SET active = 0, ended_at = ? WHERE id = ? AND active = 1", Date.now(), memory.id).changes) {
+    return interaction.editReply("이미 종료된 추억 만들기입니다.");
+  }
+  const entries = all<MemoryEntry>("SELECT display_name, avatar_url, content, image_path FROM memory_entries WHERE memory_id = ? ORDER BY id", memory.id);
+  const images = await renderMemory(memory.event_name, { name: memory.creator_name, avatarUrl: memory.creator_avatar_url ?? undefined }, formatMemoryTime(memory.started_at), entries.map((entry) => ({
+    name: entry.display_name, avatarUrl: entry.avatar_url ?? undefined, content: entry.content, imagePath: entry.image_path ?? undefined,
+  })));
+  const imagePaths = images.map((_, index) => memoryPagePath(memory.id, index + 1));
+  mkdirSync(dirname(imagePaths[0]), { recursive: true });
+  await Promise.all(images.map((image, index) => writeFile(imagePaths[index], image)));
+  run("UPDATE memories SET image_path = ? WHERE id = ?", imagePaths[0], memory.id);
+  return interaction.editReply({ content: `추억 #${memory.id}을 저장했습니다.`, files: images.map((image, index) => ({ attachment: image, name: `memory-${index + 1}.png` })) });
+}
+
+async function handleMemoryView(interaction: ChatInputCommandInteraction, guild: Guild) {
+  await interaction.deferReply();
+  const id = interaction.options.getInteger("번호");
+  const memory = id
+    ? sql<Memory>("SELECT * FROM memories WHERE guild_id = ? AND id = ? AND active = 0", guild.id, id)
+    : sql<Memory>("SELECT * FROM memories WHERE guild_id = ? AND active = 0 ORDER BY started_at DESC LIMIT 1", guild.id);
+  if (!memory) return interaction.editReply("저장된 추억을 찾을 수 없습니다.");
+  if (memory.image_path && existsSync(memory.image_path)) {
+    const paths = [memory.image_path];
+    if (memory.image_path === memoryPagePath(memory.id, 1)) {
+      for (let page = 2; existsSync(memoryPagePath(memory.id, page)); page++) paths.push(memoryPagePath(memory.id, page));
+    }
+    return interaction.editReply({ content: `추억 #${memory.id} · ${memory.event_name}`, files: paths.map((path, index) => ({ attachment: path, name: `memory-${index + 1}.png` })) });
+  }
+  const entries = all<MemoryEntry>("SELECT display_name, avatar_url, content, image_path FROM memory_entries WHERE memory_id = ? ORDER BY id", memory.id);
+  const images = await renderMemory(memory.event_name, { name: memory.creator_name, avatarUrl: memory.creator_avatar_url ?? undefined }, formatMemoryTime(memory.started_at), entries.map((entry) => ({
+    name: entry.display_name, avatarUrl: entry.avatar_url ?? undefined, content: entry.content, imagePath: entry.image_path ?? undefined,
+  })));
+  const imagePaths = images.map((_, index) => memoryPagePath(memory.id, index + 1));
+  mkdirSync(dirname(imagePaths[0]), { recursive: true });
+  await Promise.all(images.map((image, index) => writeFile(imagePaths[index], image)));
+  run("UPDATE memories SET image_path = ? WHERE id = ?", imagePaths[0], memory.id);
+  return interaction.editReply({ content: `추억 #${memory.id} · ${memory.event_name}`, files: images.map((image, index) => ({ attachment: image, name: `memory-${index + 1}.png` })) });
+}
+
 async function handleInteraction(interaction: ChatInputCommandInteraction) {
   if (!interaction.inGuild()) return interaction.reply({ ephemeral: true, content: "서버에서만 사용할 수 있습니다." });
   const guild = interaction.guild!;
   const name = interaction.commandName;
+  if (name === "마음의편지설치") return handleHeartLetterInstall(interaction, guild);
+  if (name === "마음의편지경로설치") {
+    if (!isAdmin(interaction)) return interaction.reply({ ephemeral: true, content: "관리자만 설정할 수 있습니다." });
+    const channel = interaction.options.getChannel("채널", true);
+    if (channel.type !== ChannelType.GuildText) return interaction.reply({ ephemeral: true, content: "텍스트 채널만 선택할 수 있습니다." });
+    run(`INSERT INTO settings (guild_id, heart_letter_channel_id) VALUES (?, ?)
+      ON CONFLICT(guild_id) DO UPDATE SET heart_letter_channel_id = excluded.heart_letter_channel_id`, guild.id, channel.id);
+    return interaction.reply({ ephemeral: true, content: `${channel}을(를) 마음의 편지가 도착할 채널로 설정했습니다.` });
+  }
+  if (name === "추억만들기시작") return handleMemoryStart(interaction, guild);
+  if (name === "추억만들기종료") return handleMemoryEnd(interaction, guild);
+  if (name === "추억조회") return handleMemoryView(interaction, guild);
   if (name === "경험치샵") return handleShop(interaction, guild);
   if (name === "경험치샵물품추가") {
     if (!isAdmin(interaction)) return interaction.reply({ ephemeral: true, content: "관리자만 상점을 관리할 수 있습니다." });
@@ -636,6 +892,22 @@ client.on("interactionCreate", (interaction) => {
     console.error(error);
     if (interaction.deferred) void interaction.editReply("처리 중 오류가 발생했습니다.");
     else if (!interaction.replied) void interaction.reply({ ephemeral: true, content: "처리 중 오류가 발생했습니다." });
+  });
+  if (interaction.isButton() && interaction.customId === "heart-letter:write") void handleHeartLetterButton(interaction).catch((error) => {
+    console.error(error);
+    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "마음의 편지 입력을 열지 못했습니다." });
+  });
+  if (interaction.isModalSubmit() && interaction.customId === "heart-letter:submit") void handleHeartLetterSubmit(interaction).catch((error) => {
+    console.error(error);
+    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "마음의 편지를 보내지 못했습니다." });
+  });
+  if (interaction.isButton() && interaction.customId.startsWith("memory:write:")) void handleMemoryButton(interaction).catch((error) => {
+    console.error(error);
+    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "소감 입력창을 열지 못했습니다." });
+  });
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("memory:submit:")) void handleMemorySubmit(interaction).catch((error) => {
+    console.error(error);
+    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "소감 저장 중 오류가 발생했습니다." });
   });
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith("shop:select:") || interaction.isButton() && (interaction.customId.startsWith("shop:buy:") || interaction.customId.startsWith("shop:page:"))) void handleShopComponent(interaction).catch((error) => {
     console.error(error);

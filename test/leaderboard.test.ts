@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { renderLeaderboard, renderRank, renderShop, renderShopPurchase, renderTransferReceipt } from "../src/leaderboard.js";
+import { renderHeartLetter, renderLeaderboard, renderMemory, renderRank, renderShop, renderShopPurchase, renderTransferReceipt } from "../src/leaderboard.js";
 
 test("leaderboard renders a PNG", async () => {
   const entries = [{ name: "코덱스", xp: 1250 }];
@@ -26,5 +26,25 @@ test("shop purchase renders a PNG", async () => {
 
 test("transfer receipt renders a PNG", async () => {
   const image = await renderTransferReceipt("테스트 서버", { name: "보낸이", xp: 1250.5 }, { name: "받는이", xp: 2500.75 }, 1250.5);
+  expect(image.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+});
+
+test("memory card renders a PNG", async () => {
+  const images = await renderMemory("여름 여행", { name: "주최자" }, "2026년 7월 27일 오후 3시 04분", [
+    { name: "참가자", content: "좋은 추억이었어요!", avatarUrl: undefined },
+  ]);
+  expect(images).toHaveLength(1);
+  expect(images[0].subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+});
+
+test("long memories are split into multiple vertical PNGs", async () => {
+  const images = await renderMemory("긴 추억", { name: "주최자" }, "2026년 7월 27일 오후 3시 04분", Array.from({ length: 12 }, (_, index) => ({
+    name: `참가자${index + 1}`, content: "휴대폰에서 보기 좋은 세로 카드입니다.",
+  })));
+  expect(images.length).toBeGreaterThan(1);
+});
+
+test("heart letter renders a PNG", () => {
+  const image = renderHeartLetter("테스트 서버", "서버 운영에 대해 전하고 싶은 말입니다.");
   expect(image.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
 });
