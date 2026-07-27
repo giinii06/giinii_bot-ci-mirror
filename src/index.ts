@@ -584,18 +584,19 @@ function memoryComponents(memoryId: number) {
 }
 
 async function handleMemoryStart(interaction: ChatInputCommandInteraction, guild: Guild) {
+  await interaction.deferReply();
   if (sql<Memory>("SELECT * FROM memories WHERE guild_id = ? AND active = 1 LIMIT 1", guild.id)) {
-    return interaction.reply({ ephemeral: true, content: "이미 진행 중인 추억 만들기가 있습니다. 먼저 `/추억만들기종료`를 사용해주세요." });
+    return interaction.editReply("이미 진행 중인 추억 만들기가 있습니다. 먼저 `/추억만들기종료`를 사용해주세요.");
   }
   const eventName = interaction.options.getString("이벤트", true).trim();
-  if (!eventName) return interaction.reply({ ephemeral: true, content: "이벤트 이름을 입력해주세요." });
+  if (!eventName) return interaction.editReply("이벤트 이름을 입력해주세요.");
   const startedAt = Date.now();
   const member = await guild.members.fetch(interaction.user.id);
   const inserted = run(`INSERT INTO memories (guild_id, channel_id, creator_name, creator_avatar_url, event_name, started_at)
     VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, guild.id, interaction.channelId, member.displayName, member.displayAvatarURL({ extension: "png", size: 256 }), eventName, startedAt);
-  if (!inserted.changes) return interaction.reply({ ephemeral: true, content: "이미 진행 중인 추억 만들기가 있습니다. 먼저 `/추억만들기종료`를 사용해주세요." });
+  if (!inserted.changes) return interaction.editReply("이미 진행 중인 추억 만들기가 있습니다. 먼저 `/추억만들기종료`를 사용해주세요.");
   const memoryId = Number(inserted.lastInsertRowid);
-  return interaction.reply({ content: `**${eventName}** 추억을 시작합니다.\n소감을 작성해주세요!`, allowedMentions: { parse: [] }, components: memoryComponents(memoryId) });
+  return interaction.editReply({ content: `**${eventName}** 추억을 시작합니다.\n소감을 작성해주세요!`, allowedMentions: { parse: [] }, components: memoryComponents(memoryId) });
 }
 
 async function handleMemoryButton(interaction: ButtonInteraction) {
@@ -639,11 +640,12 @@ async function saveMemoryImage(memoryId: number, userId: string, attachment: { u
 
 async function handleMemorySubmit(interaction: ModalSubmitInteraction) {
   if (!interaction.inGuild()) return interaction.reply({ ephemeral: true, content: "서버에서만 사용할 수 있습니다." });
+  await interaction.deferReply({ ephemeral: true });
   const memoryId = Number(interaction.customId.slice("memory:submit:".length));
   const memory = sql<Memory>("SELECT * FROM memories WHERE id = ? AND active = 1", memoryId);
-  if (!memory) return interaction.reply({ ephemeral: true, content: "이미 종료된 추억 만들기입니다." });
+  if (!memory) return interaction.editReply("이미 종료된 추억 만들기입니다.");
   const content = interaction.fields.getTextInputValue("content").trim();
-  if (!content) return interaction.reply({ ephemeral: true, content: "소감 내용을 입력해주세요." });
+  if (!content) return interaction.editReply("소감 내용을 입력해주세요.");
   const member = await interaction.guild!.members.fetch(interaction.user.id);
   const attachment = interaction.fields.getUploadedFiles("image");
   const uploaded = attachment?.first();
@@ -657,7 +659,7 @@ async function handleMemorySubmit(interaction: ModalSubmitInteraction) {
     content: `${interaction.user}님이 소감을 작성하였습니다 (총 ${count}개)`,
     allowedMentions: { users: [interaction.user.id] },
   }).catch(() => undefined);
-  return interaction.reply({ ephemeral: true, content: "소감이 저장되었습니다." });
+  return interaction.editReply("소감이 저장되었습니다.");
 }
 
 async function handleMemoryEnd(interaction: ChatInputCommandInteraction, guild: Guild) {
@@ -890,32 +892,32 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
 client.on("interactionCreate", (interaction) => {
   if (interaction.isChatInputCommand()) void handleInteraction(interaction).catch((error) => {
     console.error(error);
-    if (interaction.deferred) void interaction.editReply("처리 중 오류가 발생했습니다.");
-    else if (!interaction.replied) void interaction.reply({ ephemeral: true, content: "처리 중 오류가 발생했습니다." });
+    if (interaction.deferred) void interaction.editReply("처리 중 오류가 발생했습니다.").catch(() => undefined);
+    else if (!interaction.replied) void interaction.reply({ ephemeral: true, content: "처리 중 오류가 발생했습니다." }).catch(() => undefined);
   });
   if (interaction.isButton() && interaction.customId === "heart-letter:write") void handleHeartLetterButton(interaction).catch((error) => {
     console.error(error);
-    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "마음의 편지 입력을 열지 못했습니다." });
+    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "마음의 편지 입력을 열지 못했습니다." }).catch(() => undefined);
   });
   if (interaction.isModalSubmit() && interaction.customId === "heart-letter:submit") void handleHeartLetterSubmit(interaction).catch((error) => {
     console.error(error);
-    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "마음의 편지를 보내지 못했습니다." });
+    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "마음의 편지를 보내지 못했습니다." }).catch(() => undefined);
   });
   if (interaction.isButton() && interaction.customId.startsWith("memory:write:")) void handleMemoryButton(interaction).catch((error) => {
     console.error(error);
-    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "소감 입력창을 열지 못했습니다." });
+    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "소감 입력창을 열지 못했습니다." }).catch(() => undefined);
   });
   if (interaction.isModalSubmit() && interaction.customId.startsWith("memory:submit:")) void handleMemorySubmit(interaction).catch((error) => {
     console.error(error);
-    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "소감 저장 중 오류가 발생했습니다." });
+    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "소감 저장 중 오류가 발생했습니다." }).catch(() => undefined);
   });
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith("shop:select:") || interaction.isButton() && (interaction.customId.startsWith("shop:buy:") || interaction.customId.startsWith("shop:page:"))) void handleShopComponent(interaction).catch((error) => {
     console.error(error);
-    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "처리 중 오류가 발생했습니다." });
+    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "처리 중 오류가 발생했습니다." }).catch(() => undefined);
   });
   if (interaction.isButton() && interaction.customId.startsWith("leaderboard:")) void handleLeaderboardComponent(interaction).catch((error) => {
     console.error(error);
-    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "처리 중 오류가 발생했습니다." });
+    if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "처리 중 오류가 발생했습니다." }).catch(() => undefined);
   });
 });
 
