@@ -403,10 +403,6 @@ async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild:
   const target = lucky ? invoker : admins[Math.floor(Math.random() * admins.length)];
   const targetChannel = voiceChannel(guild, lucky ? invoker.voice.channelId : target.voice.channelId);
   if (!targetChannel) return interaction.editReply("대상 유저가 통화방에 없습니다.");
-  const countdownRoles = ["관리자", "이벤트팀"]
-    .map((name) => guild.roles.cache.find((role) => role.name === name))
-    .filter((role): role is Role => !!role);
-
   const cooldown = claimRouletteCooldown(guild.id, interaction.user.id);
   if (cooldown) return interaction.editReply(`${formatRouletteCooldown(cooldown)} 후에 다시 쓸 수 있어요. 아무래도 xp가 다는 아닌거죠 으!!@!@`);
 
@@ -420,10 +416,7 @@ async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild:
   await sleep(1_000);
   await interaction.followUp("2...");
   await sleep(1_000);
-  await interaction.followUp({
-    content: `1... ${countdownRoles.map((role) => role.toString()).join(" ")}`.trim(),
-    allowedMentions: { roles: countdownRoles.map((role) => role.id) },
-  });
+  await interaction.followUp("1...");
   await sleep(1_000);
 
   if (lucky) {
