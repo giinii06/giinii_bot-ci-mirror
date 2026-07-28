@@ -44,7 +44,11 @@ const token = process.env.DISCORD_TOKEN;
 if (!token) throw new Error("DISCORD_TOKEN is required");
 
 const databasePath = process.env.DATABASE_PATH ?? "./data/bot.sqlite";
-const voiceAudioPath = process.env.VOICE_AUDIO_PATH ?? "./audio/roulette.ogg";
+const rouletteAudioPaths = [
+  process.env.VOICE_AUDIO_PATH ?? "./audio/roulette.ogg",
+  "./audio/roulette-2.ogg",
+  "./audio/roulette-3.ogg",
+];
 mkdirSync(dirname(databasePath), { recursive: true });
 const db = new Database(databasePath, { create: true });
 const KST = 9 * 60 * 60 * 1000;
@@ -341,8 +345,14 @@ function voiceChannel(guild: Guild, channelId: string | null): VoiceBasedChannel
   return channel?.isVoiceBased() ? channel : null;
 }
 
+function randomRouletteAudioPath() {
+  const available = rouletteAudioPaths.filter((path) => existsSync(path));
+  if (!available.length) throw new Error("No roulette audio files found");
+  return available[Math.floor(Math.random() * available.length)]!;
+}
+
 async function playRouletteAudio(guild: Guild, channel: VoiceBasedChannel, member: GuildMember) {
-  if (!voiceAudioPath || !existsSync(voiceAudioPath)) throw new Error("VOICE_AUDIO_PATH is missing or points to a missing file");
+  const voiceAudioPath = randomRouletteAudioPath();
   const connection = joinVoiceChannel({ channelId: channel.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
@@ -384,7 +394,7 @@ async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild:
   const settings = sql<{ target_role_id: string | null }>("SELECT target_role_id FROM settings WHERE guild_id = ?", guild.id);
   const targetRole = settings?.target_role_id ? await guild.roles.fetch(settings.target_role_id).catch(() => null) : null;
   if (!targetRole) return interaction.editReply("먼저 `/타겟역할설정`으로 타겟 역할을 설정하세요.");
-  if (!voiceAudioPath || !existsSync(voiceAudioPath)) return interaction.editReply("음성 파일이 설정되지 않았습니다. VOICE_AUDIO_PATH를 확인하세요.");
+  if (!rouletteAudioPaths.some((path) => existsSync(path))) return interaction.editReply("음성 파일이 설정되지 않았습니다. 기본 audio 파일 또는 VOICE_AUDIO_PATH를 확인하세요.");
 
   const invoker = guild.members.cache.get(interaction.user.id) ?? await guild.members.fetch(interaction.user.id);
   if (!invoker.roles.cache.has(targetRole.id)) return interaction.editReply("리더보드 경험치 상점에서 역할 구매 후 사용해주세요!");
@@ -418,12 +428,6 @@ async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild:
   await sleep(1_000);
   await interaction.followUp("1...");
   await sleep(1_000);
-
-  if (lucky) {
-    await interaction.followUp(`${interaction.user}님... 으!!@!@ 어딜 관리자한테 덤비죠?`);
-  } else {
-    await interaction.followUp(`${target}님이 당첨되었습니다! 으!!@!@`);
-  }
   try {
     await playRouletteAudio(guild, targetChannel, target);
   } catch (error) {
