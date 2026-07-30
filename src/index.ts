@@ -82,10 +82,6 @@ db.exec(`
     last_tick INTEGER NOT NULL, limited INTEGER NOT NULL, xp_ms REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, user_id)
   );
-  CREATE TABLE IF NOT EXISTS roulette_cooldowns (
-    guild_id TEXT NOT NULL, user_id TEXT NOT NULL, last_used_at INTEGER NOT NULL,
-    PRIMARY KEY (guild_id, user_id)
-  );
   CREATE TABLE IF NOT EXISTS admin_target_roles (
     guild_id TEXT NOT NULL, role_id TEXT NOT NULL,
     PRIMARY KEY (guild_id, role_id)
@@ -186,11 +182,10 @@ const commands = [
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.MessageContent] });
 
 async function syncCommands() {
-  const application = client.application;
-  if (!application) throw new Error("Discord application is not ready");
-  await application.commands.set([]);
-  for (const guild of client.guilds.cache.values()) await guild.commands.set([]);
-  await application.commands.set(commands);
+  for (const guild of client.guilds.cache.values()) {
+    const registered = await guild.commands.set(commands);
+    console.log(`Registered ${registered.size} slash commands in ${guild.name}`);
+  }
 }
 
 type Session = { guild_id: string; user_id: string; channel_id: string; last_tick: number };
@@ -204,8 +199,6 @@ type MemoryEntry = { display_name: string; avatar_url: string | null; content: s
 const leaderboardPages = new Map<string, Buffer[]>();
 const rouletteRuns = new Map<string, Promise<unknown>>();
 const SHOP_PAGE_SIZE = 7;
-const ROULETTE_COOLDOWN_MS = 30 * 60 * 1_000;
-
 function sql<T>(query: string, ...params: SQLQueryBindings[]) { return db.query<T, SQLQueryBindings[]>(query).get(...params); }
 function all<T>(query: string, ...params: SQLQueryBindings[]) { return db.query<T, SQLQueryBindings[]>(query).all(...params); }
 function run(query: string, ...params: SQLQueryBindings[]) { return db.query(query).run(...params); }
@@ -319,27 +312,6 @@ function shopItems(guild: Guild, member: GuildMember): ShopItem[] {
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-function rouletteCooldownRemaining(guildId: string, userId: string, now = Date.now()) {
-  const row = sql<{ last_used_at: number }>("SELECT last_used_at FROM roulette_cooldowns WHERE guild_id = ? AND user_id = ?", guildId, userId);
-  return row ? Math.max(0, row.last_used_at + ROULETTE_COOLDOWN_MS - now) : 0;
-}
-
-function claimRouletteCooldown(guildId: string, userId: string, now = Date.now()) {
-  const claimed = run(`INSERT INTO roulette_cooldowns (guild_id, user_id, last_used_at) VALUES (?, ?, ?)
-    ON CONFLICT(guild_id, user_id) DO UPDATE SET last_used_at = excluded.last_used_at
-    WHERE roulette_cooldowns.last_used_at <= excluded.last_used_at - ?`,
-  guildId, userId, now, ROULETTE_COOLDOWN_MS).changes > 0;
-  return claimed ? 0 : rouletteCooldownRemaining(guildId, userId, now);
-}
-
-function formatRouletteCooldown(milliseconds: number) {
-  const seconds = Math.ceil(milliseconds / 1_000);
-  const hours = Math.floor(seconds / 3_600);
-  const minutes = Math.floor((seconds % 3_600) / 60);
-  const remainingSeconds = seconds % 60;
-  return [hours && `${hours}시간`, minutes && `${minutes}분`, remainingSeconds && `${remainingSeconds}초`].filter(Boolean).join(" ") || "1초";
-}
-
 function voiceChannel(guild: Guild, channelId: string | null): VoiceBasedChannel | null {
   const channel = channelId ? guild.channels.cache.get(channelId) : null;
   return channel?.isVoiceBased() ? channel : null;
@@ -388,8 +360,6 @@ async function playRouletteAudio(guild: Guild, channel: VoiceBasedChannel, membe
 }
 
 async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild: Guild) {
-  const initialCooldown = rouletteCooldownRemaining(guild.id, interaction.user.id);
-  if (initialCooldown) return interaction.reply(`${formatRouletteCooldown(initialCooldown)} 후에 다시 쓸 수 있어요. 아무래도 xp가 다는 아닌거죠 으!!@!@`);
   await interaction.deferReply();
   const settings = sql<{ target_role_id: string | null }>("SELECT target_role_id FROM settings WHERE guild_id = ?", guild.id);
   const targetRole = settings?.target_role_id ? await guild.roles.fetch(settings.target_role_id).catch(() => null) : null;
@@ -397,7 +367,7 @@ async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild:
   if (!rouletteAudioPaths.some((path) => existsSync(path))) return interaction.editReply("음성 파일이 설정되지 않았습니다. 기본 audio 파일 또는 VOICE_AUDIO_PATH를 확인하세요.");
 
   const invoker = guild.members.cache.get(interaction.user.id) ?? await guild.members.fetch(interaction.user.id);
-  if (!invoker.roles.cache.has(targetRole.id)) return interaction.editReply("리더보드 경험치 상점에서 역할 구매 후 사용해주세요!");
+  if (!invoker.roles.cache.has(targetRole.id)) return interaction.editReply("ㅋ 역할도 없네 그지다");
   const adminTargetRoleIds = new Set(all<{ role_id: string }>("SELECT role_id FROM admin_target_roles WHERE guild_id = ?", guild.id).map(({ role_id }) => role_id));
   const admins = [...guild.voiceStates.cache.values()]
     .filter((state) => state.channelId && state.member && !state.member.user.bot &&
@@ -413,9 +383,6 @@ async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild:
   const target = lucky ? invoker : admins[Math.floor(Math.random() * admins.length)];
   const targetChannel = voiceChannel(guild, lucky ? invoker.voice.channelId : target.voice.channelId);
   if (!targetChannel) return interaction.editReply("대상 유저가 통화방에 없습니다.");
-  const cooldown = claimRouletteCooldown(guild.id, interaction.user.id);
-  if (cooldown) return interaction.editReply(`${formatRouletteCooldown(cooldown)} 후에 다시 쓸 수 있어요. 아무래도 xp가 다는 아닌거죠 으!!@!@`);
-
   const updatedInvoker = await invoker.roles.remove(targetRole, "관리자 러시안 룰렛 시작").catch((error) => {
     console.error("Target role removal failed", error);
     return null;
@@ -428,6 +395,7 @@ async function runAdminRoulette(interaction: ChatInputCommandInteraction, guild:
   await sleep(1_000);
   await interaction.followUp("1...");
   await sleep(1_000);
+  await interaction.followUp(`${target} 당첨! 으!@!!!@!`);
   try {
     await playRouletteAudio(guild, targetChannel, target);
   } catch (error) {
@@ -845,7 +813,11 @@ async function handleInteraction(interaction: ChatInputCommandInteraction) {
 
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user?.tag}`);
-  await syncCommands();
+  try {
+    await syncCommands();
+  } catch (error) {
+    console.error("Slash command sync failed", error);
+  }
   db.exec("DELETE FROM voice_sessions"); // Downtime is never counted.
   for (const guild of client.guilds.cache.values()) {
     for (const state of guild.voiceStates.cache.values()) {
@@ -862,7 +834,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member?.permissions.has(PermissionFlagsBits.Administrator)) return;
     try {
       await syncCommands();
-      await message.reply(`명령어를 모두 삭제하고 ${commands.length}개를 다시 등록했습니다.`);
+      await message.reply(`${commands.length}개 명령어를 서버에 등록했습니다.`);
     } catch (error) {
       console.error(error);
       await message.reply("명령어 동기화에 실패했습니다. 봇 권한과 콘솔 오류를 확인하세요.");
