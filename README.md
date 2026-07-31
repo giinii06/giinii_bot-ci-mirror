@@ -1,6 +1,6 @@
-# Discord Activity Bot
+# Giinii Board Discord Bot
 
-Discord 서버별 활동 통계, 추억 카드, 관리자 러시안 룰렛을 제공하는 Bun 기반 Discord 봇입니다.
+Discord 서버별 활동 통계, 추억 카드, 관리자 러시안 룰렛, 대화 기반 AI 분석을 제공하는 Bun 기반 Discord 봇입니다.
 
 ## 주요 기능
 
@@ -9,6 +9,8 @@ Discord 서버별 활동 통계, 추억 카드, 관리자 러시안 룰렛을 �
 | 활동 통계 | 일반 채팅 수와 음성 채널 체류 시간을 일·주·월·전체 단위로 저장합니다. |
 | 추억 만들기 | 이벤트를 열고 여러 사용자의 소감과 이미지를 모아 여러 장의 세로 카드로 저장합니다. |
 | 관리자 러시안 룰렛 | 타겟 역할을 가진 실행자가 음성 채널의 관리자 중 한 명을 무작위로 지목합니다. |
+| AI 대화 분석 | `/question`, `/mbti`, `/결투`, `/계급`, `/싸이코지수`, `/별명`, `/흑역사`, `/요약`, `/캐릭터`를 제공합니다. |
+| 설정 웹 UI | `WEB_PORT`에서 provider, 모델, 프롬프트, 기록 범위와 API key를 런타임에 관리합니다. |
 
 ## 기술 스택
 
@@ -18,6 +20,8 @@ Discord 서버별 활동 통계, 추억 카드, 관리자 러시안 룰렛을 �
 - `bun:sqlite`: 서버별 데이터 저장
 - `@napi-rs/canvas`: 한글이 포함된 PNG 카드 렌더링
 - `@discordjs/voice`: 음성 채널 연결과 룰렛 음성 재생
+- `@google/genai`와 `fetch`: Gemini 및 OpenAI 호환 provider 호출
+- `Bun.serve`: AI 설정 웹 UI
 - `ffmpeg`: Docker 이미지에 포함된 음성 처리 도구
 
 ## 빠른 시작
@@ -38,7 +42,9 @@ bun test
 bun run start
 ```
 
-`.env`의 `DISCORD_TOKEN`을 실제 봇 토큰으로 바꿔야 합니다. 데이터베이스 부모 디렉터리는 실행 시 자동으로 생성됩니다.
+`.env`의 `DISCORD_TOKEN` 또는 `DISCORD_BOT_TOKEN`을 실제 봇 토큰으로 바꿔야 합니다. 두 값이 모두 있으면 `DISCORD_BOT_TOKEN`을 사용합니다. AI 명령을 사용하려면 선택한 provider의 API key도 넣으세요. 데이터베이스 부모 디렉터리는 실행 시 자동으로 생성됩니다.
+
+실행 후 설정 화면은 [http://localhost:3003](http://localhost:3003)에서 열 수 있습니다.
 
 개발 중에는 파일 변경 시 자동 재시작되는 명령을 사용할 수 있습니다.
 
@@ -56,6 +62,7 @@ docker compose logs -f bot
 ```
 
 Compose는 호스트의 `./data`를 컨테이너의 `/app/data`에 연결하고, 컨테이너를 자동 재시작하도록 설정합니다.
+설정 화면은 호스트의 3003번 포트로 노출됩니다.
 
 ```sh
 docker compose down
@@ -95,9 +102,19 @@ Developer Portal의 Bot 설정에서 다음 Intent를 활성화해야 합니다.
 
 | 변수 | 필수 | 기본값 | 설명 |
 | --- | --- | --- | --- |
-| `DISCORD_TOKEN` | 예 | 없음 | Discord 봇 토큰. 없으면 시작하지 않습니다. |
+| `DISCORD_TOKEN` | 조건부 | 없음 | 기존 대상 봇 토큰입니다. `DISCORD_BOT_TOKEN`이 없을 때 사용합니다. |
+| `DISCORD_BOT_TOKEN` | 조건부 | 없음 | 통합한 brand_new 봇 토큰입니다. 설정하면 우선 사용합니다. |
+| `DISCORD_GUILD_ID` | 아니오 | 전체 서버 | 지정하면 해당 서버에만 명령어를 등록하고 백필합니다. |
 | `DATABASE_PATH` | 아니오 | `./data/bot.sqlite` | SQLite 데이터베이스 파일 경로입니다. |
 | `VOICE_AUDIO_PATH` | 아니오 | `./audio/roulette.ogg` | 룰렛 음성 후보 중 첫 번째 파일입니다. |
+| `AI_PROVIDER` | 아니오 | `gemini` | `gemini`, `opencode_zen`, `nvidia_nim`, `openrouter`, `bynara` 중 하나입니다. |
+| `AI_MODEL` | 아니오 | provider별 기본 모델 | 웹 UI에서 provider별 모델을 고를 수 있습니다. |
+| `GEMINI_API_KEY` 등 | AI 사용 시 | 없음 | 선택한 provider의 API key입니다. 자세한 목록은 `.env.example`을 참고하세요. |
+| `HISTORY_MESSAGE_LIMIT` | 아니오 | `10000` | 분석에 사용할 최근 메시지 수입니다. |
+| `MAX_CONTEXT_CHARS` | 아니오 | `160000` | AI prompt에 넣을 최대 문자 수입니다. |
+| `INCLUDE_BOT_MESSAGES` | 아니오 | `false` | AI 기록에 봇 메시지도 포함할지 정합니다. |
+| `QUESTION_COOLDOWN_SECONDS` | 아니오 | `20` | 사용자별 AI 명령 재사용 대기 시간입니다. |
+| `WEB_HOST`, `WEB_PORT` | 아니오 | `0.0.0.0`, `3003` | 설정 UI의 바인딩 주소와 포트입니다. |
 
 룰렛은 `VOICE_AUDIO_PATH`에 지정한 파일과 다음 기본 후보 중 실제로 존재하는 파일을 무작위로 선택합니다.
 
@@ -175,6 +192,8 @@ data/
 | `admin_target_roles` | 룰렛 대상 관리자 역할 목록 |
 | `memories` | 추억 이벤트와 생성된 카드 경로 |
 | `memory_entries` | 추억별 소감과 첨부 이미지 경로 |
+| `discord_messages` | AI 분석용 Discord 메시지 백필·실시간 기록 |
+| `command_logs` | AI 명령, provider, 모델, 응답 기록 |
 
 시작 시 필요한 테이블을 자동 생성하고 일부 이전 버전 컬럼을 보정합니다. 스키마가 변경된 뒤에는 기존 데이터와의 호환성을 확인한 후 배포하세요.
 
@@ -194,9 +213,10 @@ cp -a data "data-backup-$(date +%Y%m%d-%H%M%S)"
 ## 동작 원리
 
 ```text
-Discord 메시지 ──> messageCreate ──> activity 테이블 기록
+Discord 메시지 ──> messageCreate ──> activity/discord_messages 기록
 Discord 음성 변경 ─> voiceStateUpdate/60초 정산 ─> activity 테이블 기록
-Slash Command ────> interactionCreate ──> SQLite 조회·변경 ──> PNG/응답 전송
+AI 명령 ──────────> history 조회 ──> provider 호출 ──> Embed 응답/command_logs 기록
+기타 Slash Command ─> interactionCreate ─> SQLite 조회·변경 ─> PNG/음성/응답 전송
 ```
 
 - 봇 메시지는 활동 통계에서 제외합니다.
@@ -211,7 +231,15 @@ Slash Command ────> interactionCreate ──> SQLite 조회·변경 ─�
 ```text
 .
 ├── src/
-│   ├── index.ts                         # 봇 시작, DB, 명령어, 이벤트 처리
+│   ├── index.ts                         # 봇 시작과 이벤트 연결
+│   ├── activity.ts                      # 채팅·음성 활동 집계
+│   ├── memories.ts                      # 추억 카드 명령·버튼·모달
+│   ├── roulette.ts                      # 관리자 러시안 룰렛
+│   ├── analysis.ts                      # AI 명령·백필·provider 흐름
+│   ├── history.ts                       # Discord 기록 수집·prompt 포맷
+│   ├── storage.ts                       # SQLite 스키마와 공통 저장소
+│   ├── config.ts, models.ts             # 환경변수·모델·프롬프트 설정
+│   ├── web.ts, settings-page.ts         # 설정 API와 웹 화면
 │   ├── leaderboard.ts                   # 추억 PNG 렌더러
 │   └── assets/GowunDodum-Regular.ttf    # PNG 카드용 한글 폰트
 ├── audio/                               # 룰렛 음성 후보
@@ -225,7 +253,7 @@ Slash Command ────> interactionCreate ──> SQLite 조회·변경 ─�
 
 기능을 추가할 때는 다음 위치를 먼저 확인하세요.
 
-- Slash Command 추가: `src/index.ts`의 `commands` 배열과 `handleInteraction()` 분기
+- Slash Command 추가: `src/commands.ts`와 해당 기능 모듈의 분기
 - 버튼·모달 추가: `interactionCreate` 이벤트와 관련 핸들러
 - 이미지 응답 추가: `src/leaderboard.ts`의 렌더러와 `test/leaderboard.test.ts`
 - 데이터 변경: SQLite 초기화 SQL과 기존 DB 보정 로직
@@ -258,4 +286,4 @@ git diff --check    # 공백 오류 확인
 
 ### 봇이 시작되지 않음
 
-`DISCORD_TOKEN`이 `.env`에 있고, `bun install`이 완료되었는지 확인합니다. `DATABASE_PATH`를 지정했다면 해당 경로의 부모 디렉터리에 쓰기 권한이 있어야 합니다.
+`DISCORD_TOKEN` 또는 `DISCORD_BOT_TOKEN`이 `.env`에 있고, `bun install`이 완료되었는지 확인합니다. AI 명령 오류는 선택 provider의 API key와 `AI_MODEL`을 확인하세요. `DATABASE_PATH`를 지정했다면 해당 경로의 부모 디렉터리에 쓰기 권한이 있어야 합니다.

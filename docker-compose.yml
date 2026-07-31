@@ -4,6 +4,9 @@ services:
     env_file: .env
     environment:
       DATABASE_PATH: /app/data/bot.sqlite
+    ports:
+      - "0.0.0.0:3003:3003"
     volumes:
       - ./data:/app/data
+      - ./.env:/app/.env
     restart: unless-stopped
