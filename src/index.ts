@@ -5,7 +5,6 @@ import { analysisCommandNames, ensureBackfillStarted, handleAnalysisCommand, per
 import { recordMessageActivity, initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
 import { commands, syncCommands } from "./commands.js";
 import { config } from "./config.js";
-import { handleMemoryButton, handleMemorySubmit } from "./memories.js";
 import { handleRouletteCommand } from "./roulette.js";
 import { initDatabase } from "./storage.js";
 import { startWebServer } from "./web.js";
@@ -74,18 +73,6 @@ client.on(Events.InteractionCreate, (interaction) => {
         return;
       }
     }
-  }
-  if (interaction.isButton() && interaction.customId.startsWith("memory:write:")) {
-    void handleMemoryButton(interaction).catch((error) => {
-      console.error(error);
-      if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "소감 입력창을 열지 못했습니다." }).catch(() => undefined);
-    });
-  }
-  if (interaction.isModalSubmit() && interaction.customId.startsWith("memory:submit:")) {
-    void handleMemorySubmit(interaction).catch((error) => {
-      console.error(error);
-      if (!interaction.replied && !interaction.deferred) void interaction.reply({ ephemeral: true, content: "소감 저장 중 오류가 발생했습니다." }).catch(() => undefined);
-    });
   }
 });
 

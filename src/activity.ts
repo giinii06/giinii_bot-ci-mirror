@@ -1,4 +1,4 @@
-import type { Client, Guild, Message, VoiceState } from "discord.js";
+import type { Client, Message, VoiceState } from "discord.js";
 import { all, run, sql } from "./storage.js";
 
 const KST = 9 * 60 * 60 * 1000;

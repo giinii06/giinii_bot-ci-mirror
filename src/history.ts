@@ -32,27 +32,6 @@ const textChannelTypes = new Set<ChannelType>([
   ChannelType.AnnouncementThread
 ]);
 
-export const collectDiscordHistory = async (guild: Guild, limit: number, channelInput?: string | null) => {
-  await guild.channels.fetch();
-  const channels = selectChannels(guild, channelInput);
-  const perChannelLimit = Math.min(limit, PAGE_SIZE * 20);
-  const settled = await Promise.allSettled(channels.map((channel) => fetchChannelMessages(channel, perChannelLimit)));
-  const messages = settled
-    .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
-    .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
-    .slice(0, limit);
-
-  const failedChannels = settled.filter((result) => result.status === "rejected").length;
-  return {
-    messages,
-    text: formatForPrompt(messages, config.maxContextChars),
-    messageCount: messages.length,
-    channelCount: new Set(messages.map((message) => message.channelId)).size,
-    scannedChannelCount: channels.length,
-    failedChannels
-  };
-};
-
 export const collectDiscordHistoryInBatches = async (
   guild: Guild,
   totalLimit: number,
@@ -140,42 +119,6 @@ export const parseChannelIds = (value?: string | null) => {
     if (match[0]) ids.add(match[0]);
   }
   return ids;
-};
-
-const fetchChannelMessages = async (channel: GuildTextBasedChannel, limit: number) => {
-  const collected: HistoryMessage[] = [];
-  let before: Snowflake | undefined;
-
-  while (collected.length < limit) {
-    const batch: Collection<Snowflake, Message> = await channel.messages.fetch({
-      limit: Math.min(PAGE_SIZE, limit - collected.length),
-      before
-    });
-
-    if (batch.size === 0) break;
-
-    for (const message of batch.values()) {
-      const content = cleanMessage(message);
-      if (!content) continue;
-
-      collected.push({
-        messageId: message.id,
-        guildId: channel.guild.id,
-        channelId: channel.id,
-        channelName: channel.name,
-        authorId: message.author.id,
-        authorName: message.member?.displayName || message.author.displayName || message.author.username,
-        authorIsBot: message.author.bot,
-        content,
-        createdTimestamp: message.createdTimestamp
-      });
-    }
-
-    before = batch.last()?.id;
-    if (!before) break;
-  }
-
-  return collected;
 };
 
 const fetchChannelMessagePage = async (channel: GuildTextBasedChannel, limit: number, before?: Snowflake) => {

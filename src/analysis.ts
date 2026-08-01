@@ -6,8 +6,6 @@ import { cleanMessage, collectDiscordHistoryInBatches, collectHistory, type Hist
 import { insertCommandLog, upsertMessages } from "./storage.js";
 import { splitForEmbeds } from "./text.js";
 
-export { splitForEmbeds } from "./text.js";
-
 export const analysisCommandNames = new Set(["question", "mbti", "결투", "계급", "싸이코지수", "별명", "흑역사", "요약", "캐릭터"]);
 const runningGuilds = new Set<string>();
 const cooldowns = new Map<string, number>();

@@ -35,17 +35,6 @@ export const initDatabase = () => {
       guild_id TEXT NOT NULL, role_id TEXT NOT NULL,
       PRIMARY KEY (guild_id, role_id)
     );
-    CREATE TABLE IF NOT EXISTS memories (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,
-      creator_name TEXT NOT NULL, creator_avatar_url TEXT, event_name TEXT NOT NULL,
-      started_at INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, ended_at INTEGER, image_path TEXT
-    );
-    CREATE TABLE IF NOT EXISTS memory_entries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, memory_id INTEGER NOT NULL, user_id TEXT NOT NULL, display_name TEXT NOT NULL,
-      avatar_url TEXT, content TEXT NOT NULL, image_path TEXT,
-      FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS memories_one_active_guild ON memories(guild_id) WHERE active = 1;
     CREATE TABLE IF NOT EXISTS discord_messages (
       message_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, channel_name TEXT NOT NULL,
       author_id TEXT NOT NULL, author_name TEXT NOT NULL, author_is_bot INTEGER NOT NULL DEFAULT 0,
@@ -61,24 +50,6 @@ export const initDatabase = () => {
     CREATE INDEX IF NOT EXISTS command_logs_guild_created_idx ON command_logs(guild_id, created_at DESC);
   `);
 
-  for (const [table, column] of [["memories", "image_path"], ["memory_entries", "image_path"]]) {
-    if (!all<{ name: string }>(`PRAGMA table_info(${table})`).some((entry) => entry.name === column)) {
-      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
-    }
-  }
-  if (!all<{ name: string }>("PRAGMA table_info(memory_entries)").some((column) => column.name === "id")) {
-    db.exec(`
-      CREATE TABLE memory_entries_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, memory_id INTEGER NOT NULL, user_id TEXT NOT NULL,
-        display_name TEXT NOT NULL, avatar_url TEXT, content TEXT NOT NULL, image_path TEXT,
-        FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
-      );
-      INSERT INTO memory_entries_new (memory_id, user_id, display_name, avatar_url, content, image_path)
-        SELECT memory_id, user_id, display_name, avatar_url, content, image_path FROM memory_entries ORDER BY rowid;
-      DROP TABLE memory_entries;
-      ALTER TABLE memory_entries_new RENAME TO memory_entries;
-    `);
-  }
   if (!all<{ name: string }>("PRAGMA table_info(settings)").some((column) => column.name === "target_role_id")) {
     db.exec("ALTER TABLE settings ADD COLUMN target_role_id TEXT");
   }

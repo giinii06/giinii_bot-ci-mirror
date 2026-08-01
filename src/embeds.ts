@@ -50,11 +50,6 @@ export const createNoticeEmbed = (title: string, description: string, kind: "war
     .setDescription(description)
     .setTimestamp();
 
-const trimForField = (value: string) => {
-  if (value.length <= 1024) return value;
-  return `${value.slice(0, 1010)}...`;
-};
-
 const trimForTitle = (value: string) => {
   if (value.length <= 250) return value;
   return `${value.slice(0, 247)}...`;
