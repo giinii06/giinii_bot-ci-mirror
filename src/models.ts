@@ -97,6 +97,20 @@ export const freeModelCatalog = {
       context: "General coding"
     },
     {
+      id: "laguna-s-2.1-free",
+      name: "Laguna S 2.1 Free",
+      provider: "opencode_zen",
+      note: "Free Zen chat model",
+      context: "General chat"
+    },
+    {
+      id: "ling-3.0-flash-free",
+      name: "Ling-3.0 Flash Free",
+      provider: "opencode_zen",
+      note: "Free Zen chat model",
+      context: "Efficient agentic chat"
+    },
+    {
       id: "north-mini-code-free",
       name: "North Mini Code Free",
       provider: "opencode_zen",
@@ -169,6 +183,13 @@ export const freeModelCatalog = {
       provider: "openrouter",
       note: "OpenRouter free model",
       context: "General chat"
+    },
+    {
+      id: "inclusionai/ling-3.0-flash:free",
+      name: "Ling-3.0 Flash",
+      provider: "openrouter",
+      note: "OpenRouter free model",
+      context: "262K context"
     }
   ],
   bynara: [

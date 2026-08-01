@@ -3,10 +3,14 @@ import { resolve } from "node:path";
 import { getFreeModels, isFreeModelForProvider } from "./models.js";
 
 export type AiProvider = "gemini" | "opencode_zen" | "nvidia_nim" | "openrouter" | "bynara";
+export const DEFAULT_FALLBACK_PROVIDER: AiProvider = "opencode_zen";
+export const DEFAULT_FALLBACK_MODEL = "deepseek-v4-flash-free";
 
 export type RuntimeSettings = {
   aiProvider: AiProvider;
   aiModel: string;
+  fallbackProvider: AiProvider;
+  fallbackModel: string;
   commonPrompt: string;
   questionPrompt: string;
   mbtiPrompt: string;
@@ -44,9 +48,9 @@ const toBool = (value: string | undefined, fallback: boolean) => {
   return ["1", "true", "yes", "y", "on"].includes(value.toLowerCase());
 };
 
-const toProvider = (value: string | undefined): AiProvider => {
+const toProvider = (value: string | undefined, fallback: AiProvider = "gemini"): AiProvider => {
   if (value === "opencode_zen" || value === "nvidia_nim" || value === "openrouter" || value === "bynara") return value;
-  return "gemini";
+  return value === "gemini" ? "gemini" : fallback;
 };
 
 const defaultModelForProvider = (provider: AiProvider) => getFreeModels(provider)[0]?.id ?? "gemini-2.5-flash";
@@ -141,6 +145,8 @@ const envPath = resolve(process.cwd(), ".env");
 const settings: RuntimeSettings = {
   aiProvider: toProvider(process.env.AI_PROVIDER),
   aiModel: process.env.AI_MODEL?.trim() || process.env.GEMINI_MODEL?.trim() || "",
+  fallbackProvider: toProvider(process.env.FALLBACK_AI_PROVIDER, DEFAULT_FALLBACK_PROVIDER),
+  fallbackModel: process.env.FALLBACK_AI_MODEL?.trim() || DEFAULT_FALLBACK_MODEL,
   commonPrompt: process.env.COMMON_PROMPT?.trim() || defaultCommonPrompt,
   questionPrompt: process.env.QUESTION_PROMPT?.trim() || defaultQuestionPrompt,
   mbtiPrompt: process.env.MBTI_PROMPT?.trim() || defaultMbtiPrompt,
@@ -168,6 +174,9 @@ const settings: RuntimeSettings = {
 if (!isFreeModelForProvider(settings.aiProvider, settings.aiModel)) {
   settings.aiModel = defaultModelForProvider(settings.aiProvider);
 }
+if (!isFreeModelForProvider(settings.fallbackProvider, settings.fallbackModel)) {
+  settings.fallbackModel = defaultModelForProvider(settings.fallbackProvider);
+}
 
 export const config = {
   discordToken: required(process.env.DISCORD_BOT_TOKEN?.trim() ? "DISCORD_BOT_TOKEN" : "DISCORD_TOKEN"),
@@ -177,6 +186,8 @@ export const config = {
   webPort: toInt(process.env.WEB_PORT, 3003, 1, 65535),
   get aiProvider() { return settings.aiProvider; },
   get aiModel() { return settings.aiModel; },
+  get fallbackProvider() { return settings.fallbackProvider; },
+  get fallbackModel() { return settings.fallbackModel; },
   get geminiModel() { return settings.aiModel; },
   get commonPrompt() { return settings.commonPrompt; },
   get questionPrompt() { return settings.questionPrompt; },
@@ -208,6 +219,9 @@ export const updateRuntimeSettings = async (update: RuntimeSettingsUpdate) => {
   if (update.aiProvider) settings.aiProvider = update.aiProvider;
   if (typeof update.aiModel === "string" && update.aiModel.trim()) settings.aiModel = update.aiModel.trim();
   if (!isFreeModelForProvider(settings.aiProvider, settings.aiModel)) settings.aiModel = defaultModelForProvider(settings.aiProvider);
+  if (update.fallbackProvider) settings.fallbackProvider = update.fallbackProvider;
+  if (typeof update.fallbackModel === "string" && update.fallbackModel.trim()) settings.fallbackModel = update.fallbackModel.trim();
+  if (!isFreeModelForProvider(settings.fallbackProvider, settings.fallbackModel)) settings.fallbackModel = defaultModelForProvider(settings.fallbackProvider);
 
   const prompts = [
     ["commonPrompt", defaultCommonPrompt], ["questionPrompt", defaultQuestionPrompt], ["mbtiPrompt", defaultMbtiPrompt],
@@ -240,6 +254,8 @@ export const updateRuntimeSettings = async (update: RuntimeSettingsUpdate) => {
 const saveEnvSettings = async () => {
   const values = new Map([
     ["AI_PROVIDER", settings.aiProvider], ["AI_MODEL", settings.aiModel], ["GEMINI_MODEL", settings.aiModel],
+    ["FALLBACK_AI_PROVIDER", settings.fallbackProvider],
+    ["FALLBACK_AI_MODEL", settings.fallbackModel],
     ["COMMON_PROMPT", settings.commonPrompt], ["QUESTION_PROMPT", settings.questionPrompt], ["MBTI_PROMPT", settings.mbtiPrompt],
     ["DUEL_PROMPT", settings.duelPrompt], ["RANK_PROMPT", settings.rankPrompt], ["PSYCHO_PROMPT", settings.psychoPrompt],
     ["NICKNAME_PROMPT", settings.nicknamePrompt], ["THROWBACK_PROMPT", settings.throwbackPrompt], ["SUMMARY_PROMPT", settings.summaryPrompt],

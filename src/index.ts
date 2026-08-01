@@ -29,7 +29,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   try { await syncCommands(client); } catch (error) { console.error("Slash command sync failed", error); }
   initializeVoiceSessions(client);
   startVoiceTracker(client);
-  startWebServer();
+  startWebServer(readyClient);
   console.log(`Using ${config.aiProvider} model: ${config.aiModel}`);
   void startInitialBackfill(client).catch((error) => console.error("Initial backfill failed", error));
 });

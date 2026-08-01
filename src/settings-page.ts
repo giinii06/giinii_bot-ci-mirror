@@ -41,6 +41,32 @@ export const renderSettingsPage = () => `<!doctype html>
         width: min(920px, calc(100vw - 32px));
         margin: 40px auto;
       }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 56px;
+        margin-bottom: 36px;
+        padding: 7px 10px 7px 16px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .brand { color: var(--text); font-weight: 800; letter-spacing: .04em; text-decoration: none; }
+      .brand small { color: var(--accent); font-size: 10px; letter-spacing: .14em; margin-left: 6px; }
+      .nav { display: flex; gap: 4px; }
+      .navLink {
+        min-height: 42px;
+        display: inline-flex;
+        align-items: center;
+        padding: 0 14px;
+        border-radius: 6px;
+        color: var(--muted);
+        font-weight: 650;
+        text-decoration: none;
+      }
+      .navLink:hover, .navLink.active { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
       header {
         display: flex;
         justify-content: space-between;
@@ -180,6 +206,9 @@ export const renderSettingsPage = () => `<!doctype html>
 
       @media (max-width: 720px) {
         main { margin: 24px auto; }
+        .topbar { align-items: stretch; flex-direction: column; gap: 4px; margin-bottom: 24px; padding: 10px; }
+        .nav { width: 100%; }
+        .navLink { flex: 1; justify-content: center; }
         header { display: grid; align-items: start; }
         .status { text-align: left; }
         form { padding: 18px; }
@@ -190,6 +219,13 @@ export const renderSettingsPage = () => `<!doctype html>
   </head>
   <body>
     <main>
+      <nav class="topbar" aria-label="주요 메뉴">
+        <a class="brand" href="/">GIINII BOARD <small>AI LAB</small></a>
+        <div class="nav">
+          <a class="navLink active" href="/" aria-current="page">메인 메뉴</a>
+          <a class="navLink" href="/playground">Playground</a>
+        </div>
+      </nav>
       <header>
         <h1>Bot Settings</h1>
         <div id="status" class="status">Loading</div>
@@ -216,6 +252,23 @@ export const renderSettingsPage = () => `<!doctype html>
               <span class="hint">현재 provider에서 선택 가능한 모델만 표시됩니다.</span>
             </label>
           </div>
+
+          <label>
+            오류 재호출 provider
+            <select name="fallbackProvider">
+              <option value="gemini">Gemini</option>
+              <option value="opencode_zen">OpenCode Zen</option>
+              <option value="nvidia_nim">NVIDIA NIM</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="bynara">Bynara Router</option>
+            </select>
+          </label>
+
+          <label>
+            오류 재호출 모델
+            <select name="fallbackModel"></select>
+            <span class="hint">AI 호출 에러가 났을 때 이 provider/model로 다시 호출합니다.</span>
+          </label>
 
           <label>
             공통 기준 메시지 수
@@ -380,11 +433,25 @@ export const renderSettingsPage = () => `<!doctype html>
         }
       }
 
+      function renderFallbackModels(provider, selectedModel) {
+        const models = settingsCache.freeModels[provider] || [];
+        form.fallbackModel.textContent = "";
+        for (const model of models) {
+          const option = document.createElement("option");
+          option.value = model.id;
+          option.textContent = model.name + " (" + model.id + ")";
+          form.fallbackModel.append(option);
+        }
+        form.fallbackModel.value = models.some((model) => model.id === selectedModel) ? selectedModel : (models[0]?.id || "");
+      }
+
       async function loadSettings() {
         const settings = await fetch("/api/settings").then((response) => response.json());
         settingsCache = settings;
         form.aiProvider.value = settings.aiProvider;
         renderModelCards(settings.aiProvider, settings.aiModel);
+        form.fallbackProvider.value = settings.fallbackProvider;
+        renderFallbackModels(settings.fallbackProvider, settings.fallbackModel);
         form.historyMessageLimit.value = settings.historyMessageLimit;
         form.maxContextChars.value = settings.maxContextChars;
         form.commonPrompt.value = settings.commonPrompt || "";
@@ -414,12 +481,18 @@ export const renderSettingsPage = () => `<!doctype html>
         renderModelCards(form.aiProvider.value, form.aiModel.value);
       });
 
+      form.fallbackProvider.addEventListener("change", () => {
+        renderFallbackModels(form.fallbackProvider.value, "");
+      });
+
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         saveState.textContent = "Saving";
         const payload = {
           aiProvider: form.aiProvider.value,
           aiModel: form.aiModel.value,
+          fallbackProvider: form.fallbackProvider.value,
+          fallbackModel: form.fallbackModel.value,
           commonPrompt: form.commonPrompt.value,
           questionPrompt: form.questionPrompt.value,
           mbtiPrompt: form.mbtiPrompt.value,

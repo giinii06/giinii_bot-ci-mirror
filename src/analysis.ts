@@ -69,6 +69,61 @@ const buildAnalysisRequest = (interaction: ChatInputCommandInteraction): Analysi
   throw new Error(`지원하지 않는 명령어입니다: ${name}`);
 };
 
+export type PlaygroundInput = {
+  command: string;
+  question?: string;
+  targetUser?: string;
+  user1?: string;
+  user2?: string;
+};
+
+const requiredPlaygroundValue = (value: string | undefined, label: string) => {
+  const trimmed = value?.trim();
+  if (!trimmed) throw new Error(`${label}을(를) 입력해 주세요.`);
+  return trimmed;
+};
+
+export const buildPlaygroundRequest = (values: PlaygroundInput): Pick<AnalysisRequest, "prompt" | "input"> => {
+  if (!analysisCommandNames.has(values.command)) throw new Error("채팅 분석 명령어만 테스트할 수 있어요.");
+  if (values.command === "question") return {
+    prompt: withCommonPrompt(config.questionPrompt),
+    input: requiredPlaygroundValue(values.question, "질문")
+  };
+  if (values.command === "mbti") return {
+    prompt: withCommonPrompt(config.mbtiPrompt),
+    input: ["다음 유저의 최근 대화 패턴을 근거로 MBTI를 논리적으로 추정해줘.", `대상 유저: ${requiredPlaygroundValue(values.targetUser, "대상 유저")}`].join("\n")
+  };
+  if (values.command === "결투") return {
+    prompt: withCommonPrompt(config.duelPrompt),
+    input: ["다음 두 유저가 말로 싸우면 누가 이길지, 이긴다면 몇 퍼센트 확률로 이길지 분석해줘.",
+      `유저 1: ${requiredPlaygroundValue(values.user1, "유저 1")}`, `유저 2: ${requiredPlaygroundValue(values.user2, "유저 2")}`].join("\n")
+  };
+  if (values.command === "계급") return {
+    prompt: withCommonPrompt(config.rankPrompt),
+    input: "최근 디스코드 대화 기록에 등장하는 유저들 간의 관계와 영향력을 분석해서 신, 왕, 귀족, 하인, 불가촉 천민 계급으로 나눠서 지명해줘."
+  };
+  if (values.command === "싸이코지수") return {
+    prompt: withCommonPrompt(config.psychoPrompt),
+    input: ["다음 유저의 싸이코 지수를 1점부터 100점까지 측정해줘.", `대상 유저: ${requiredPlaygroundValue(values.targetUser, "대상 유저")}`].join("\n")
+  };
+  if (values.command === "별명") return {
+    prompt: withCommonPrompt(config.nicknamePrompt),
+    input: ["다음 유저에게 최근 대화 패턴을 근거로 서버에서 쓸 만한 별명을 지어줘.", `대상 유저: ${requiredPlaygroundValue(values.targetUser, "대상 유저")}`].join("\n")
+  };
+  if (values.command === "흑역사") return {
+    prompt: withCommonPrompt(config.throwbackPrompt),
+    input: ["다음 유저의 장난스러운 흑역사 포인트를 최근 대화 기록에서 찾아줘.", `대상 유저: ${requiredPlaygroundValue(values.targetUser, "대상 유저")}`].join("\n")
+  };
+  if (values.command === "요약") return {
+    prompt: withCommonPrompt(config.summaryPrompt),
+    input: "최근 서버 대화 기록을 바탕으로 주요 사건, 분위기, 눈에 띄는 흐름을 재밌게 요약해줘."
+  };
+  return {
+    prompt: withCommonPrompt(config.characterPrompt),
+    input: ["다음 유저의 최근 대화 패턴을 근거로 RPG 캐릭터 시트를 만들어줘.", `대상 유저: ${requiredPlaygroundValue(values.targetUser, "대상 유저")}`].join("\n")
+  };
+};
+
 export const handleAnalysisCommand = async (interaction: ChatInputCommandInteraction) => {
   if (!interaction.inCachedGuild()) {
     await interaction.reply({ embeds: [createNoticeEmbed("서버에서만 사용할 수 있어요", "이 명령어는 DM이 아니라 디스코드 서버 채널에서 실행해 주세요.")], ephemeral: true });
@@ -99,9 +154,11 @@ export const handleAnalysisCommand = async (interaction: ChatInputCommandInterac
 
   const request = buildAnalysisRequest(interaction);
   const limit = Math.min(Math.max(request.limit ?? config.historyMessageLimit, 1), MAX_HISTORY_MESSAGE_LIMIT);
-  const startedAt = Date.now();
+  let startedAt = Date.now();
   let seconds = 0;
   let progressLabel = request.progressLabel;
+  let failedProvider = config.aiProvider;
+  let failedModel = config.aiModel;
   let progressTimer: ReturnType<typeof setInterval> | undefined;
   runningGuilds.add(guildId);
   cooldowns.set(cooldownKey, now + config.cooldownSeconds * 1000);
@@ -128,6 +185,14 @@ export const handleAnalysisCommand = async (interaction: ChatInputCommandInterac
         progressLabel = "재시도";
         seconds = Math.floor((Date.now() - startedAt) / 1000);
         await progressMessage.edit({ embeds: [createProgressEmbed(seconds, limit, false, request.title, progressLabel, request.titlePrefix)] }).catch(() => undefined);
+      },
+      onFallback: async () => {
+        failedProvider = config.fallbackProvider;
+        failedModel = config.fallbackModel;
+        startedAt = Date.now();
+        seconds = 0;
+        progressLabel = "다시 호출합니다!";
+        await progressMessage.edit({ embeds: [createProgressEmbed(seconds, limit, false, request.title, progressLabel, request.titlePrefix)] }).catch(() => undefined);
       }
     });
     const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
@@ -146,8 +211,7 @@ export const handleAnalysisCommand = async (interaction: ChatInputCommandInterac
   } catch (error) {
     if (progressTimer) clearInterval(progressTimer);
     console.error(error);
-    const message = error instanceof Error ? error.message : "알 수 없는 오류";
-    const embed = createNoticeEmbed("처리 중 오류가 났어요", `\`${message.slice(0, 900)}\``, "error");
+    const embed = createNoticeEmbed("처리 중 오류가 났어요", `\`${failedProvider}/${failedModel}\``, "error");
     if (interaction.replied || interaction.deferred) await interaction.editReply({ embeds: [embed] }).catch(() => undefined);
     else await interaction.reply({ embeds: [embed], ephemeral: true }).catch(() => undefined);
   } finally {

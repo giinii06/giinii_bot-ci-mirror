@@ -35,6 +35,10 @@ type ChatCompletionResponse = {
 
 type AskGeminiOptions = {
   onRetry?: (reason: { provider: AiProvider; label: string; model: string }) => void | Promise<void>;
+  onFallback?: () => void | Promise<void>;
+  provider?: AiProvider;
+  model?: string;
+  allowFallback?: boolean;
 };
 
 export type QuestionAuthor = {
@@ -50,8 +54,20 @@ export const askGemini = async (
   systemPrompt = config.questionPrompt,
   options: AskGeminiOptions = {}
 ) => {
-  if (config.aiProvider === "gemini") return askGoogleGemini(buildPrompt(question, history, author, systemPrompt));
-  return askOpenAiCompatible(config.aiProvider, question, history, author, systemPrompt, options);
+  const provider = options.provider ?? config.aiProvider;
+  const model = options.model ?? config.aiModel;
+  try {
+    if (provider === "gemini") return await askGoogleGemini(buildPrompt(question, history, author, systemPrompt), model);
+    return await askOpenAiCompatible(provider, question, history, author, systemPrompt, options, model);
+  } catch (error) {
+    if (options.allowFallback === false) throw error;
+    console.warn("AI request failed, retrying with configured fallback", error);
+    await options.onFallback?.();
+    if (config.fallbackProvider === "gemini") {
+      return askGoogleGemini(buildPrompt(question, history, author, systemPrompt), config.fallbackModel);
+    }
+    return askOpenAiCompatible(config.fallbackProvider, question, history, author, systemPrompt, options, config.fallbackModel);
+  }
 };
 
 export const buildDebugPromptText = (question: string, history: string, author?: QuestionAuthor, systemPrompt = config.questionPrompt) => {
@@ -109,12 +125,12 @@ const trimHistoryForOpenAiCompatible = (history: string) => {
   return `${history.slice(0, OPENAI_COMPATIBLE_HISTORY_CHARS)}\n\n[이후 기록은 모델 출력 안정성을 위해 생략됨]`;
 };
 
-const askGoogleGemini = async (prompt: string) => {
+const askGoogleGemini = async (prompt: string, model = config.aiModel) => {
   if (!config.geminiApiKey) throw new Error("GEMINI_API_KEY가 비어 있습니다. 웹 설정에서 API key를 저장해 주세요.");
 
   const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
   const response = await ai.models.generateContent({
-    model: config.aiModel,
+    model,
     contents: prompt,
     config: {
       temperature: 0.9,
@@ -131,10 +147,10 @@ const askOpenAiCompatible = async (
   history: string,
   author?: QuestionAuthor,
   systemPrompt = config.questionPrompt,
-  options: AskGeminiOptions = {}
+  options: AskGeminiOptions = {},
+  model = config.aiModel
 ) => {
   const providerConfig = getOpenAiCompatibleConfig(provider);
-  const model = config.aiModel;
   const reasoningEffort = getReasoningEffort(provider, model);
   const requestBody = {
     model,
