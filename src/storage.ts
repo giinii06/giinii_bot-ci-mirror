@@ -59,7 +59,8 @@ export const initDatabase = () => {
   if (all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'roulette_target_roles'").length) {
     for (const { guild_id, role_id } of all<{ guild_id: string; role_id: string }>("SELECT guild_id, MIN(role_id) AS role_id FROM roulette_target_roles GROUP BY guild_id")) {
       run(`INSERT INTO settings (guild_id, target_role_id) VALUES (?, ?)
-        ON CONFLICT(guild_id) DO UPDATE SET target_role_id = excluded.target_role_id`, guild_id, role_id);
+        ON CONFLICT(guild_id) DO UPDATE SET target_role_id = excluded.target_role_id
+        WHERE settings.target_role_id IS NULL`, guild_id, role_id);
     }
   }
   initialized = true;
