@@ -44,7 +44,7 @@ export const initDatabase = () => {
     CREATE INDEX IF NOT EXISTS discord_messages_guild_channel_created_idx ON discord_messages(guild_id, channel_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS command_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, user_id TEXT NOT NULL,
-      user_name TEXT NOT NULL, command_name TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+      user_name TEXT NOT NULL, command_name TEXT NOT NULL, question TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL, model TEXT NOT NULL,
       output TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
     );
     CREATE INDEX IF NOT EXISTS command_logs_guild_created_idx ON command_logs(guild_id, created_at DESC);
@@ -52,6 +52,9 @@ export const initDatabase = () => {
 
   if (!all<{ name: string }>("PRAGMA table_info(settings)").some((column) => column.name === "target_role_id")) {
     db.exec("ALTER TABLE settings ADD COLUMN target_role_id TEXT");
+  }
+  if (!all<{ name: string }>("PRAGMA table_info(command_logs)").some((column) => column.name === "question")) {
+    db.exec("ALTER TABLE command_logs ADD COLUMN question TEXT NOT NULL DEFAULT ''");
   }
   if (all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'roulette_target_roles'").length) {
     for (const { guild_id, role_id } of all<{ guild_id: string; role_id: string }>("SELECT guild_id, MIN(role_id) AS role_id FROM roulette_target_roles GROUP BY guild_id")) {
@@ -123,9 +126,9 @@ export const fetchRecentMessages = (guildId: Snowflake, limit: number, channelId
 
 export const insertCommandLog = (log: {
   guildId: Snowflake; channelId: Snowflake; userId: Snowflake; userName: string;
-  commandName: string; provider: string; model: string; output: string;
+  commandName: string; question: string; provider: string; model: string; output: string;
 }) => {
-  run(`INSERT INTO command_logs (guild_id, channel_id, user_id, user_name, command_name, provider, model, output)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, log.guildId, log.channelId, log.userId, log.userName,
-    log.commandName, log.provider, log.model, log.output);
+  run(`INSERT INTO command_logs (guild_id, channel_id, user_id, user_name, command_name, question, provider, model, output)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, log.guildId, log.channelId, log.userId, log.userName,
+    log.commandName, log.question, log.provider, log.model, log.output);
 };

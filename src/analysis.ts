@@ -133,7 +133,7 @@ export const handleAnalysisCommand = async (interaction: ChatInputCommandInterac
     const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
     try {
       insertCommandLog({ guildId, channelId: interaction.channelId, userId: interaction.user.id, userName: author.displayName,
-        commandName: interaction.commandName, provider: config.aiProvider, model: config.aiModel, output: answer });
+        commandName: interaction.commandName, question: request.input, provider: config.aiProvider, model: config.aiModel, output: answer });
     } catch (error) { console.error("Failed to persist command log", error); }
     if (progressTimer) clearInterval(progressTimer);
     await progressMessage.edit({ embeds: [createProgressEmbed(elapsedSeconds, limit, true, request.title, request.progressLabel, request.titlePrefix)] });
