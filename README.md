@@ -8,6 +8,7 @@ Bun과 TypeScript로 만든 Discord 봇입니다. 서버의 채팅·음성 활�
 - Discord 메시지 백필 및 실시간 저장
 - 최근 대화를 바탕으로 한 AI 분석
 - 관리자 러시안 룰렛과 음성 재생
+- 유저별 음성 채널 동시 접속 시간 기반 친밀도 카드
 - 브라우저에서 AI provider, 모델, 프롬프트, 기록 범위를 바꾸는 설정 화면
 
 분석 결과는 오락용입니다. MBTI, 싸이코 지수, 계급 등은 실제 진단이나 사실 판정이 아닙니다.
@@ -102,6 +103,12 @@ Developer Portal의 Bot 설정에서 다음 Privileged Gateway Intents를 켭니
 
 AI 명령은 서버별로 한 번에 하나만 실행되며, 사용자별 재사용 대기 시간은 `QUESTION_COOLDOWN_SECONDS`로 정합니다. 처음 실행할 때 최근 메시지를 SQLite에 백필하므로 완료 전에는 분석을 실행할 수 없습니다.
 
+### 음성 친밀도
+
+| 명령어 | 옵션 | 설명 |
+| --- | --- | --- |
+| `/친밀도` | `유저` | 같은 음성 채널에 함께 있었던 시간 기준 TOP 21을 PNG 카드로 확인합니다. 7명씩 이전/다음 페이지를 볼 수 있습니다. |
+
 ### 관리자 러시안 룰렛
 
 | 명령어 | 권한 | 설명 |
@@ -169,6 +176,7 @@ data/
 
 - `users`, `activity`: 서버별 채팅·음성 누적 및 기간별 통계
 - `voice_sessions`: 현재 음성 세션
+- `voice_presence_sessions`: 음성 채널별 동시 접속 시간 이력
 - `discord_messages`: AI 분석용 Discord 메시지
 - `command_logs`: AI 명령 실행 결과
 - `settings`, `admin_target_roles`: 룰렛 설정
@@ -192,6 +200,9 @@ src/
 ├── history.ts        # Discord 기록 수집
 ├── gemini.ts         # Gemini/OpenAI 호환 provider 호출
 ├── activity.ts       # 채팅·음성 활동 집계
+├── voice-affinity.ts  # 음성 동시 접속 시간 계산
+├── voice-affinity-command.ts # 친밀도 명령과 페이지 버튼
+├── voice-affinity-card.ts # 친밀도 PNG 카드 렌더링
 ├── roulette.ts       # 관리자 러시안 룰렛
 ├── storage.ts        # SQLite 스키마와 쿼리
 ├── config.ts         # 환경변수와 런타임 설정

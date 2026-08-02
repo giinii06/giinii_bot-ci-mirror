@@ -45,6 +45,16 @@ const recordVoice = (guildId: string, userId: string, from: number, to: number) 
   }
 };
 
+const startVoicePresence = (guildId: string, userId: string, channelId: string, startedAt: number) => {
+  run("INSERT INTO voice_presence_sessions (guild_id, user_id, channel_id, started_at) VALUES (?, ?, ?, ?)",
+    guildId, userId, channelId, startedAt);
+};
+
+const endVoicePresence = (guildId: string, userId: string, endedAt: number) => {
+  run("UPDATE voice_presence_sessions SET ended_at = ? WHERE guild_id = ? AND user_id = ? AND ended_at IS NULL",
+    endedAt, guildId, userId);
+};
+
 export const settleSession = (session: VoiceSession, until: number) => {
   const elapsed = Math.max(0, until - session.last_tick);
   if (!elapsed) return session;
@@ -61,12 +71,15 @@ export const recordMessageActivity = (message: Message) => {
 };
 
 export const initializeVoiceSessions = (client: Client) => {
+  const now = Date.now();
+  run("UPDATE voice_presence_sessions SET ended_at = ? WHERE ended_at IS NULL", now);
   run("DELETE FROM voice_sessions");
   for (const guild of client.guilds.cache.values()) {
     for (const state of guild.voiceStates.cache.values()) {
       if (state.channelId && !state.member?.user.bot) {
         run("INSERT OR IGNORE INTO voice_sessions (guild_id, user_id, channel_id, last_tick, limited) VALUES (?, ?, ?, ?, 0)",
-          guild.id, state.id, state.channelId, Date.now());
+          guild.id, state.id, state.channelId, now);
+        startVoicePresence(guild.id, state.id, state.channelId, now);
       }
     }
   }
@@ -78,9 +91,13 @@ export const handleVoiceStateUpdate = async (newState: VoiceState) => {
   const now = Date.now();
   if (session) settleSession(session, now);
   if (!newState.channelId) {
+    endVoicePresence(newState.guild.id, newState.id, now);
     run("DELETE FROM voice_sessions WHERE guild_id = ? AND user_id = ?", newState.guild.id, newState.id);
     return;
   }
+  if (session?.channel_id === newState.channelId) return;
+  endVoicePresence(newState.guild.id, newState.id, now);
+  startVoicePresence(newState.guild.id, newState.id, newState.channelId, now);
   run(`INSERT INTO voice_sessions (guild_id, user_id, channel_id, last_tick, limited) VALUES (?, ?, ?, ?, 0)
     ON CONFLICT(guild_id, user_id) DO UPDATE SET channel_id = excluded.channel_id, last_tick = excluded.last_tick`,
     newState.guild.id, newState.id, newState.channelId, now);

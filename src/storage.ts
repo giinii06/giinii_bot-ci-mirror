@@ -31,6 +31,12 @@ export const initDatabase = () => {
       last_tick INTEGER NOT NULL, limited INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (guild_id, user_id)
     );
+    CREATE TABLE IF NOT EXISTS voice_presence_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS voice_presence_lookup
+      ON voice_presence_sessions (guild_id, user_id, channel_id, started_at, ended_at);
     CREATE TABLE IF NOT EXISTS admin_target_roles (
       guild_id TEXT NOT NULL, role_id TEXT NOT NULL,
       PRIMARY KEY (guild_id, role_id)

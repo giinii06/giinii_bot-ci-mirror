@@ -1,5 +1,6 @@
 import {
-  Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits, type ChatInputCommandInteraction
+  Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits,
+  type ButtonInteraction, type ChatInputCommandInteraction
 } from "discord.js";
 import { analysisCommandNames, ensureBackfillStarted, handleAnalysisCommand, persistLiveMessage, startInitialBackfill } from "./analysis.js";
 import { recordMessageActivity, initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
@@ -7,6 +8,7 @@ import { commands, syncCommands } from "./commands.js";
 import { config } from "./config.js";
 import { handleRouletteCommand } from "./roulette.js";
 import { initDatabase } from "./storage.js";
+import { handleVoiceAffinityCommand, handleVoiceAffinityComponent } from "./voice-affinity-command.js";
 import { startWebServer } from "./web.js";
 
 const client = new Client({
@@ -17,6 +19,13 @@ const client = new Client({
 const rouletteCommandNames = new Set(["타겟역할설정", "관리자역할추가", "관리자머리끄댕이"]);
 
 const replyInteractionError = (interaction: ChatInputCommandInteraction, error: unknown) => {
+  console.error(error);
+  const reply = "처리 중 오류가 발생했습니다.";
+  if (interaction.deferred) void interaction.editReply(reply).catch(() => undefined);
+  else if (!interaction.replied) void interaction.reply({ ephemeral: true, content: reply }).catch(() => undefined);
+};
+
+const replyButtonError = (interaction: ButtonInteraction, error: unknown) => {
   console.error(error);
   const reply = "처리 중 오류가 발생했습니다.";
   if (interaction.deferred) void interaction.editReply(reply).catch(() => undefined);
@@ -62,6 +71,10 @@ client.on(Events.VoiceStateUpdate, (_, newState) => {
 
 client.on(Events.InteractionCreate, (interaction) => {
   if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === "친밀도") {
+      void handleVoiceAffinityCommand(interaction).catch((error) => replyInteractionError(interaction, error));
+      return;
+    }
     if (analysisCommandNames.has(interaction.commandName)) {
       void handleAnalysisCommand(interaction).catch((error) => replyInteractionError(interaction, error));
       return;
@@ -73,6 +86,9 @@ client.on(Events.InteractionCreate, (interaction) => {
         return;
       }
     }
+  }
+  if (interaction.isButton() && interaction.customId.startsWith("voice-affinity:")) {
+    void handleVoiceAffinityComponent(interaction).catch((error) => replyButtonError(interaction, error));
   }
 });
 

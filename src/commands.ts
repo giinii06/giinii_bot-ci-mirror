@@ -11,6 +11,11 @@ const rouletteCommandBuilders = [
   new SlashCommandBuilder().setName("관리자머리끄댕이").setDescription("관리자를 대상으로 러시안 룰렛을 실행합니다")
 ];
 
+const voiceCommandBuilders = [
+  new SlashCommandBuilder().setName("친밀도").setDescription("같은 음성 채널에 함께 있었던 사람 TOP 7을 봅니다")
+    .addUserOption((option) => option.setName("유저").setDescription("친밀도를 확인할 유저").setRequired(true))
+];
+
 const analysisCommandBuilders = [
   new SlashCommandBuilder().setName("question").setDescription("최근 디스코드 채팅 기록을 기반으로 AI에게 질문합니다.")
     .addStringOption((option) => option.setName("question").setDescription("물어볼 질문").setRequired(true).setMaxLength(1000))
@@ -35,7 +40,7 @@ const analysisCommandBuilders = [
     .addUserOption((option) => option.setName("user").setDescription("캐릭터 시트를 만들 유저").setRequired(true))
 ];
 
-export const commands = [...rouletteCommandBuilders, ...analysisCommandBuilders].map((command) => command.toJSON());
+export const commands = [...rouletteCommandBuilders, ...voiceCommandBuilders, ...analysisCommandBuilders].map((command) => command.toJSON());
 
 export const syncCommands = async (client: Client) => {
   if (client.application) await client.application.commands.set([]);
