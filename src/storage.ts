@@ -41,6 +41,10 @@ export const initDatabase = () => {
       guild_id TEXT NOT NULL, role_id TEXT NOT NULL,
       PRIMARY KEY (guild_id, role_id)
     );
+    CREATE TABLE IF NOT EXISTS admin_defense_roles (
+      guild_id TEXT NOT NULL, role_id TEXT NOT NULL,
+      PRIMARY KEY (guild_id, role_id)
+    );
     CREATE TABLE IF NOT EXISTS discord_messages (
       message_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, channel_name TEXT NOT NULL,
       author_id TEXT NOT NULL, author_name TEXT NOT NULL, author_is_bot INTEGER NOT NULL DEFAULT 0,

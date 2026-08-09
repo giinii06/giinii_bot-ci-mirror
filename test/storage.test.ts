@@ -29,6 +29,7 @@ process.env.DATABASE_PATH = databasePath;
 
 const storage = await import("../src/storage.js");
 const { askGemini } = await import("../src/gemini.js");
+const { isDefenseSuccess } = await import("../src/roulette.js");
 
 test("migrates and stores AI questions in command logs", () => {
   storage.initDatabase();
@@ -45,6 +46,28 @@ test("migrates and stores AI questions in command logs", () => {
 test("does not overwrite a configured target role during migration", () => {
   expect(storage.sql<{ target_role_id: string }>("SELECT target_role_id FROM settings WHERE guild_id = ?", "guild"))
     .toEqual({ target_role_id: "new-role" });
+});
+
+test("persists roulette role settings in SQLite", () => {
+  storage.initDatabase();
+  storage.run(`INSERT INTO settings (guild_id, target_role_id) VALUES (?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET target_role_id = excluded.target_role_id`, "persist-guild", "target-role");
+  storage.run("INSERT INTO admin_target_roles (guild_id, role_id) VALUES (?, ?)", "persist-guild", "admin-role");
+  storage.run("INSERT INTO admin_defense_roles (guild_id, role_id) VALUES (?, ?)", "persist-guild", "defense-role");
+
+  const reopened = new Database(databasePath);
+  expect(reopened.query("SELECT target_role_id FROM settings WHERE guild_id = ?").get("persist-guild"))
+    .toEqual({ target_role_id: "target-role" });
+  expect(reopened.query("SELECT role_id FROM admin_target_roles WHERE guild_id = ?").get("persist-guild"))
+    .toEqual({ role_id: "admin-role" });
+  expect(reopened.query("SELECT role_id FROM admin_defense_roles WHERE guild_id = ?").get("persist-guild"))
+    .toEqual({ role_id: "defense-role" });
+  reopened.close();
+});
+
+test("uses a 65 percent defense boundary", () => {
+  expect(isDefenseSuccess(0.64)).toBe(true);
+  expect(isDefenseSuccess(0.65)).toBe(false);
 });
 
 test("falls back to the configured model after an AI request error", async () => {

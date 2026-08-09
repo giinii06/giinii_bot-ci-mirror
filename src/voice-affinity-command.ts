@@ -1,15 +1,47 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction, type ChatInputCommandInteraction } from "discord.js";
+import { bucketAt } from "./activity.js";
 import { all } from "./storage.js";
-import { renderVoiceAffinity } from "./voice-affinity-card.js";
+import { renderVoiceAffinity, type VoiceAffinityEntry } from "./voice-affinity-card.js";
 import { buildVoiceAffinity, type VoiceInterval } from "./voice-affinity.js";
 
 const voiceAffinityPages = new Map<string, Buffer[]>();
+
+const statisticsPeriodLabels = { day: "오늘", week: "이번 주", month: "이번 달", all: "전체" } as const;
+type StatisticsPeriod = keyof typeof statisticsPeriodLabels;
+type ActivityRow = { user_id: string; chat_count: number; voice_seconds: number };
 
 const voiceAffinityComponents = (page: number, pageCount: number) => [new ActionRowBuilder<ButtonBuilder>().addComponents(
   new ButtonBuilder().setCustomId(`voice-affinity:${page - 1}`).setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
   new ButtonBuilder().setCustomId(`voice-affinity:${page}`).setLabel(`${page + 1} / ${pageCount}`).setStyle(ButtonStyle.Secondary).setDisabled(),
   new ButtonBuilder().setCustomId(`voice-affinity:${page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page === pageCount - 1),
 )];
+
+const sendVoiceRanking = async (
+  interaction: ChatInputCommandInteraction,
+  title: string,
+  entries: VoiceAffinityEntry[],
+  now: number,
+  mode: "affinity" | "volume" = "affinity",
+  totalDurationMs?: number,
+) => {
+  const pageCount = Math.ceil(entries.length / 7);
+  const pages = await Promise.all(Array.from({ length: pageCount }, (_, page) => renderVoiceAffinity(
+    title,
+    entries.slice(page * 7, page * 7 + 7),
+    now,
+    page * 7 + 1,
+    entries.length,
+    mode,
+    totalDurationMs,
+  )));
+  const message = await interaction.editReply({
+    files: [{ attachment: pages[0]!, name: "voice-affinity.png" }],
+    components: voiceAffinityComponents(0, pageCount),
+  });
+  voiceAffinityPages.set(message.id, pages);
+  setTimeout(() => voiceAffinityPages.delete(message.id), 15 * 60_000);
+  return message;
+};
 
 export const handleVoiceAffinityCommand = async (interaction: ChatInputCommandInteraction) => {
   if (!interaction.inCachedGuild()) {
@@ -44,28 +76,101 @@ export const handleVoiceAffinityCommand = async (interaction: ChatInputCommandIn
   }));
   const targetMember = await guild.members.fetch(target.id).catch(() => null);
   const targetName = targetMember?.displayName ?? target.globalName ?? target.username;
-  const pageCount = Math.ceil(entries.length / 7);
-  const pages = await Promise.all(Array.from({ length: pageCount }, (_, page) => renderVoiceAffinity(
-    targetName,
-    entries.slice(page * 7, page * 7 + 7),
-    now,
-    page * 7 + 1,
-    entries.length,
-  )));
-  const message = await interaction.editReply({
-    files: [{ attachment: pages[0]!, name: "voice-affinity.png" }],
-    components: voiceAffinityComponents(0, pageCount),
-  });
-  voiceAffinityPages.set(message.id, pages);
-  setTimeout(() => voiceAffinityPages.delete(message.id), 15 * 60_000);
-  return message;
+  return sendVoiceRanking(interaction, targetName, entries, now);
+};
+
+export const handleVoiceVolumeCommand = async (interaction: ChatInputCommandInteraction) => {
+  if (!interaction.inCachedGuild()) {
+    await interaction.reply({ content: "이 명령어는 디스코드 서버에서만 사용할 수 있어요.", ephemeral: true });
+    return;
+  }
+  const guild = interaction.guild;
+  const now = Date.now();
+  const users = all<{ user_id: string; voice_total: number }>(
+    "SELECT user_id, voice_total FROM users WHERE guild_id = ? AND voice_total > 0 ORDER BY voice_total DESC, user_id ASC",
+    guild.id,
+  );
+  const rankedUsers = users.slice(0, 21);
+  if (!rankedUsers.length) return interaction.reply({ content: "통화량 기록이 없습니다." });
+  const totalVoiceMs = users.reduce((sum, user) => sum + user.voice_total, 0) * 1000;
+
+  await interaction.deferReply();
+  const entries = await Promise.all(rankedUsers.map(async ({ user_id, voice_total }) => {
+    const member = await guild.members.fetch(user_id).catch(() => null);
+    const user = member?.user ?? await interaction.client.users.fetch(user_id).catch(() => null);
+    return {
+      name: member?.displayName ?? user?.globalName ?? user?.username ?? "알 수 없는 유저",
+      username: user?.username ?? "unknown",
+      sharedMs: voice_total * 1000,
+    };
+  }));
+  return sendVoiceRanking(interaction, "전체", entries, now, "volume", totalVoiceMs);
+};
+
+export const handleStatisticsCommand = async (interaction: ChatInputCommandInteraction) => {
+  if (!interaction.inCachedGuild()) {
+    await interaction.reply({ content: "이 명령어는 디스코드 서버에서만 사용할 수 있어요.", ephemeral: true });
+    return;
+  }
+  const guild = interaction.guild;
+  const requestedPeriod = interaction.options.getString("기간") ?? "all";
+  const period: StatisticsPeriod = requestedPeriod in statisticsPeriodLabels
+    ? requestedPeriod as StatisticsPeriod
+    : "all";
+  const now = Date.now();
+  const rows = period === "all"
+    ? all<ActivityRow>(
+      "SELECT user_id, chat_total AS chat_count, voice_total AS voice_seconds FROM users WHERE guild_id = ? AND (chat_total > 0 OR voice_total > 0)",
+      guild.id,
+    )
+    : all<ActivityRow>(
+      "SELECT user_id, chat_count, voice_seconds FROM activity WHERE guild_id = ? AND bucket_type = ? AND bucket_key = ? AND (chat_count > 0 OR voice_seconds > 0)",
+      guild.id, period, bucketAt(now, period),
+    );
+  if (!rows.length) return interaction.reply({ content: `${statisticsPeriodLabels[period]} 통계 기록이 없습니다.` });
+
+  await interaction.deferReply();
+  const users = new Map<string, { name: string; username: string }>();
+  await Promise.all(rows.map(async ({ user_id }) => {
+    const member = await guild.members.fetch(user_id).catch(() => null);
+    const user = member?.user ?? await interaction.client.users.fetch(user_id).catch(() => null);
+    users.set(user_id, {
+      name: member?.displayName ?? user?.globalName ?? user?.username ?? "알 수 없는 유저",
+      username: user?.username ?? "unknown",
+    });
+  }));
+
+  const ranked = (score: (row: ActivityRow) => number) => [...rows]
+    .sort((a, b) => score(b) - score(a) || a.user_id.localeCompare(b.user_id))
+    .slice(0, 7);
+  const totalChat = rows.reduce((sum, row) => sum + row.chat_count, 0);
+  const totalVoiceMs = rows.reduce((sum, row) => sum + row.voice_seconds, 0) * 1000;
+  const totalActivity = rows.reduce((sum, row) => sum + row.chat_count + row.voice_seconds / 60, 0);
+  const cards = [
+    { mode: "chat" as const, rows: ranked((row) => row.chat_count), total: totalChat, name: "statistics-chat.png" },
+    { mode: "volume" as const, rows: ranked((row) => row.voice_seconds), total: totalVoiceMs, name: "statistics-voice.png" },
+    { mode: "activity" as const, rows: ranked((row) => row.chat_count + row.voice_seconds / 60), total: totalActivity, name: "statistics-total.png" },
+  ].map(({ mode, rows: ranking, total, name }) => ({
+    attachment: renderVoiceAffinity(
+      statisticsPeriodLabels[period],
+      ranking.map((row) => ({ ...(users.get(row.user_id) ?? { name: "알 수 없는 유저", username: "unknown" }),
+        sharedMs: mode === "chat" ? row.chat_count : mode === "volume" ? row.voice_seconds * 1000 : row.chat_count + row.voice_seconds / 60 })),
+      now,
+      1,
+      ranking.length,
+      mode,
+      total,
+    ),
+    name,
+  }));
+  return interaction.editReply({ files: cards });
 };
 
 export const handleVoiceAffinityComponent = async (interaction: ButtonInteraction) => {
   const page = Number(interaction.customId.slice("voice-affinity:".length));
   const pages = voiceAffinityPages.get(interaction.message.id);
   if (!Number.isInteger(page) || !pages?.[page]) {
-    return interaction.reply({ content: "친밀도 결과가 만료되었습니다. `/친밀도`를 다시 실행하세요.", ephemeral: true });
+    return interaction.reply({ content: "음성 순위 결과가 만료되었습니다. `/친밀도` 또는 `/통화량`을 다시 실행하세요.", ephemeral: true });
   }
   return interaction.update({
     attachments: [],

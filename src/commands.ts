@@ -2,18 +2,48 @@ import { PermissionFlagsBits, SlashCommandBuilder, type Client } from "discord.j
 import { config, MAX_HISTORY_MESSAGE_LIMIT } from "./config.js";
 
 const rouletteCommandBuilders = [
-  new SlashCommandBuilder().setName("타겟역할설정").setDescription("관리자 러시안 룰렛의 타겟 역할을 설정합니다")
+  new SlashCommandBuilder().setName("타겟").setDescription("관리자 러시안 룰렛의 타겟 역할을 관리합니다")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addRoleOption((option) => option.setName("역할").setDescription("러시안 룰렛 실행 시 제거할 역할").setRequired(true)),
-  new SlashCommandBuilder().setName("관리자역할추가").setDescription("관리자 러시안 룰렛의 대상 역할을 추가합니다")
+    .addStringOption((option) => option.setName("인자").setDescription("지정, 삭제, 조회 중 하나를 선택하세요").setRequired(true)
+      .addChoices(
+        { name: "지정", value: "지정" },
+        { name: "삭제", value: "삭제" },
+        { name: "조회", value: "조회" }
+      ))
+    .addRoleOption((option) => option.setName("역할").setDescription("지정할 타겟 역할").setRequired(false)),
+  new SlashCommandBuilder().setName("관리자_타겟").setDescription("관리자 러시안 룰렛의 대상 역할을 관리합니다")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addRoleOption((option) => option.setName("역할").setDescription("러시안 룰렛 대상이 될 역할").setRequired(true)),
-  new SlashCommandBuilder().setName("관리자머리끄댕이").setDescription("관리자를 대상으로 러시안 룰렛을 실행합니다")
+    .addStringOption((option) => option.setName("인자").setDescription("지정, 삭제, 조회 중 하나를 선택하세요").setRequired(true)
+      .addChoices(
+        { name: "지정", value: "지정" },
+        { name: "삭제", value: "삭제" },
+        { name: "조회", value: "조회" }
+      ))
+    .addRoleOption((option) => option.setName("역할").setDescription("지정하거나 삭제할 관리자 역할").setRequired(false)),
+  new SlashCommandBuilder().setName("관리자머리끄댕이").setDescription("관리자를 대상으로 러시안 룰렛을 실행합니다"),
+  new SlashCommandBuilder().setName("관리자머리끄댕이방어권_역할").setDescription("관리자 러시안 룰렛 방어권 역할을 관리합니다")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption((option) => option.setName("인자").setDescription("추가, 조회, 제거 중 하나를 선택하세요").setRequired(true)
+      .addChoices(
+        { name: "추가", value: "추가" },
+        { name: "조회", value: "조회" },
+        { name: "제거", value: "제거" }
+      ))
+    .addRoleOption((option) => option.setName("역할").setDescription("추가하거나 제거할 방어권 역할").setRequired(false))
 ];
 
 const voiceCommandBuilders = [
-  new SlashCommandBuilder().setName("친밀도").setDescription("같은 음성 채널에 함께 있었던 사람 TOP 7을 봅니다")
-    .addUserOption((option) => option.setName("유저").setDescription("친밀도를 확인할 유저").setRequired(true))
+  new SlashCommandBuilder().setName("친밀도").setDescription("같은 음성 채널에 함께 있었던 사람 TOP 21을 봅니다")
+    .addUserOption((option) => option.setName("유저").setDescription("친밀도를 확인할 유저").setRequired(true)),
+  new SlashCommandBuilder().setName("통화량").setDescription("서버 전체 통화량 TOP 21을 봅니다"),
+  new SlashCommandBuilder().setName("통계").setDescription("채팅량·통화량·종합 활동량 카드 3장을 봅니다")
+    .addStringOption((option) => option.setName("기간").setDescription("통계를 확인할 기간").setRequired(false)
+      .addChoices(
+        { name: "오늘", value: "day" },
+        { name: "이번 주", value: "week" },
+        { name: "이번 달", value: "month" },
+        { name: "전체", value: "all" }
+      ))
 ];
 
 const analysisCommandBuilders = [

@@ -8,7 +8,7 @@ import { commands, syncCommands } from "./commands.js";
 import { config } from "./config.js";
 import { handleRouletteCommand } from "./roulette.js";
 import { initDatabase } from "./storage.js";
-import { handleVoiceAffinityCommand, handleVoiceAffinityComponent } from "./voice-affinity-command.js";
+import { handleStatisticsCommand, handleVoiceAffinityCommand, handleVoiceAffinityComponent, handleVoiceVolumeCommand } from "./voice-affinity-command.js";
 import { startWebServer } from "./web.js";
 
 const client = new Client({
@@ -16,7 +16,9 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message]
 });
 
-const rouletteCommandNames = new Set(["타겟역할설정", "관리자역할추가", "관리자머리끄댕이"]);
+const rouletteCommandNames = new Set([
+  "타겟", "관리자_타겟", "관리자머리끄댕이", "관리자머리끄댕이방어권_역할"
+]);
 
 const replyInteractionError = (interaction: ChatInputCommandInteraction, error: unknown) => {
   console.error(error);
@@ -73,6 +75,14 @@ client.on(Events.InteractionCreate, (interaction) => {
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === "친밀도") {
       void handleVoiceAffinityCommand(interaction).catch((error) => replyInteractionError(interaction, error));
+      return;
+    }
+    if (interaction.commandName === "통화량") {
+      void handleVoiceVolumeCommand(interaction).catch((error) => replyInteractionError(interaction, error));
+      return;
+    }
+    if (interaction.commandName === "통계") {
+      void handleStatisticsCommand(interaction).catch((error) => replyInteractionError(interaction, error));
       return;
     }
     if (analysisCommandNames.has(interaction.commandName)) {

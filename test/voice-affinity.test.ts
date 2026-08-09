@@ -41,3 +41,18 @@ test("renders a voice affinity PNG card", () => {
 
   expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
 });
+
+test("renders a voice volume PNG card", () => {
+  const png = renderVoiceAffinity("전체", [{ name: "멤버", username: "member", sharedMs: 120_000 }], Date.now(), 1, 1, "volume", 3_600_000);
+
+  expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+});
+
+test("renders chat and combined activity PNG cards", () => {
+  const entries = [{ name: "멤버", username: "member", sharedMs: 12 }];
+
+  expect(renderVoiceAffinity("오늘", entries, Date.now(), 1, 1, "chat", 24).subarray(0, 8).toString("hex"))
+    .toBe("89504e470d0a1a0a");
+  expect(renderVoiceAffinity("오늘", entries, Date.now(), 1, 1, "activity", 36).subarray(0, 8).toString("hex"))
+    .toBe("89504e470d0a1a0a");
+});
