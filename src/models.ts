@@ -11,11 +11,25 @@ export type ModelCard = {
 export const freeModelCatalog = {
   gemini: [
     {
+      id: "gemini-3.7-flash",
+      name: "Gemini 3.7 Flash",
+      provider: "gemini",
+      note: "AI Studio stable text model",
+      context: "Agentic coding and reasoning"
+    },
+    {
       id: "gemini-3.6-flash",
       name: "Gemini 3.6 Flash",
       provider: "gemini",
       note: "Free tier text model",
       context: "Fast general chat"
+    },
+    {
+      id: "gemini-3.5-flash",
+      name: "Gemini 3.5 Flash",
+      provider: "gemini",
+      note: "AI Studio stable text model",
+      context: "General chat and coding"
     },
     {
       id: "gemini-3.5-flash-lite",
@@ -37,6 +51,13 @@ export const freeModelCatalog = {
       provider: "gemini",
       note: "Free tier preview",
       context: "Frontier chat and reasoning"
+    },
+    {
+      id: "gemini-3.1-pro-preview",
+      name: "Gemini 3.1 Pro Preview",
+      provider: "gemini",
+      note: "AI Studio preview text model",
+      context: "Complex reasoning and coding"
     },
     {
       id: "gemini-2.5-pro",

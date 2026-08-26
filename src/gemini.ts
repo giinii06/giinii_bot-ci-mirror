@@ -133,7 +133,6 @@ const askGoogleGemini = async (prompt: string, model = config.aiModel) => {
     model,
     contents: prompt,
     config: {
-      temperature: 0.9,
       maxOutputTokens: 4096
     }
   });

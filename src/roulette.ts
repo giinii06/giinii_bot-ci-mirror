@@ -15,6 +15,11 @@ const voiceChannel = (guild: Guild, channelId: string | null): VoiceBasedChannel
   return channel?.isVoiceBased() ? channel : null;
 };
 
+const canBotPlayVoice = (channel: VoiceBasedChannel, botMember: GuildMember | null) => {
+  const permissions = botMember ? channel.permissionsFor(botMember) : null;
+  return !!permissions && permissions.has(PermissionFlagsBits.Connect) && permissions.has(PermissionFlagsBits.Speak);
+};
+
 const randomRouletteAudioPath = () => {
   const available = rouletteAudioPaths.filter((path) => existsSync(path));
   if (!available.length) throw new Error("No roulette audio files found");
@@ -23,9 +28,14 @@ const randomRouletteAudioPath = () => {
 
 const playRouletteAudio = async (guild: Guild, channel: VoiceBasedChannel, member: GuildMember) => {
   const path = randomRouletteAudioPath();
+  if (!canBotPlayVoice(channel, guild.members.me)) {
+    throw new Error(`Bot lacks Connect/Speak permission in voice channel ${channel.id}`);
+  }
   const connection = joinVoiceChannel({ channelId: channel.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+    await entersState(connection, VoiceConnectionStatus.Ready, 30_000).catch((error) => {
+      throw new Error(`Voice connection to ${channel.id} did not become ready (state: ${connection.state.status})`, { cause: error });
+    });
     const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Stop } });
     connection.subscribe(player);
     await new Promise<void>((resolve, reject) => {
@@ -127,6 +137,13 @@ const runAdminRoulette = async (interaction: ChatInputCommandInteraction, guild:
   const botMember = guild.members.me;
   if (targetRole.managed || !botMember || targetRole.position >= botMember.roles.highest.position) {
     return interaction.editReply({ embeds: [rouletteEmbed("타겟 역할이 봇 역할보다 높거나 관리되는 역할입니다.", 0xed4245)] });
+  }
+  const missingVoicePermission = [...admins, invoker].find((member) => {
+    const channel = voiceChannel(guild, member.voice.channelId);
+    return !!channel && !canBotPlayVoice(channel, botMember);
+  });
+  if (missingVoicePermission) {
+    return interaction.editReply({ embeds: [rouletteEmbed("봇에게 대상 음성 채널의 `연결` 및 `말하기` 권한이 필요합니다.", 0xed4245)] });
   }
   const updatedInvoker = await invoker.roles.remove(targetRole, "관리자 러시안 룰렛 시작").catch((error) => {
     console.error("Target role removal failed", error);
