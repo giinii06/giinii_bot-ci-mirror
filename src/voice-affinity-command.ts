@@ -4,7 +4,9 @@ import { all } from "./storage.js";
 import { renderVoiceAffinity, type VoiceAffinityEntry } from "./voice-affinity-card.js";
 import { buildVoiceAffinity, type VoiceInterval } from "./voice-affinity.js";
 
-const voiceAffinityPages = new Map<string, Buffer[]>();
+type CardPage = { name: string; attachment: Buffer };
+
+const voiceAffinityPages = new Map<string, CardPage[]>();
 
 const statisticsPeriodLabels = { day: "오늘", week: "이번 주", month: "이번 달", all: "전체" } as const;
 export type StatisticsPeriod = keyof typeof statisticsPeriodLabels;
@@ -17,6 +19,16 @@ const voiceAffinityComponents = (page: number, pageCount: number) => [new Action
   new ButtonBuilder().setCustomId(`voice-affinity:${page}`).setLabel(`${page + 1} / ${pageCount}`).setStyle(ButtonStyle.Secondary).setDisabled(),
   new ButtonBuilder().setCustomId(`voice-affinity:${page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page === pageCount - 1),
 )];
+
+const sendCardPages = async (interaction: ChatInputCommandInteraction, cards: CardPage[]) => {
+  const message = await interaction.editReply({
+    files: [cards[0]!],
+    components: voiceAffinityComponents(0, cards.length),
+  });
+  voiceAffinityPages.set(message.id, cards);
+  setTimeout(() => voiceAffinityPages.delete(message.id), 15 * 60_000);
+  return message;
+};
 
 const sendVoiceRanking = async (
   interaction: ChatInputCommandInteraction,
@@ -36,13 +48,7 @@ const sendVoiceRanking = async (
     mode,
     totalDurationMs,
   )));
-  const message = await interaction.editReply({
-    files: [{ attachment: pages[0]!, name: "voice-affinity.png" }],
-    components: voiceAffinityComponents(0, pageCount),
-  });
-  voiceAffinityPages.set(message.id, pages);
-  setTimeout(() => voiceAffinityPages.delete(message.id), 15 * 60_000);
-  return message;
+  return sendCardPages(interaction, pages.map((attachment) => ({ name: "voice-affinity.png", attachment })));
 };
 
 export const handleVoiceAffinityCommand = async (interaction: ChatInputCommandInteraction) => {
@@ -184,18 +190,19 @@ export const handleStatisticsCommand = async (interaction: ChatInputCommandInter
     ),
     name,
   }));
-  return interaction.editReply({ files: cards });
+  return sendCardPages(interaction, cards);
 };
 
 export const handleVoiceAffinityComponent = async (interaction: ButtonInteraction) => {
   const page = Number(interaction.customId.slice("voice-affinity:".length));
-  const pages = voiceAffinityPages.get(interaction.message.id);
-  if (!Number.isInteger(page) || !pages?.[page]) {
-    return interaction.reply({ content: "음성 순위 결과가 만료되었습니다. `/친밀도` 또는 `/통화량`을 다시 실행하세요.", ephemeral: true });
+  const cards = Number.isInteger(page) ? voiceAffinityPages.get(interaction.message.id) : undefined;
+  const card = cards?.[page];
+  if (!card) {
+    return interaction.reply({ content: "카드 결과가 만료되었습니다. `/친밀도`, `/통화량`, `/통계`를 다시 실행하세요.", ephemeral: true });
   }
   return interaction.update({
     attachments: [],
-    files: [{ attachment: pages[page], name: "voice-affinity.png" }],
-    components: voiceAffinityComponents(page, pages.length),
+    files: [card],
+    components: voiceAffinityComponents(page, cards.length),
   });
 };
