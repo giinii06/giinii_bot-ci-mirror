@@ -8,7 +8,7 @@ import {
   type Snowflake
 } from "discord.js";
 import { config } from "./config.js";
-import { fetchRecentMessages } from "./storage.js";
+import { fetchRecentMessages, type StoredChannelRanges } from "./storage.js";
 
 const PAGE_SIZE = 100;
 
@@ -32,10 +32,23 @@ const textChannelTypes = new Set<ChannelType>([
   ChannelType.AnnouncementThread
 ]);
 
+export type HistoryDrainOptions = { batchSize: number; storedRanges?: StoredChannelRanges };
+
+/** 눈덩이 ID는 자릿수가 자를 수 있어 길이 우선, 길이가 같으면 사전순으로 비교한다. */
+const compareSnowflake = (left: Snowflake, right: Snowflake) =>
+  left.length === right.length ? (left < right ? -1 : left > right ? 1 : 0) : left.length - right.length;
+
+const reachedStoredHead = (messages: HistoryMessage[], head: Snowflake | undefined) =>
+  head !== undefined && messages.some((message) => compareSnowflake(message.messageId, head) <= 0);
+
+/**
+ * 읽을 수 있는 모든 채널의 전체 기록을 더 이상 못 가져올 때까지 읽어낸다.
+ * storedRanges에 이미 저장된 구간이 있으면 그 구간 위(새 메시지)와 아래(누락된 과거)만 읽고,
+ * 저장된 구간 자체는 커서를 아래로 한 번에 옮겨 건너뛴다.
+ */
 export const collectDiscordHistoryInBatches = async (
   guild: Guild,
-  totalLimit: number,
-  batchSize: number,
+  options: HistoryDrainOptions,
   onBatch: (messages: HistoryMessage[], totalCollected: number) => Promise<void>
 ) => {
   await guild.channels.fetch();
@@ -45,19 +58,23 @@ export const collectDiscordHistoryInBatches = async (
   let totalCollected = 0;
   let failedChannels = 0;
 
-  while (totalCollected < totalLimit && exhausted.size < channels.length) {
+  while (exhausted.size < channels.length) {
     const batch: HistoryMessage[] = [];
 
     for (const channel of channels) {
-      if (batch.length >= batchSize || totalCollected + batch.length >= totalLimit) break;
+      if (batch.length >= options.batchSize) break;
       if (exhausted.has(channel.id)) continue;
 
       try {
-        const remaining = Math.min(batchSize - batch.length, totalLimit - totalCollected - batch.length);
-        const page = await fetchChannelMessagePage(channel, remaining, cursors.get(channel.id));
+        const stored = options.storedRanges?.get(channel.id);
+        const page = await fetchChannelMessagePage(channel, options.batchSize - batch.length, cursors.get(channel.id));
         cursors.set(channel.id, page.before);
 
-        if (page.messages.length === 0 || !page.before) exhausted.add(channel.id);
+        if (page.messages.length === 0 || !page.before) {
+          exhausted.add(channel.id);
+        } else if (reachedStoredHead(page.messages, stored?.newest)) {
+          cursors.set(channel.id, stored?.oldest);
+        }
         batch.push(...page.messages);
       } catch {
         exhausted.add(channel.id);

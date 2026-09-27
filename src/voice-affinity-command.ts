@@ -7,8 +7,10 @@ import { buildVoiceAffinity, type VoiceInterval } from "./voice-affinity.js";
 const voiceAffinityPages = new Map<string, Buffer[]>();
 
 const statisticsPeriodLabels = { day: "오늘", week: "이번 주", month: "이번 달", all: "전체" } as const;
-type StatisticsPeriod = keyof typeof statisticsPeriodLabels;
-type ActivityRow = { user_id: string; chat_count: number; voice_seconds: number };
+export type StatisticsPeriod = keyof typeof statisticsPeriodLabels;
+type StatisticsRow = { user_id: string; chat_count: number; voice_seconds: number };
+type ChatCountRow = { user_id: string; chat_count: number };
+type VoiceSecondsRow = { user_id: string; voice_seconds: number };
 
 const voiceAffinityComponents = (page: number, pageCount: number) => [new ActionRowBuilder<ButtonBuilder>().addComponents(
   new ButtonBuilder().setCustomId(`voice-affinity:${page - 1}`).setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
@@ -107,6 +109,33 @@ export const handleVoiceVolumeCommand = async (interaction: ChatInputCommandInte
   return sendVoiceRanking(interaction, "전체", entries, now, "volume", totalVoiceMs);
 };
 
+/** 채팅량은 전체 DB에서 미리 계산한 chat_stats에서, 통화량은 음성 기록에서 읽어 유저별로 합친다. */
+export const mergeStatisticsRows = (chats: ChatCountRow[], voices: VoiceSecondsRow[]): StatisticsRow[] => {
+  const rows = new Map<string, StatisticsRow>();
+  for (const { user_id, chat_count } of chats) rows.set(user_id, { user_id, chat_count, voice_seconds: 0 });
+  for (const { user_id, voice_seconds } of voices) {
+    const row = rows.get(user_id);
+    if (row) row.voice_seconds = voice_seconds;
+    else rows.set(user_id, { user_id, chat_count: 0, voice_seconds });
+  }
+  return [...rows.values()];
+};
+
+export const loadStatisticsRows = (guildId: string, period: StatisticsPeriod, now: number): StatisticsRow[] => {
+  const bucket = bucketAt(now, period);
+  const chats = all<ChatCountRow>(
+    "SELECT user_id, chat_count FROM chat_stats WHERE guild_id = ? AND bucket_type = ? AND bucket_key = ? AND chat_count > 0",
+    guildId, period, bucket,
+  );
+  const voices = period === "all"
+    ? all<VoiceSecondsRow>("SELECT user_id, voice_total AS voice_seconds FROM users WHERE guild_id = ? AND voice_total > 0", guildId)
+    : all<VoiceSecondsRow>(
+      "SELECT user_id, voice_seconds FROM activity WHERE guild_id = ? AND bucket_type = ? AND bucket_key = ? AND voice_seconds > 0",
+      guildId, period, bucket,
+    );
+  return mergeStatisticsRows(chats, voices);
+};
+
 export const handleStatisticsCommand = async (interaction: ChatInputCommandInteraction) => {
   if (!interaction.inCachedGuild()) {
     await interaction.reply({ content: "이 명령어는 디스코드 서버에서만 사용할 수 있어요.", ephemeral: true });
@@ -118,15 +147,7 @@ export const handleStatisticsCommand = async (interaction: ChatInputCommandInter
     ? requestedPeriod as StatisticsPeriod
     : "all";
   const now = Date.now();
-  const rows = period === "all"
-    ? all<ActivityRow>(
-      "SELECT user_id, chat_total AS chat_count, voice_total AS voice_seconds FROM users WHERE guild_id = ? AND (chat_total > 0 OR voice_total > 0)",
-      guild.id,
-    )
-    : all<ActivityRow>(
-      "SELECT user_id, chat_count, voice_seconds FROM activity WHERE guild_id = ? AND bucket_type = ? AND bucket_key = ? AND (chat_count > 0 OR voice_seconds > 0)",
-      guild.id, period, bucketAt(now, period),
-    );
+  const rows = loadStatisticsRows(guild.id, period, now);
   if (!rows.length) return interaction.reply({ content: `${statisticsPeriodLabels[period]} 통계 기록이 없습니다.` });
 
   await interaction.deferReply();
@@ -140,7 +161,7 @@ export const handleStatisticsCommand = async (interaction: ChatInputCommandInter
     });
   }));
 
-  const ranked = (score: (row: ActivityRow) => number) => [...rows]
+  const ranked = (score: (row: StatisticsRow) => number) => [...rows]
     .sort((a, b) => score(b) - score(a) || a.user_id.localeCompare(b.user_id))
     .slice(0, 7);
   const totalChat = rows.reduce((sum, row) => sum + row.chat_count, 0);

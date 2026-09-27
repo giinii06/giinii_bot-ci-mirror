@@ -1,9 +1,10 @@
 import { AttachmentBuilder, type ChatInputCommandInteraction, type Client, type Guild, type Message, type User } from "discord.js";
+import { ensureChatStatsMigrated, ensureGuildChatStats, markChatStatsCurrent, recordChatCounts } from "./activity.js";
 import { config, MAX_HISTORY_MESSAGE_LIMIT } from "./config.js";
 import { createNoticeEmbed, createProgressEmbed, createResultEmbed } from "./embeds.js";
 import { askGemini, buildDebugPromptText } from "./gemini.js";
 import { cleanMessage, collectDiscordHistoryInBatches, collectHistory, type HistoryMessage } from "./history.js";
-import { insertCommandLog, upsertMessages } from "./storage.js";
+import { fetchStoredChannelRanges, insertCommandLog, upsertMessages } from "./storage.js";
 import { splitForEmbeds } from "./text.js";
 
 export const analysisCommandNames = new Set(["question", "mbti", "결투", "계급", "싸이코지수", "별명", "흑역사", "요약", "캐릭터"]);
@@ -11,7 +12,6 @@ const runningGuilds = new Set<string>();
 const cooldowns = new Map<string, number>();
 const backfillStatuses = new Map<string, BackfillStatus>();
 const debugGuilds = new Set<string>();
-const INITIAL_BACKFILL_LIMIT = MAX_HISTORY_MESSAGE_LIMIT;
 const INITIAL_BACKFILL_BATCH_SIZE = 100;
 
 type BackfillStatus = { state: "running" | "ready" | "error"; messageCount: number; startedAt: number; completedAt?: number; error?: string };
@@ -135,7 +135,7 @@ export const handleAnalysisCommand = async (interaction: ChatInputCommandInterac
     if (!backfillStatus) void ensureBackfillStarted(interaction.guild);
     const description = backfillStatus?.state === "error"
       ? `초기 채팅 기록 백필 중 오류가 났어요. 봇 로그를 확인해 주세요.\n\`${backfillStatus.error?.slice(0, 800) ?? "알 수 없는 오류"}\``
-      : `초기 채팅 기록 ${INITIAL_BACKFILL_LIMIT}개를 저장하는 중입니다. 백필이 끝난 뒤 다시 시도해 주세요.`;
+      : "서버의 전체 채팅 기록을 저장하는 중입니다. 백필이 끝난 뒤 다시 시도해 주세요.";
     await interaction.reply({ embeds: [createNoticeEmbed("아직 준비 중이에요", description)], ephemeral: true });
     return;
   }
@@ -238,10 +238,13 @@ export const persistLiveMessage = async (message: Message) => {
     channelName: "name" in message.channel && typeof message.channel.name === "string" ? message.channel.name : message.channelId,
     authorId: message.author.id, authorName: message.member?.displayName || message.author.displayName || message.author.username,
     authorIsBot: message.author.bot, content, createdTimestamp: message.createdTimestamp };
-  try { upsertMessages([historyMessage]); } catch (error) { console.error("Failed to persist live message", error); }
+  try {
+    recordChatCounts(message.guildId, upsertMessages([historyMessage]));
+  } catch (error) { console.error("Failed to persist live message", error); }
 };
 
 export const startInitialBackfill = async (client: Client) => {
+  ensureChatStatsMigrated();
   const guilds = config.guildId ? [await client.guilds.fetch(config.guildId)] : await Promise.all([...client.guilds.cache.values()].map((guild) => guild.fetch()));
   await Promise.all(guilds.map((guild) => backfillGuild(guild)));
 };
@@ -249,15 +252,21 @@ export const startInitialBackfill = async (client: Client) => {
 const backfillGuild = async (guild: Guild) => {
   const startedAt = Date.now();
   backfillStatuses.set(guild.id, { state: "running", messageCount: 0, startedAt });
-  console.log(`Backfilling ${guild.name} (${guild.id}) with ${INITIAL_BACKFILL_LIMIT} messages in ${INITIAL_BACKFILL_BATCH_SIZE}-message batches`);
   try {
-    const history = await collectDiscordHistoryInBatches(guild, INITIAL_BACKFILL_LIMIT, INITIAL_BACKFILL_BATCH_SIZE, async (messages, totalCollected) => {
-      upsertMessages(messages);
+    ensureGuildChatStats(guild.id);
+    const storedRanges = fetchStoredChannelRanges(guild.id);
+    console.log(`Backfilling ${guild.name} (${guild.id}): every readable message, ${storedRanges.size} channel(s) already saved`);
+    let saved = 0;
+    const history = await collectDiscordHistoryInBatches(guild, { batchSize: INITIAL_BACKFILL_BATCH_SIZE, storedRanges }, async (messages, totalCollected) => {
+      const inserted = upsertMessages(messages);
+      recordChatCounts(guild.id, inserted);
+      saved += inserted.length;
       backfillStatuses.set(guild.id, { state: "running", messageCount: totalCollected, startedAt });
-      console.log(`Backfill progress for ${guild.name}: ${totalCollected}/${INITIAL_BACKFILL_LIMIT}`);
+      console.log(`Backfill progress for ${guild.name}: ${totalCollected} fetched, ${saved} newly saved`);
     });
+    markChatStatsCurrent(guild.id);
     backfillStatuses.set(guild.id, { state: "ready", messageCount: history.messageCount, startedAt, completedAt: Date.now() });
-    console.log(`Backfill ready for ${guild.name}: ${history.messageCount} messages`);
+    console.log(`Backfill ready for ${guild.name}: ${history.messageCount} fetched, ${saved} newly saved, ${history.scannedChannelCount} channel(s)`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     backfillStatuses.set(guild.id, { state: "error", messageCount: 0, startedAt, completedAt: Date.now(), error: message });

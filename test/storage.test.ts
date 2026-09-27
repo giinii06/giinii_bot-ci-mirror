@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { ChannelType, type Guild } from "discord.js";
+import type { HistoryMessage } from "../src/history.js";
 
 process.env.DISCORD_BOT_TOKEN = "test-token";
 process.env.AI_PROVIDER = "opencode_zen";
@@ -30,6 +32,9 @@ process.env.DATABASE_PATH = databasePath;
 const storage = await import("../src/storage.js");
 const { askGemini } = await import("../src/gemini.js");
 const { isDefenseSuccess } = await import("../src/roulette.js");
+const { ensureGuildChatStats, recordChatCounts } = await import("../src/activity.js");
+const { collectDiscordHistoryInBatches } = await import("../src/history.js");
+const { loadStatisticsRows, mergeStatisticsRows } = await import("../src/voice-affinity-command.js");
 
 test("migrates and stores AI questions in command logs", () => {
   storage.initDatabase();
@@ -118,6 +123,197 @@ test("uses provider and model overrides for concurrent playground requests", asy
   expect(requests).toHaveLength(2);
   expect(requests.some((request) => request.url.includes("opencode.ai") && request.model === "mimo-v2.5-free")).toBe(true);
   expect(requests.some((request) => request.url.includes("integrate.api.nvidia.com") && request.model === "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")).toBe(true);
+});
+
+const BACKFILL_GUILD = "backfill-guild";
+const BASE_TIME = Date.UTC(2026, 0, 15, 12, 0, 0);
+
+let messageSeq = 0;
+const nextFakeMessage = (authorId: string, bot = false) => {
+  messageSeq += 1;
+  return {
+    id: String(1_000_000_000_000_000_000n + BigInt(messageSeq)),
+    authorId,
+    bot,
+    content: `메시지 ${messageSeq}`,
+    createdAt: BASE_TIME + messageSeq * 60_000
+  };
+};
+
+type FakeMessage = ReturnType<typeof nextFakeMessage>;
+type ChannelSpec = { id: string; name: string; messages: FakeMessage[] };
+
+const HISTORY_CHANNELS: ChannelSpec[] = (() => {
+  const authors = ["u1", "u2", "u3", "u4", "u5", "u6"];
+  const build = (id: string, name: string, count: number): ChannelSpec => {
+    const messages: FakeMessage[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const bot = index % 10 === 0;
+      messages.push(nextFakeMessage(bot ? "bot" : authors[index % authors.length] ?? "u1", bot));
+    }
+    return { id, name, messages };
+  };
+  return [build("c1", "하나", 250), build("c2", "둘", 180), build("c3", "셋", 97)];
+})();
+
+const HISTORY_TOTAL = HISTORY_CHANNELS.reduce((sum, channel) => sum + channel.messages.length, 0);
+const HISTORY_BOT_MESSAGES = HISTORY_CHANNELS.reduce(
+  (sum, channel) => sum + channel.messages.filter((message) => message.bot).length, 0);
+
+class FakeCollection<T> extends Map<string, T> {
+  last(): T | undefined {
+    let oldest: T | undefined;
+    for (const value of this.values()) oldest = value;
+    return oldest;
+  }
+}
+
+const toDiscordMessage = (message: FakeMessage) => ({
+  id: message.id,
+  author: { id: message.authorId, bot: message.bot, displayName: `user-${message.authorId}`, username: `user-${message.authorId}` },
+  member: { displayName: `user-${message.authorId}` },
+  createdTimestamp: message.createdAt,
+  cleanContent: message.content,
+  attachments: { size: 0, values: () => [] },
+  stickers: { size: 0, values: () => [] }
+});
+
+/** 디스코드가 실제로 하는 것과 같은 커서 규칙(최신순, before는 exclusive, 100개)으로 페이징한다. */
+const createFakeGuild = (specs: ChannelSpec[], calls: { count: number }) => {
+  const cache = new Map<string, unknown>();
+  const guild = {
+    id: BACKFILL_GUILD,
+    name: "백필 서버",
+    roles: { everyone: {} },
+    channels: { fetch: async () => cache, cache }
+  } as unknown as Guild;
+
+  for (const spec of specs) {
+    const ordered = [...spec.messages].sort((left, right) => (left.id < right.id ? -1 : 1));
+    cache.set(spec.id, {
+      id: spec.id,
+      guild,
+      name: spec.name,
+      type: ChannelType.GuildText,
+      position: 0,
+      permissionsFor: () => ({ has: () => true }),
+      messages: {
+        fetch: async ({ limit, before }: { limit: number; before?: string }) => {
+          calls.count += 1;
+          const older = before ? ordered.filter((message) => message.id < before) : ordered;
+          const page = older.slice(Math.max(0, older.length - limit));
+          return new FakeCollection(page.reverse().map((message) => [message.id, toDiscordMessage(message)]));
+        }
+      }
+    });
+  }
+  return guild;
+};
+
+const historyMessage = (guildId: string, authorId: string, bot = false): HistoryMessage => {
+  const message = nextFakeMessage(authorId, bot);
+  return {
+    messageId: message.id, guildId, channelId: "c1", channelName: "하나",
+    authorId, authorName: `user-${authorId}`, authorIsBot: bot, content: message.content,
+    createdTimestamp: message.createdAt
+  };
+};
+
+const drainGuild = async (guild: Guild, guildId: string) => {
+  let inserted = 0;
+  const history = await collectDiscordHistoryInBatches(guild, {
+    batchSize: 100,
+    storedRanges: storage.fetchStoredChannelRanges(guildId)
+  }, async (messages) => {
+    const fresh = storage.upsertMessages(messages);
+    recordChatCounts(guildId, fresh);
+    inserted += fresh.length;
+  });
+  return { ...history, inserted };
+};
+
+const storedCount = (guildId: string) =>
+  storage.sql<{ total: number }>("SELECT COUNT(*) AS total FROM discord_messages WHERE guild_id = ?", guildId)?.total ?? 0;
+
+const chatTotal = (guildId: string) =>
+  storage.sql<{ total: number }>(
+    "SELECT COALESCE(SUM(chat_count), 0) AS total FROM chat_stats WHERE guild_id = ? AND bucket_type = 'all'", guildId
+  )?.total ?? 0;
+
+test("stores every readable message of every channel when a guild is backfilled", async () => {
+  storage.initDatabase();
+  const calls = { count: 0 };
+  const guild = createFakeGuild(HISTORY_CHANNELS, calls);
+
+  const history = await drainGuild(guild, BACKFILL_GUILD);
+
+  expect(history.inserted).toBe(HISTORY_TOTAL);
+  expect(history.failedChannels).toBe(0);
+  expect(history.scannedChannelCount).toBe(3);
+  expect(storedCount(BACKFILL_GUILD)).toBe(HISTORY_TOTAL);
+  expect(chatTotal(BACKFILL_GUILD)).toBe(HISTORY_TOTAL - HISTORY_BOT_MESSAGES);
+});
+
+test("skips the already stored range when the same guild is backfilled again", async () => {
+  storage.initDatabase();
+  const calls = { count: 0 };
+  const guild = createFakeGuild(HISTORY_CHANNELS, calls);
+  await drainGuild(guild, BACKFILL_GUILD);
+  calls.count = 0;
+
+  const history = await drainGuild(guild, BACKFILL_GUILD);
+
+  expect(history.inserted).toBe(0);
+  expect(storedCount(BACKFILL_GUILD)).toBe(HISTORY_TOTAL);
+  expect(chatTotal(BACKFILL_GUILD)).toBe(HISTORY_TOTAL - HISTORY_BOT_MESSAGES);
+  expect(calls.count).toBe(6);
+});
+
+test("counts a live message once when the same message is delivered twice", () => {
+  storage.initDatabase();
+  const message = historyMessage("live-guild", "l9");
+
+  expect(recordChatCounts("live-guild", storage.upsertMessages([message]))).toBe(4);
+  expect(recordChatCounts("live-guild", storage.upsertMessages([message]))).toBe(0);
+  expect(chatTotal("live-guild")).toBe(1);
+});
+
+test("serves statistics chat counts from the whole database while live counters stay empty", () => {
+  storage.initDatabase();
+  const guildId = "stats-guild";
+  const authors = ["s1", "s2", "s3", "s4", "s5"];
+  for (let start = 0; start < 12_000; start += 500) {
+    const batch = Array.from({ length: 500 }, (_, offset) => historyMessage(guildId, authors[(start + offset) % authors.length] ?? "s1"));
+    recordChatCounts(guildId, storage.upsertMessages(batch));
+  }
+
+  const rows = loadStatisticsRows(guildId, "all", BASE_TIME + 86_400_000);
+
+  expect(rows.reduce((sum, row) => sum + row.chat_count, 0)).toBe(12_000);
+  expect(storage.sql<{ total: number }>(
+    "SELECT COALESCE(SUM(chat_total), 0) AS total FROM users WHERE guild_id = ?", guildId)?.total).toBe(0);
+});
+
+test("rebuilds chat counts once for a guild whose history predates the precomputed table", () => {
+  storage.initDatabase();
+  const guildId = "legacy-guild";
+  const stored = Array.from({ length: 300 }, (_, index) =>
+    historyMessage(guildId, index % 3 === 0 ? "bot" : `l${index % 4}`, index % 3 === 0));
+  storage.upsertMessages(stored);
+
+  expect(ensureGuildChatStats(guildId)).toBeGreaterThan(0);
+  expect(chatTotal(guildId)).toBe(200);
+  expect(ensureGuildChatStats(guildId)).toBe(0);
+});
+
+test("keeps chat-only and voice-only users in the same statistics ranking", () => {
+  expect(mergeStatisticsRows(
+    [{ user_id: "a", chat_count: 5 }],
+    [{ user_id: "a", voice_seconds: 60 }, { user_id: "b", voice_seconds: 30 }]
+  )).toEqual([
+    { user_id: "a", chat_count: 5, voice_seconds: 60 },
+    { user_id: "b", chat_count: 0, voice_seconds: 30 }
+  ]);
 });
 
 afterAll(() => {

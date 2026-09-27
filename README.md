@@ -37,8 +37,8 @@ Bun + TypeScript로만 작성했고, 외부 서버 없이 `bun:sqlite` 하나와
 
 | 영역 | 내용 |
 | --- | --- |
-| **기록** | 디스코드 메시지를 실시간 저장 + 최초 기동 시 최근 10,000개 백필. SQLite `discord_messages` |
-| **활동 집계** | 채팅 수·음성 체류 시간을 일/주/월/전체 버킷으로 누적. 기준시는 KST(UTC+9) |
+| **기록** | 디스코드 메시지를 실시간 저장 + 기동 시 전체 기록 백필(이미 저장된 구간은 건너뜀). SQLite `discord_messages` |
+| **활동 집계** | 채팅 수는 전체 DB에서 미리 계산해 `chat_stats`에 쌓고, 음성 체류 시간은 일/주/월/전체 버킷으로 누적. 기준시는 KST(UTC+9) |
 | **AI 분석** | 9개 분석 명령어. 서버对话 기록을 컨텍스트로 LLM 호출. 실패 시 자동 폴백 |
 | **통계 카드** | `/친밀도` `/통화량` `/통계` → 너비 2400 PNG 카드를 서버 내 렌더링 |
 | **룰렛** | 관리자 대상 가위바위보. 방어권 역할, 65% 판정, 음성 재생 |
@@ -115,8 +115,9 @@ Logged in as GiiniiBot#1234
 Registered 16 slash commands in 서버이름
 Settings UI listening on http://0.0.0.0:3003
 Using gemini model: gemini-3.7-flash
-Backfilling 서버이름 (서버ID) with 10000 messages in 100-message batches
-Backfill ready for 서버이름: 10000 messages
+Backfilling 서버이름 (서버ID): every readable message, 0 channel(s) already saved
+Backfill progress for 서버이름: 4200 fetched, 4200 newly saved
+Backfill ready for 서버이름: 128400 fetched, 128400 newly saved, 214 channel(s)
 ```
 
 > `Backfill ready`가 뜰 때까지 AI 분석 명령은 "아직 준비 중이에요"로 거절됩니다. 서버 규모에 따라 수 분 걸릴 수 있습니다.
@@ -159,7 +160,7 @@ docker compose down -v  # 볼륨까지 삭제 (신중히)
 bun run dev
 ```
 
-`bun --watch`로 파일 변경 시 자동 재시작합니다. **주의**: 재시작할 때마다 활성 음성 세션이 초기화되고 백필이 다시 시작되므로, 개발 중에는 `/통화량` 통계가 0에서 다시 쌓입니다.
+`bun --watch`로 파일 변경 시 자동 재시작합니다. **주의**: 재시작할 때마다 활성 음성 세션이 초기화되고 백필이 다시 도는데, 이미 저장된 구간은 통째로 건너뛰므로 이미 받은 기록을 다시 받지 않습니다. 개발 중에는 `/통화량` 통계가 0에서 다시 쌓입니다.
 
 ---
 
@@ -170,8 +171,8 @@ bun run dev
 ```text
 Discord Gateway
      │
-     ├─ MessageCreate ──▶ recordMessageActivity ──▶ activity / users 테이블
-     │                  └▶ persistLiveMessage  ──▶ discord_messages 테이블
+     ├─ MessageCreate ──▶ persistLiveMessage  ──▶ discord_messages 테이블
+     │                  └▶ recordChatCounts   ──▶ chat_stats 테이블(사전 계산)
      │
      ├─ VoiceStateUpdate ─▶ handleVoiceStateUpdate ─▶ voice_sessions
      │                     (60초마다 startVoiceTracker가 시간 정산) ─▶ voice_presence_sessions
@@ -313,11 +314,11 @@ Discord는 슬래시 명령 변경 전파에 최대 1시간이 걸릴 수 있습
 
 **백필 게이트**
 
-첫 기동 시 최근 10,000개 메시지를 백필합니다(채널당 100개 단위 라운드로빈). 백필이 끝나기 전까지 모든 AI 명령은 "아직 준비 중이에요"로 거절됩니다.
+기동할 때마다 읽을 수 있는 모든 채널의 **전체 기록**을 백필합니다(채널당 100개 단위 라운드로빈). 상한은 없습니다. 채널별로 이미 저장된 구간(가장 최근 것부터 가장 오래된 것까지)을 먼저 계산해 두고, 그 구간 위의 새 메시지와 구간 아래의 누락된 과거만 읽습니다 — 저장된 구간 자체는 API를 한 번 더 쓰지 않고 건너뜁니다. 백필이 끝나기 전까지 모든 AI 명령은 "아직 준비 중이에요"로 거절됩니다.
 
 | 상태 | 메시지 |
 | --- | --- |
-| 진행 중 | `초기 채팅 기록 10000개를 저장하는 중입니다. 백필이 끝난 뒤 다시 시도해 주세요.` |
+| 진행 중 | `서버의 전체 채팅 기록을 저장하는 중입니다. 백필이 끝난 뒤 다시 시도해 주세요.` |
 | 실패 | `초기 채팅 기록 백필 중 오류가 났어요. 봇 로그를 확인해 주세요.` + 에러 메시지(최대 800자) |
 | 성공 | 분석 허용 |
 
@@ -842,10 +843,10 @@ data/
 | --- | --- | --- |
 | `guild_id` | TEXT | Discord 서버 ID |
 | `user_id` | TEXT | 유저 ID |
-| `chat_total` | INTEGER | 누적 채팅 수 (봇 메시지 제외) |
+| `chat_total` | INTEGER | 옛 실시간 채팅 카운터. 더 이상 채우지 않으며 채팅 수는 `chat_stats`가 담당 |
 | `voice_total` | REAL | 누적 통화량(초) |
 
-`/통계`의 `기간: 전체`는 이 테이블을 읽고, `/통화량`도 이 테이블의 `voice_total`을 씁니다.
+`/통계`의 `기간: 전체`와 `/통화량`은 이 테이블의 `voice_total`을 읽습니다.
 
 </details>
 
@@ -858,10 +859,38 @@ data/
 | `user_id` | TEXT | 유저 ID |
 | `bucket_type` | TEXT | `day` / `week` / `month` / `all` |
 | `bucket_key` | TEXT | `2026-09-27` / `2026-W40` / `2026-09` / `all` (KST 기준) |
-| `chat_count` | INTEGER | 해당 기간 채팅 수 |
+| `chat_count` | INTEGER | 옛 실시간 채팅 카운터. 더 이상 채우지 않으며 채팅 수는 `chat_stats`가 담당 |
 | `voice_seconds` | REAL | 해당 기간 통화량(초) |
 
-`/통계`의 오늘·이번 주·이번 달은 이 테이블을 읽습니다.
+`/통계`의 오늘·이번 주·이번 달은 이 테이블의 `voice_seconds`를 읽습니다.
+
+</details>
+
+<details>
+<summary><code>chat_stats</code> — 전체 DB 기준 사전 계산 채팅 수 (PRIMARY KEY: guild_id + user_id + bucket_type + bucket_key)</summary>
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| `guild_id` | TEXT | 서버 ID |
+| `user_id` | TEXT | 유저 ID |
+| `bucket_type` | TEXT | `day` / `week` / `month` / `all` |
+| `bucket_key` | TEXT | `2026-09-27` / `2026-W40` / `2026-09` / `all` (KST 기준) |
+| `chat_count` | INTEGER | 해당 기간 채팅 수 (봇 메시지 제외) |
+
+`/통계`의 채팅량은 전부 이 테이블에서 읽습니다. 값은 `discord_messages` 전체를 근거로 하며, 새로 적재된 메시지만 `recordChatCounts`가 더하고 이미 들어 있던 메시지는 다시 세지 않습니다. 과거에 쌓인 기록은 `ensureChatStatsMigrated`가 한 번에 다시 계산합니다.
+
+</details>
+
+<details>
+<summary><code>chat_stats_state</code> — 채팅 수를 통째로 계산했는지 기록 (PRIMARY KEY: guild_id)</summary>
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| `guild_id` | TEXT | 서버 ID |
+| `built_messages` | INTEGER | 마지막으로 계산했을 때 집계한 메시지 수 |
+| `built_at` | INTEGER | 마지막 계산 시각(ms) |
+
+이 행이 있는 서버는 다시 계산하지 않습니다. 첫 라이브 메시지가 이 표를 먼저 만들면 전체 과거 기록이 영영 계산되지 않으므로, **백필이 끝난 뒤에만** 기록합니다.
 
 </details>
 
@@ -972,6 +1001,8 @@ data/
 4. **구 레거시 테이블 `roulette_target_roles`가 있으면** 서버별로 `MIN(role_id)` 하나를 대표값으로 삼아 `settings.target_role_id`에 이관합니다. **이때 기존에 값이 있는 `settings` 행은 덮어쓰지 않습니다** (`WHERE settings.target_role_id IS NULL`)
 
 > 이 이관 로직은 테스트로 고정되어 있습니다 (`test/storage.test.ts`의 "does not overwrite a configured target role during migration"). 레거시 테이블은 지우지 않고 남겨둡니다.
+
+`initDatabase()` 다음으로, 기동 시 `ensureChatStatsMigrated()`가 `chat_stats_state`에 행이 없는 서버만 찾아 `discord_messages` 전체로 채팅 수를 다시 계산합니다. 16만 건 규모의 DB에서도 4개 서버 전체가 335ms 걸립니다. 계산이 끝나면 상태 행을 남기므로 이후 기동은 몇 ms 안에 끝나고, 그 뒤로는 새로 들어온 메시지만 더합니다.
 
 ---
 
@@ -1231,11 +1262,11 @@ bun -e 'const {Database}=require("bun:sqlite");const db=new Database("./data/bot
 백필이 끝나지 않은 것입니다. 봇 로그에서 진행 상황을 봅니다.
 
 ```text
-Backfilling 서버이름 (ID) with 10000 messages in 100-message batches
-Backfill progress for 서버이름: 4200/10000
+Backfilling 서버이름 (ID): every readable message, 0 channel(s) already saved
+Backfill progress for 서버이름: 4200 fetched, 4200 newly saved
 ```
 
-느린 사유: `permissionsFor`에서 `ViewChannel`이 없는 채널은 **건너뛰지만**, API 요청은 채널마다 100개씩 순차 발생합니다. 봇이 100개 이상 채널에 있으면 수십 분 걸릴 수 있습니다. 멈췄다면 `Backfill failed for ...` 로그의 원인을 확인하세요.
+느린 사유: `permissionsFor`에서 `ViewChannel`이 없는 채널은 **건너뛰지만**, API 요청은 채널마다 100개씩 순차 발생합니다. 전체 기록을 받으므로 채널이 많고 과거가 길수록 오래 걸립니다(수십 분~수 시간). 이미 저장된 구간은 건너뛰므로 재시작해도 처음부터 다시 받지 않습니다. 멈췄다면 `Backfill failed for ...` 로그의 원인을 확인하세요.
 
 ### "저장된 채팅 기록이 없어요"
 

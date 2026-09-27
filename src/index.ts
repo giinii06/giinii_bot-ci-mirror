@@ -3,7 +3,7 @@ import {
   type ButtonInteraction, type ChatInputCommandInteraction
 } from "discord.js";
 import { analysisCommandNames, ensureBackfillStarted, handleAnalysisCommand, persistLiveMessage, startInitialBackfill } from "./analysis.js";
-import { recordMessageActivity, initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
+import { initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
 import { commands, syncCommands } from "./commands.js";
 import { config } from "./config.js";
 import { handleRouletteCommand } from "./roulette.js";
@@ -63,7 +63,6 @@ client.on(Events.MessageCreate, async (message) => {
     }
     return;
   }
-  recordMessageActivity(message);
   await persistLiveMessage(message);
 });
 
