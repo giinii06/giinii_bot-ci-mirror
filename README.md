@@ -1158,20 +1158,43 @@ bun run dev       # 파일 변경 시 자동 재시작
 
 ## 백업과 복구
 
-SQLite가 **WAL 모드**이므로 `bot.sqlite` 파일 하나만 복사하면 아직 체크포인트되지 않은 데이터가 유실됩니다.
+데이터베이스는 저장소에 **30MB 조각으로 나누어** `data/seed/`에 커밋합니다. `bot.sqlite`가 30MB를 넘으면 조각이 여러 개 생기고, `docker compose up`이 첫 기동 때 자동으로 이어붙여 `data/bot.sqlite`를 만듭니다.
 
-```sh
-# 1. 봇 중지
-docker compose stop bot
-
-# 2. 디렉터리 전체 복사
-cp -a data "data-backup-$(date +%Y%m%d-%H%M%S)"
-
-# 3. 재기동
-docker compose start bot
+```
+data/
+├── seed/                     # 커밋 대상
+│   ├── manifest.json         # 조각 목록, 총 크기, sha256
+│   ├── bot.sqlite.part-001   # 30MB
+│   └── bot.sqlite.part-002   # 나머지
+└── bot.sqlite                # 실행 중 DB (커밋 대상 아님, seed에서 자동 복원)
 ```
 
-로컬 실행이라면 `Ctrl+C`로 종료 후 동일하게 `data/`를 통째로 복사하세요.
+**조각 갱신**
+
+```sh
+docker compose down
+# 실행 중인 DB를 정리한 뒤
+bun run scripts/split-db.ts data/seed data/bot.sqlite
+```
+
+**수동 복원**
+
+```sh
+bun run scripts/restore-db.ts data/seed data/bot.sqlite          # 있으면 건너뜀
+bun run scripts/restore-db.ts data/seed data/bot.sqlite --force  # 강제 재생성
+```
+
+복원 시 `manifest.json`의 총 크기와 sha256을 검증하므로 조각이 깨져 있으면 실패합니다.
+
+**백업**
+
+SQLite가 **WAL 모드**이므로 실행 중인 파일은 `bot.sqlite`만 복사하면 안 됩니다. 봇을 중지하고 `data/` 디렉터리 전체를 통째로 복사하세요.
+
+```sh
+docker compose stop bot
+cp -a data "data-backup-$(date +%Y%m%d-%H%M%S)"
+docker compose start bot
+```
 
 **복구**: 봇을 중지한 상태에서 `data/` 디렉터리 내용을 교체한 뒤 재기동합니다. 스키마는 자동 생성·자동 마이그레이션됩니다.
 
