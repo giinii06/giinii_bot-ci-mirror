@@ -45,6 +45,9 @@ export const initDatabase = () => {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS user_profiles_identity_idx ON user_profiles (guild_id, user_id, identity);
     CREATE INDEX IF NOT EXISTS user_profiles_history_idx ON user_profiles (guild_id, user_id, observed_at);
+    CREATE TABLE IF NOT EXISTS enrichment_state (
+      guild_id TEXT PRIMARY KEY, enriched_at INTEGER NOT NULL, message_count INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS message_details (
       message_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, author_id TEXT NOT NULL,
       message_type INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0,

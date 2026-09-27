@@ -37,7 +37,7 @@ const { askGemini } = await import("../src/gemini.js");
 const { isDefenseSuccess } = await import("../src/roulette.js");
 const { ensureGuildChatStats, recordChatCounts } = await import("../src/activity.js");
 const { collectDiscordHistoryInBatches } = await import("../src/history.js");
-const { recordMessageRecords, seedProfileHistoryFromMessages } = await import("../src/records.js");
+const { recordMessageRecords, seedProfileHistoryFromMessages, isGuildEnriched, markGuildEnriched } = await import("../src/records.js");
 const { drainPendingMedia, normalizeStoredMediaPaths, resolveMediaPath } = await import("../src/media.js");
 const { loadStatisticsRows, mergeStatisticsRows } = await import("../src/voice-affinity-command.js");
 
@@ -494,6 +494,20 @@ test("rewrites environment absolute media paths to relative ones", () => {
   expect(storage.sql<{ local_path: string }>("SELECT local_path FROM media_files WHERE media_id = ?", mediaId)?.local_path)
     .toBe("avatar/relative-only.png");
   expect(normalizeStoredMediaPaths()).toBe(0);
+});
+
+test("marks a guild as enriched only once so restarts skip the full re-walk", () => {
+  storage.initDatabase();
+  const guildId = "enrich-guild";
+  expect(isGuildEnriched(guildId)).toBe(false);
+
+  markGuildEnriched(guildId, 42);
+
+  expect(isGuildEnriched(guildId)).toBe(true);
+  expect(storage.sql<{ message_count: number }>("SELECT message_count FROM enrichment_state WHERE guild_id = ?", guildId)?.message_count).toBe(42);
+  markGuildEnriched(guildId, 99);
+  expect(storage.sql<{ message_count: number }>("SELECT message_count FROM enrichment_state WHERE guild_id = ?", guildId)?.message_count).toBe(99);
+  expect(countRows("enrichment_state", "guild_id = ?", guildId)).toBe(1);
 });
 
 test("keeps chat-only and voice-only users in the same statistics ranking", () => {  expect(mergeStatisticsRows(

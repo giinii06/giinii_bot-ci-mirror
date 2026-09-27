@@ -3,7 +3,7 @@ import { ensureChatStatsMigrated, ensureGuildChatStats, markChatStatsCurrent, re
 import { config, MAX_HISTORY_MESSAGE_LIMIT } from "./config.js";
 import { createNoticeEmbed, createProgressEmbed, createResultEmbed } from "./embeds.js";
 import { askGemini, buildDebugPromptText } from "./gemini.js";
-import { recordMessageRecords } from "./records.js";
+import { recordMessageRecords, isGuildEnriched, markGuildEnriched } from "./records.js";
 import { cleanMessage, captureDetail, captureMedia, captureProfile, collectDiscordHistoryInBatches, collectHistory, safeCapture, type HistoryMessage, type MediaRecord } from "./history.js";
 import { fetchStoredChannelRanges, insertCommandLog, upsertMessages } from "./storage.js";
 import { splitForEmbeds } from "./text.js";
@@ -284,19 +284,29 @@ const backfillGuild = async (guild: Guild) => {
 
 /**
  * 이미 저장된 구간은 백필이 건너뛰므로, 예전에 받은 메시지에는 부가 정보가 없다.
- * 저장 범위를 무시하고 전부 다시 훑어 상세/미디어/프로필 이력을 채운다. 한 번만 돌면 된다.
+ * 저장 범위를 무시하고 전부 다시 훑어 상세/미디어/프로필 이력을 채운다. 완료하면 표시를 남긴다.
  */
 const enrichGuildHistory = async (guild: Guild) => {
+  if (isGuildEnriched(guild.id)) {
+    console.log(`Enrichment for ${guild.name} (${guild.id}): already complete, skipping`);
+    return;
+  }
   const startedAt = Date.now();
   let details = 0;
   let media = 0;
   let profiles = 0;
-  const history = await collectDiscordHistoryInBatches(guild, { batchSize: INITIAL_BACKFILL_BATCH_SIZE }, async (messages) => {
+  let batches = 0;
+  const history = await collectDiscordHistoryInBatches(guild, { batchSize: INITIAL_BACKFILL_BATCH_SIZE }, async (messages, totalCollected) => {
     const recorded = recordMessageRecords(guild.id, messages);
     details += recorded.details;
     media += recorded.media;
     profiles += recorded.profiles;
+    batches += 1;
+    if (batches % 100 === 0) {
+      console.log(`Enrichment progress for ${guild.name}: ${totalCollected} messages, ${details} details, ${media} media, ${profiles} profile rows`);
+    }
   });
+  markGuildEnriched(guild.id, history.messageCount);
   console.log(`Enrichment for ${guild.name} (${guild.id}): ${history.messageCount} messages revisited in ${Date.now() - startedAt}ms, ${details} details, ${media} media, ${profiles} profile rows`);
 };
 

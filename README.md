@@ -1086,6 +1086,19 @@ data/
 
 백필이 끝난 뒤에는 `enrichGuildHistory()`가 저장 범위를 무시하고 전체 기록을 한 번 더 훑습니다. 예전에 받은 메시지에는 첨부 정보가 아예 없었기 때문입니다. 이 패스는 `discord_messages`를 다시 쓰지 않고 상세/미디어/프로필만 채웁니다.
 
+`enrichGuildHistory()`는 100비치(10,000건)마다 진행 로그를 남기고, 끝나면 `enrichment_state`에 완료 표시를 남깁니다. **표시가 있는 서버는 다음 기동에 건너뜁니다.** 전량 재순회라 재시작마다 10만 건을 다시 긁지 않게 하기 위한 장치입니다. 중간에 중단되면 표시가 남지 않으므로 다음 기동에 이어서 돕니다.
+
+<details>
+<summary><code>enrichment_state</code> — 부가 정보 enrich 완료 표시 (PRIMARY KEY: guild_id)</summary>
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| `guild_id` | TEXT | 서버 ID |
+| `enriched_at` | INTEGER | enrich가 끝난 시각(ms) |
+| `message_count` | INTEGER | enrich가 확인한 메시지 수 |
+
+</details>
+
 `Discord는 과거 프로필을 API로 제공하지 않습니다.` 그래서 예전 프사는 복원할 수 없고, 서버 구성원을 일괄 조회해 **현재** 아바타·배너를 잡고(`sweepGuildProfiles`) 그 뒤로 바뀌는 것만 이어서 기록합니다.
 
 ### 잡지 않는 것
@@ -1215,7 +1228,7 @@ giinii_bot/
 │       └── BMDoHyeon-Regular.ttf   # 카드 렌더링 폰트
 ├── DESIGN.md                       # 통계 카드 디자인 시스템 (토큰 · 구조)
 ├── test/
-│   ├── storage.test.ts             # 마이그레이션, 영속성, 폴백, 백필, 기록·미디어 계약 (20개)
+│   ├── storage.test.ts             # 마이그레이션, 영속성, 폴백, 백필, 기록·미디어 계약 (21개)
 │   ├── voice-affinity.test.ts      # 친밀도 계산 + PNG 렌더링
 │   └── text.test.ts                # 임베드 분할
 ├── audio/
@@ -1248,7 +1261,7 @@ giinii_bot/
 ```sh
 bun install --frozen-lockfile
 bun run check     # tsc --noEmit — src, test 포함
-bun test          # bun:test 26개
+bun test          # bun:test 27개
 bun run dev       # 파일 변경 시 자동 재시작
 ```
 
@@ -1256,7 +1269,7 @@ bun run dev       # 파일 변경 시 자동 재시작
 
 `tsconfig.json`은 `strict: true`, `target: ESNext`, `module/moduleResolution: Preserve/bundler`, `skipLibCheck: true`, `types: ["bun-types"]`이며 **`src`와 `test`를 모두 포함**합니다. 테스트 파일의 타입 오류도 걸립니다.
 
-### 테스트 26개가 검증하는 것
+### 테스트 27개가 검증하는 것
 
 | 파일 | 테스트 | 검증 대상 |
 | --- | --- | --- |
@@ -1279,6 +1292,7 @@ bun run dev       # 파일 변경 시 자동 재시작
 | | `seeds nickname history from the already stored corpus` | 예전 메시지에서 **표시 이름별 최초 시각**으로 이력 소급 복원, 재실행 시 0 |
 | | `downloads media to disk and records its hash and byte length` | 실제 HTTP 다운로드로 **경로·sha256·크기**가 DB와 일치 |
 | | `rewrites environment absolute media paths to relative ones` | 예전에 환경 절대 경로로 저장된 값을 **상대 경로로 되돌림**(자가 치유) |
+| | `marks a guild as enriched only once so restarts skip the full re-walk` | enrich 완료 표시가 한 번만 남고 재기동에 유지됨 |
 | `voice-affinity.test.ts` | `voice affinity sums overlapping sessions` | 여러 구간의 **교집합 합산**과 순위 정렬, 다른 채널은 무시, 자기 자신 제외 |
 | | `normalizes equivalent user IDs` | 공백이 다른 동일 ID가 하나의 유저로 합쳐짐 |
 | | `renders a voice affinity PNG card` | 친밀도 모드 PNG 시그니처(`89504e47...`) 확인 |

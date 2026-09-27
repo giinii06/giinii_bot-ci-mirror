@@ -141,6 +141,18 @@ export const seedProfileHistoryFromMessages = () => {
 };
 
 /** 서버 구성원을 한 번에 읽어 현재 아바타/배너를 잡는다. Discord는 과거 프로필을 제공하지 않는다. */
+/**
+ * enrich는 저장 구간을 무시하고 전량 재순회하므로, 완료한 서버를 다시 돌리지 않도록 표시를 남긴다.
+ * 중간에 중단되면 표시가 없으므로 다음 기동에 다시 돕니다.
+ */
+export const isGuildEnriched = (guildId: string) =>
+  Boolean(sql("SELECT 1 FROM enrichment_state WHERE guild_id = ?", guildId));
+
+export const markGuildEnriched = (guildId: string, messageCount: number) =>
+  run(`INSERT INTO enrichment_state (guild_id, enriched_at, message_count) VALUES (?, ?, ?)
+    ON CONFLICT (guild_id) DO UPDATE SET enriched_at = excluded.enriched_at, message_count = excluded.message_count`,
+    guildId, Date.now(), messageCount);
+
 export const sweepGuildProfiles = async (guild: Guild) => {
   const authorIds = all<{ author_id: Snowflake }>(
     "SELECT DISTINCT author_id FROM discord_messages WHERE guild_id = ? LIMIT 5000", guild.id
