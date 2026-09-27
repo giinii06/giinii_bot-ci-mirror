@@ -184,6 +184,7 @@ export const config = {
   mediaRoot: process.env.MEDIA_PATH?.trim() || join(dirname(databasePath), "media"),
   mediaMaxBytes: toInt(process.env.MEDIA_MAX_BYTES, 50 * 1024 * 1024, 1024, 2_147_483_647),
   mediaConcurrency: toInt(process.env.MEDIA_CONCURRENCY, 4, 1, 16),
+  skipBackfill: toBool(process.env.SKIP_BACKFILL, false),
   cooldownSeconds: toInt(process.env.QUESTION_COOLDOWN_SECONDS, 20, 0, 3600),
   webHost: process.env.WEB_HOST?.trim() || "0.0.0.0",
   webPort: toInt(process.env.WEB_PORT, 3003, 1, 65535),

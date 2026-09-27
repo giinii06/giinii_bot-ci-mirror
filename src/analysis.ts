@@ -259,21 +259,25 @@ const backfillGuild = async (guild: Guild) => {
   const startedAt = Date.now();
   backfillStatuses.set(guild.id, { state: "running", messageCount: 0, startedAt });
   try {
-    ensureGuildChatStats(guild.id);
-    const storedRanges = fetchStoredChannelRanges(guild.id);
-    console.log(`Backfilling ${guild.name} (${guild.id}): every readable message, ${storedRanges.size} channel(s) already saved`);
-    let saved = 0;
-    const history = await collectDiscordHistoryInBatches(guild, { batchSize: INITIAL_BACKFILL_BATCH_SIZE, storedRanges }, async (messages, totalCollected) => {
-      const inserted = upsertMessages(messages);
-      recordChatCounts(guild.id, inserted);
-      recordMessageRecords(guild.id, inserted);
-      saved += inserted.length;
-      backfillStatuses.set(guild.id, { state: "running", messageCount: totalCollected, startedAt });
-      console.log(`Backfill progress for ${guild.name}: ${totalCollected} fetched, ${saved} newly saved`);
-    });
-    markChatStatsCurrent(guild.id);
-    backfillStatuses.set(guild.id, { state: "ready", messageCount: history.messageCount, startedAt, completedAt: Date.now() });
-    console.log(`Backfill ready for ${guild.name}: ${history.messageCount} fetched, ${saved} newly saved, ${history.scannedChannelCount} channel(s)`);
+    if (config.skipBackfill) {
+      console.log(`Skipping backfill for ${guild.name} (${guild.id}) because SKIP_BACKFILL is set`);
+    } else {
+      ensureGuildChatStats(guild.id);
+      const storedRanges = fetchStoredChannelRanges(guild.id);
+      console.log(`Backfilling ${guild.name} (${guild.id}): every readable message, ${storedRanges.size} channel(s) already saved`);
+      let saved = 0;
+      const history = await collectDiscordHistoryInBatches(guild, { batchSize: INITIAL_BACKFILL_BATCH_SIZE, storedRanges }, async (messages, totalCollected) => {
+        const inserted = upsertMessages(messages);
+        recordChatCounts(guild.id, inserted);
+        recordMessageRecords(guild.id, inserted);
+        saved += inserted.length;
+        backfillStatuses.set(guild.id, { state: "running", messageCount: totalCollected, startedAt });
+        console.log(`Backfill progress for ${guild.name}: ${totalCollected} fetched, ${saved} newly saved`);
+      });
+      markChatStatsCurrent(guild.id);
+      backfillStatuses.set(guild.id, { state: "ready", messageCount: history.messageCount, startedAt, completedAt: Date.now() });
+      console.log(`Backfill ready for ${guild.name}: ${history.messageCount} fetched, ${saved} newly saved, ${history.scannedChannelCount} channel(s)`);
+    }
     await enrichGuildHistory(guild).catch((error) => console.error(`Enrichment failed for ${guild.name}`, error));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

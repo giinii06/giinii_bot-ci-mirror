@@ -1186,6 +1186,7 @@ Bun은 `.env`를 자동으로 로드합니다. `src/config.ts`가 **모듈 평�
 | `MEDIA_PATH` | `./data/media` | 경로 | 미디어 바이트를 저장할 디렉터리. `data` 아래면 컨테이너와 호스트가 공유합니다 |
 | `MEDIA_MAX_BYTES` | `52428800` (50MB) | 1KB ~ 2GB | 이 크기를 넘는 파일은 `too_large`로 건너뜁니다 |
 | `MEDIA_CONCURRENCY` | `4` | 1 ~ 16 | 동시에 내려받는 미디어 개수 |
+| `SKIP_BACKFILL` | `false` | 불리언 | 메시지 백필만 건너뜁니다. enrich(상세·미디어)는 그대로 돕니다. 임시 우회용 |
 
 ### `.env` 덮어쓰기 규칙
 
@@ -1397,6 +1398,8 @@ Backfill progress for 서버이름: 4200 fetched, 4200 newly saved
 ```
 
 느린 사유: `permissionsFor`에서 `ViewChannel`이 없는 채널은 **건너뛰지만**, API 요청은 채널마다 100개씩 순차 발생합니다. 전체 기록을 받으므로 채널이 많고 과거가 길수록 오래 걸립니다(수십 분~수 시간). 이미 저장된 구간은 건너뛰므로 재시작해도 처음부터 다시 받지 않습니다. 멈췄다면 `Backfill failed for ...` 로그의 원인을 확인하세요.
+
+> **백필이 예상보다 오래 걸릴 때** `SKIP_BACKFILL=true`로 백필만 건너뛰고 enrich(상세·미디어 채우기)부터 돌릴 수 있습니다. enrich는 별도 완료 표시가 있어 재시작해도 반복되지 않습니다. 저장 데이터가 이미 완전한 경우 유용합니다.
 
 ### "저장된 채팅 기록이 없어요"
 
