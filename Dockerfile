@@ -6,6 +6,7 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 COPY src ./src
 COPY audio ./audio
+COPY scripts ./scripts
 
 VOLUME ["/app/data"]
-CMD ["bun", "run", "start"]
+CMD ["sh", "-c", "bun run scripts/restore-db.ts /app/data/seed /app/data/bot.sqlite && exec bun run start"]
