@@ -42,7 +42,7 @@ Bun + TypeScript로만 작성했고, 외부 서버 없이 `bun:sqlite` 하나와
 | **메시지 부가 정보** | 리액션·임베드·컴포넌트·답글·스레드·멘션 등 접근 가능한 전 항목 + 원본 JSON. `message_details` |
 | **미디어** | 첨부 사진·동영상·음성메시지·스티커·아바타를 바이트까지 내려받아 `data/media`에 저장. `media_files` |
 | **활동 집계** | 채팅 수는 전체 DB에서 미리 계산해 `chat_stats`에 쌓고, 음성 체류 시간은 일/주/월/전체 버킷으로 누적. 기준시는 KST(UTC+9) |
-| **AI 분석** | 9개 분석 명령어. 서버对话 기록을 컨텍스트로 LLM 호출. 실패 시 자동 폴백 |
+| **AI 분석** | 9개 분석 명령어. 서버 대화 기록을 컨텍스트로 LLM 호출. 실패 시 자동 폴백 |
 | **통계 카드** | `/친밀도` `/통화량` `/통계` → 너비 2400 PNG 카드를 서버 내 렌더링 |
 | **룰렛** | 관리자 대상 가위바위보. 방어권 역할, 65% 판정, 음성 재생 |
 | **웹 UI** | 브라우저에서 provider·모델·프롬프트·기록 범위 변경. 두 모델 동시 비교 Playground |
@@ -175,7 +175,10 @@ bun run dev
 Discord Gateway
      │
      ├─ MessageCreate ──▶ persistLiveMessage  ──▶ discord_messages 테이블
-     │                  └▶ recordChatCounts   ──▶ chat_stats 테이블(사전 계산)
+     │                  ├▶ recordChatCounts   ──▶ chat_stats 테이블(사전 계산)
+     │                  └▶ recordMessageRecords ─▶ user_profiles / message_details / media_files
+     │
+     ├─ (5초마다) Media worker ─▶ pending 미디어를 내려받아 data/media에 저장
      │
      ├─ VoiceStateUpdate ─▶ handleVoiceStateUpdate ─▶ voice_sessions
      │                     (60초마다 startVoiceTracker가 시간 정산) ─▶ voice_presence_sessions
@@ -209,9 +212,12 @@ index.ts ──┬── config.ts ──── models.ts
            │                 ├── embeds.ts
            │                 ├── gemini.ts ─── config.ts
            │                 ├── history.ts ── config.ts, storage.ts
+           │                 ├── records.ts ─── history.ts, storage.ts
            │                 ├── storage.ts
            │                 └── text.ts
            ├── activity.ts ──── storage.ts
+           ├── media.ts ─────── config.ts, storage.ts
+           ├── records.ts ───── history.ts, storage.ts
            ├── roulette.ts ────┬── config.ts
            │                   └── storage.ts
            ├── voice-affinity-command.ts ─┬── activity.ts (bucketAt)
@@ -228,9 +234,9 @@ index.ts ──┬── config.ts ──── models.ts
 
 ### 설계 메모
 
-- **단일 프로세스, 인메모리 상태.** 실행 중 분석 목록(`runningGuilds`), 쿨다운(`cooldowns`), 백필 상태(`backfillStatuses`), 룰렛 실행(`rouletteRuns`), PNG 페이지 캐시(`voiceAffinityPages`)는 전부 `Map`/`Set`입니다. 재시작하면 사라집니다. 영속화해야 하는 상태는 전부 SQLite에 있습니다.
+- **단일 프로세스, 인메모리 상태.** 실행 중 분석 목록(`runningGuilds`), 쿨다운(`cooldowns`), 백필 상태(`backfillStatuses`), 룰렛 실행(`rouletteRuns`), PNG 페이지 캐시(`voiceAffinityPages`)는 전부 `Map`/`Set`입니다. 재시작하면 사라집니다. 영속화해야 하는 상태는 전부 SQLite에 있습니다. 미디어 대기열도 예외가 아니라 SQLite의 `status = 'pending'`이므로, 재시작해도 이어받습니다.
 - **쓰기 경로가 없다.** 설정 화면은 `POST /api/settings` → `updateRuntimeSettings()` → `.env` 파일 재작성입니다. 데이터베이스를 건드리지 않습니다.
-- **SQLite를 싱글 스레드로 공유.** `bun:sqlite` `Database` 객체를 모듈 스코프에서 하나만 만들고 모든 쿼리가 그걸 씁니다.
+- **SQLite를 싱글 스레드로 공유.** `bun:sqlite` `Database` 객체를 모듈 스코프에서 하나만 만들고 모든 쿼리가 그걸 씁니다. 트랜잭션 안에는 `await`가 없습니다. 그래서 백필 수십만 건을 처리하는 동안에도 음성 트래커와 웹 서버가 멈추지 않습니다.
 
 ---
 
@@ -270,7 +276,7 @@ Partial은 `Channel`, `Message` 두 개입니다.
 | `Manage Roles` | 타겟 역할 제거, 방어권 역할 소비 |
 | `Administrator` | 일부 룰렛 **인자 명령**(아래 참고) |
 
-> **권한 설명**: Slash Command 자체에 `Administrator` 기본 권한을 지정한 명령은 `/타겟`, `/관리자_타겟`, `/관리자머리끄댕이방어권_역할` 3개입니다. Discord가 실행자를 걸러 주지만, 코드侧에서도 `memberPermissions.has(Administrator)`로 한 번 더 검사합니다. `/관리자머리끄댕이` 자체에는 기본 권한 제한이 없고, **타겟 역할 보유자만** 실행할 수 있습니다(코드에서 확인).
+> **권한 설명**: Slash Command 자체에 `Administrator` 기본 권한을 지정한 명령은 `/타겟`, `/관리자_타겟`, `/관리자머리끄댕이방어권_역할` 3개입니다. Discord가 실행자를 걸러 주지만, 코드 측에서도 `memberPermissions.has(Administrator)`로 한 번 더 검사합니다. `/관리자머리끄댕이` 자체에는 기본 권한 제한이 없고, **타겟 역할 보유자만** 실행할 수 있습니다(코드에서 확인).
 
 ### 명령어 등록 범위
 
@@ -333,7 +339,7 @@ Discord는 슬래시 명령 변경 전파에 최대 1시간이 걸릴 수 있습
 | --- | --- | --- | --- |
 | `/친밀도` | `유저` (필수) | 대상 유저와 **같은 음성 채널에 함께 있었던 시간** TOP 21 | PNG 카드, 7명/페이지 |
 | `/통화량` | 없음 | 서버 **전체 누적 통화량** TOP 21 | PNG 카드, 7명/페이지 |
-| `/통계` | `기간` (선택: 오늘 / 이번 주 / 이번 달 / 전체, 기본 전체) | 채팅량·통화량·종합 활동량 **각 TOP 7** | PNG 카드 3장 |
+| `/통계` | `기간` (선택: 오늘 / 이번 주 / 이번 달 / 전체, 기본 전체) | 채팅량·통화량·종합 활동량 **각 TOP 7** | PNG 카드 1장 + `◀ 1 / 3 ▶` 버튼 |
 
 `/통계`의 종합 활동량 점수식은 `채팅 수 + 통화 분`입니다. 즉 **메시지 1개 = 1점, 통화 1분 = 1점**입니다.
 
@@ -574,7 +580,7 @@ userId: 1234567890
 | 변수 | 대상 명령 | 기본 프롬프트 핵심 |
 | --- | --- | --- |
 | `COMMON_PROMPT` | **전체 공통** | 한국어 전용, 기록에 없는 사실 창작 금지, Discord Markdown(표 금지) |
-| `QUESTION_PROMPT` | `/question` | 결론先行 + 근거 목록, 500~800자 |
+| `QUESTION_PROMPT` | `/question` | 결론 먼저 + 근거 목록, 500~800자 |
 | `MBTI_PROMPT` | `/mbti` | 말투·의사결정·감정표현만 근거, 500~800자 |
 | `DUEL_PROMPT` | `/결투` | 욕설 부추김 금지, 오락용 분석, 1~99% 확률 |
 | `RANK_PROMPT` | `/계급` | 5단계 계급 전부 사용, 근거 짧게, 700~1000자 |
@@ -636,7 +642,9 @@ Discord에는 "누가 얼마나 말했는지"가 아니라 **"누가 언제 접�
 
 `@napi-rs/canvas`로 **너비 2400** PNG를 메모리에서 직접 그립니다. 외부 이미지 렌더링 API를 쓰지 않으므로 비공개 서버에서도 동작합니다.
 
-**네 개 모드가 하나의 구조를 공유합니다.** `/통화량`·`/통계`·`/친밀도`가 그리는 카드는 헤더 그리드·요약 블록·열·행 구조가 완전히 동일하며, 모드에 따라 바뀌는 것은 **강조색 2색과 문자열, 값 포맷터**뿐입니다. `/통계`가 보내는 카드 3장은 그래서 하나의 표처럼 읽힙니다. 토큰과 근거는 [`DESIGN.md`](./DESIGN.md)에 있습니다.
+**네 개 모드가 하나의 구조를 공유합니다.** `/통화량`·`/통계`·`/친밀도`가 그리는 카드는 헤더 그리드·요약 블록·열·행 구조가 완전히 동일하며, 모드에 따라 바뀌는 것은 **강조색 2색과 문자열, 값 포맷터**뿐입니다. `/통계`의 카드 3장도 그래서 하나의 표처럼 읽힙니다. 토큰과 근거는 [`DESIGN.md`](./DESIGN.md)에 있습니다.
+
+세 종류의 카드가 한 메시지에 들어가지 않기 때문에 `/통계`는 **한 장만 보내고 `◀ 1 / 3 ▶` 버튼으로 넘겨 봅니다.** `/통화량`과 `/친밀도`가 21명을 7명씩 페이지로 넘기는 것과 같은 캐시(`voiceAffinityPages`)를 쓰며, 15분이 지나면 만료됩니다.
 
 - **높이는 내용에 따라 가변** — 7행 1372px, 1행 664px, 빈 상태 664px. 행 높이는 모든 경우에 118px로 고정이라 카드마다 리듬이 달라지지 않습니다
 - 폰트: `src/assets/BMDoHyeon-Regular.ttf` (BM DoHyeon) — 실행 시 `GlobalFonts.register`로 등록
@@ -830,10 +838,17 @@ API key 입력란은 **쓰기 전용**입니다. 로드 시 값을 비워 두고
 data/
 ├── bot.sqlite       # 메인 데이터베이스
 ├── bot.sqlite-shm   # WAL 공유 메모리
-└── bot.sqlite-wal   # WAL 로그
+├── bot.sqlite-wal   # WAL 로그
+└── media/           # 미디어 바이트 (기본 경로, MEDIA_PATH로 변경 가능)
+    ├── attachment/  # 메시지 첨부 원본
+    ├── sticker/     # 스티커 이미지
+    ├── avatar/      # 유저 아바타 (해시가 바뀔 때마다 새 파일)
+    └── banner/      # 유저 배너
 ```
 
-기본 경로는 `./data/bot.sqlite`이며, `DATABASE_PATH`로 바꿀 수 있습니다. 디렉터리는 없으면 자동 생성합니다.
+기본 경로는 `./data/bot.sqlite`이며, `DATABASE_PATH`로 바꿀 수 있습니다. 디렉터리는 없으면 자동 생성합니다. 미디어는 기본적으로 DB 옆 `media/`에 쌓이며, `data` 아래에 두면 컨테이너와 호스트가 같은 볼륨을 공유하므로 그대로 보입니다.
+
+`media_files.local_path`에는 **환경 절대 경로가 아니라 이 루트 기준 상대 경로**를 저장합니다. 그래서 `MEDIA_PATH`를 어디로 잡든 DB 값은 같고, 실제 경로는 `resolveMediaPath()`로 구합니다.
 
 연결 시 `PRAGMA journal_mode = WAL`, `PRAGMA foreign_keys = ON`을 설정합니다.
 
@@ -1052,7 +1067,7 @@ data/
 - 연속 공백/줄바꿈을 **단일 공백으로 축약**합니다
 - 결과가 빈 문자열이면 **저장하지 않습니다** (순수 이미지, 스티커만인 메시지 등)
 
-> 채널명/작성자명은 **저장 시점의 값**입니다. 나중에 이름을 바꿔도 historic 기록은 갱신되지 않습니다.
+> 채널명/작성자명은 **저장 시점의 값**입니다. 나중에 이름을 바꿔도 과거 기록은 갱신되지 않습니다.
 
 ### 마이그레이션
 
@@ -1181,7 +1196,9 @@ giinii_bot/
 │   ├── config.ts                   # 환경변수 파싱, 런타임 설정, .env 쓰기
 │   ├── models.ts                   # provider별 무료 모델 카탈로그
 │   ├── storage.ts                  # SQLite 스키마, 마이그레이션, 쿼리 헬퍼
-│   ├── history.ts                  # 채널 선택, 메시지 수집, 프롬프트 텍스트 조립
+│   ├── history.ts                  # 채널 선택, 메시지 수집, 프롬프트 조립, 부가 정보 추출
+│   ├── records.ts                  # 프로필 이력·메시지 상세·미디어 행 기록, 소급 복원, 스윕
+│   ├── media.ts                    # 미디어 다운로드 워커 (해시·크기 기록, 자가 치유)
 │   ├── analysis.ts                 # AI 명령 처리, 백필, 디버그 모드, command_logs
 │   ├── gemini.ts                   # provider별 LLM 호출, 재시도, 폴백, 로그 마스킹
 │   ├── embeds.ts                   # 진행/결과/안내 임베드 빌더
@@ -1198,7 +1215,7 @@ giinii_bot/
 │       └── BMDoHyeon-Regular.ttf   # 카드 렌더링 폰트
 ├── DESIGN.md                       # 통계 카드 디자인 시스템 (토큰 · 구조)
 ├── test/
-│   ├── storage.test.ts             # 마이그레이션, 영속성, 폴백, 동시 호출
+│   ├── storage.test.ts             # 마이그레이션, 영속성, 폴백, 백필, 기록·미디어 계약 (20개)
 │   ├── voice-affinity.test.ts      # 친밀도 계산 + PNG 렌더링
 │   └── text.test.ts                # 임베드 분할
 ├── audio/
@@ -1231,7 +1248,7 @@ giinii_bot/
 ```sh
 bun install --frozen-lockfile
 bun run check     # tsc --noEmit — src, test 포함
-bun test          # bun:test 12개
+bun test          # bun:test 26개
 bun run dev       # 파일 변경 시 자동 재시작
 ```
 
@@ -1239,7 +1256,7 @@ bun run dev       # 파일 변경 시 자동 재시작
 
 `tsconfig.json`은 `strict: true`, `target: ESNext`, `module/moduleResolution: Preserve/bundler`, `skipLibCheck: true`, `types: ["bun-types"]`이며 **`src`와 `test`를 모두 포함**합니다. 테스트 파일의 타입 오류도 걸립니다.
 
-### 테스트 12개가 검증하는 것
+### 테스트 26개가 검증하는 것
 
 | 파일 | 테스트 | 검증 대상 |
 | --- | --- | --- |
@@ -1250,6 +1267,18 @@ bun run dev       # 파일 변경 시 자동 재시작
 | | `uses a 65 percent defense boundary` | 방어권 경계 — `0.64` 성공, `0.65` 실패 |
 | | `falls back to the configured model after an AI request error` | 주 요청이 예외를 던지면 폴백 provider/model로 **정확히 2번째 요청**이 나가고, `onFallback` 콜백이 호출됨 |
 | | `uses provider and model overrides for concurrent playground requests` | 병렬 Playground 2건이 **서로 다른 endpoint·모델로** 독립적으로 나감 |
+| | `stores every readable message of every channel when a guild is backfilled` | 3채널 527건을 전부 저장하고 **봇 메시지는 집계에서 제외**됨 |
+| | `skips the already stored range when the same guild is backfilled again` | 재실행 시 신규 0건, API 호출은 **채널당 2회**로 저장 구간을 건너뜀 |
+| | `counts a live message once when the same message is delivered twice` | 같은 메시지를 두 번 받아도 집계는 1번 |
+| | `serves statistics chat counts from the whole database` | 12,000건 기준 `/통계` 채팅 합이 DB와 일치하고 **옛 실시간 카운터는 0** |
+| | `rebuilds chat counts once for a guild that predates the table` | 처음 계산하는 서버만 한 번 다시 계산하고, 두 번째 호출은 0 |
+| | `keeps chat-only and voice-only users in the same ranking` | 채팅만 있는 유저와 통화만 있는 유저가 같은 표에 남음 |
+| | `records message details, media rows and a profile history row` | 상세 컬럼·미디어 행·프로필 이력이 함께 쌓임 |
+| | `does not duplicate records when the same message arrives twice` | 재적재 시 상세/미디어/프로필 **모두 0 증가** |
+| | `appends a profile history row only when the identity actually changes` | 닉네임과 아바타가 바뀐 경우에만 이력 증가 |
+| | `seeds nickname history from the already stored corpus` | 예전 메시지에서 **표시 이름별 최초 시각**으로 이력 소급 복원, 재실행 시 0 |
+| | `downloads media to disk and records its hash and byte length` | 실제 HTTP 다운로드로 **경로·sha256·크기**가 DB와 일치 |
+| | `rewrites environment absolute media paths to relative ones` | 예전에 환경 절대 경로로 저장된 값을 **상대 경로로 되돌림**(자가 치유) |
 | `voice-affinity.test.ts` | `voice affinity sums overlapping sessions` | 여러 구간의 **교집합 합산**과 순위 정렬, 다른 채널은 무시, 자기 자신 제외 |
 | | `normalizes equivalent user IDs` | 공백이 다른 동일 ID가 하나의 유저로 합쳐짐 |
 | | `renders a voice affinity PNG card` | 친밀도 모드 PNG 시그니처(`89504e47...`) 확인 |
@@ -1279,8 +1308,11 @@ data/
 │   ├── manifest.json         # 조각 목록, 총 크기, sha256
 │   ├── bot.sqlite.part-001   # 30MB
 │   └── bot.sqlite.part-002   # 나머지
-└── bot.sqlite                # 실행 중 DB (커밋 대상 아님, seed에서 자동 복원)
+├── bot.sqlite                # 실행 중 DB (커밋 대상 아님, seed에서 자동 복원)
+└── media/                    # 미디어 바이트 (커밋 대상 아님)
 ```
+
+`data/seed/`는 **DB만** 담습니다. `media/`는 통째로 GB 단위가 될 수 있어 커밋하지 않으며, 조각도 만들지 않습니다. 백업이 필요하면 `media/`를 별도로 저장소에 옮겨야 하고, DB만 복원하면 미디어 경로가 DB에 남지만 바이트는 비어 있습니다(`resolveMediaPath()`로 경로를 얻으면 존재 여부를 확인할 수 있습니다).
 
 **조각 갱신**
 
@@ -1289,6 +1321,8 @@ docker compose down
 # 실행 중인 DB를 정리한 뒤
 bun run scripts/split-db.ts data/seed data/bot.sqlite
 ```
+
+> `docker compose up -d`은 **이미지가 있으면 재빌드하지 않습니다.** `src/`를 고친 뒤에는 반드시 `--build`를 붙여야 새 코드가 반영됩니다.
 
 **수동 복원**
 
@@ -1395,6 +1429,29 @@ Backfill progress for 서버이름: 4200 fetched, 4200 newly saved
 ### 디버그로 프롬프트를 보고 싶다
 
 채널에 `!debug on`을 보냅니다(봇 계정이 아니라 **메시지를 보낸 사람** 기준). 다음 AI 명령부터 `llm-prompt-debug.txt` 첨부가 따라옵니다. 확인 후 반드시 `!debug off`.
+
+### 미디어가 쌓이지 않는다
+
+먼저 상태를 확인합니다.
+
+```sh
+bun -e 'import {Database} from "bun:sqlite";
+const db = new Database("./data/bot.sqlite", {readonly: true});
+console.log(db.query("SELECT kind, status, COUNT(*) n FROM media_files GROUP BY kind, status").all());'
+```
+
+- `pending`이 줄지 않으면 워커가 멈춘 것입니다. 기동 로그의 `Media worker: ... processed` 줄을 확인하십시오.
+- `failed` / `missing`면 다운로드가 실패한 것입니다. 원본 URL이 `media_files.url`에 남아 있습니다.
+- `too_large`면 `MEDIA_MAX_BYTES`(기본 50MB) 초과입니다. 값을 올리면 다시 시도합니다.
+- **첨부 종류가 아직 0개인 것은 정상입니다.** 백필이 끝난 뒤 `enrichGuildHistory` 패스가 이미 저장된 구간까지 다시 훑으면서 채웁니다. 그 전까지는 새로 발견되는 메시지만 채워집니다.
+- 디스크가 부족하면 `df -h .`로 `data`가 있는 파티션을 확인하십시오. 미디어는 커밋되지 않으므로 `data/seed`만으로는 복구되지 않습니다.
+- `MEDIA_PATH`를 바꾼 뒤에는 기존 행의 `local_path`가 옛 루트를 가리킵니다. 기동 시 `normalizeStoredMediaPaths()`가 현재 루트 아래 경로만 상대 경로로 되돌립니다. 루트를 옮겼다면 파일도 같이 옮기고 `resolveMediaPath()`로 경로를 확인하십시오.
+
+### 닉네임 이력이 과거로 되살아나지 않는다
+
+- 이미 저장된 메시지에는 **그 시점의 표시 이름만** 있습니다. 소급 복원은 표시 이름 이력까지 가능하지만, 사용자명·서버 닉네임·과거 아바타는 디스코드가 API로 주지 않으므로 복구되지 않습니다.
+- `user_profiles`의 `source`를 보십시오. `history-seed`는 소급 복원분, `message`와 `sweep`는 그 이후 직접 관측한 값입니다.
+- 한때 서버에 있었던 사람이 많다면 스윕은 현재 멤버만 잡습니다. 떠난 유저는 디스코드가 현재 멤버로 돌려주지 않기 때문입니다.
 
 ---
 
