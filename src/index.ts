@@ -6,6 +6,8 @@ import { analysisCommandNames, ensureBackfillStarted, handleAnalysisCommand, per
 import { initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
 import { commands, syncCommands } from "./commands.js";
 import { config } from "./config.js";
+import { startMediaWorker } from "./media.js";
+import { seedProfileHistoryFromMessages, sweepGuildProfiles } from "./records.js";
 import { handleRouletteCommand } from "./roulette.js";
 import { initDatabase } from "./storage.js";
 import { handleStatisticsCommand, handleVoiceAffinityCommand, handleVoiceAffinityComponent, handleVoiceVolumeCommand } from "./voice-affinity-command.js";
@@ -41,9 +43,22 @@ client.once(Events.ClientReady, async (readyClient) => {
   initializeVoiceSessions(client);
   startVoiceTracker(client);
   startWebServer(readyClient);
+  startMediaWorker();
   console.log(`Using ${config.aiProvider} model: ${config.aiModel}`);
+  console.log(`Seeding profile history from stored messages: ${seedProfileHistoryFromMessages()} rows`);
   void startInitialBackfill(client).catch((error) => console.error("Initial backfill failed", error));
+  void sweepAllGuildProfiles(client).catch((error) => console.error("Profile sweep failed", error));
 });
+
+const sweepAllGuildProfiles = async (client: Client) => {
+  const guilds = config.guildId
+    ? [await client.guilds.fetch(config.guildId).catch(() => null)]
+    : [...client.guilds.cache.values()];
+  for (const guild of guilds) {
+    if (!guild) continue;
+    await sweepGuildProfiles(guild).catch((error) => console.error(`Profile sweep failed for ${guild.id}`, error));
+  }
+};
 
 client.on(Events.GuildCreate, (guild) => {
   void ensureBackfillStarted(guild);

@@ -3,8 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { createCanvas } from "@napi-rs/canvas";
 import { ChannelType, type Guild } from "discord.js";
-import type { HistoryMessage } from "../src/history.js";
+import type { HistoryMessage, MediaRecord, MessageProfile } from "../src/history.js";
 
 process.env.DISCORD_BOT_TOKEN = "test-token";
 process.env.AI_PROVIDER = "opencode_zen";
@@ -34,6 +37,8 @@ const { askGemini } = await import("../src/gemini.js");
 const { isDefenseSuccess } = await import("../src/roulette.js");
 const { ensureGuildChatStats, recordChatCounts } = await import("../src/activity.js");
 const { collectDiscordHistoryInBatches } = await import("../src/history.js");
+const { recordMessageRecords, seedProfileHistoryFromMessages } = await import("../src/records.js");
+const { drainPendingMedia, normalizeStoredMediaPaths, resolveMediaPath } = await import("../src/media.js");
 const { loadStatisticsRows, mergeStatisticsRows } = await import("../src/voice-affinity-command.js");
 
 test("migrates and stores AI questions in command logs", () => {
@@ -170,8 +175,24 @@ class FakeCollection<T> extends Map<string, T> {
 
 const toDiscordMessage = (message: FakeMessage) => ({
   id: message.id,
-  author: { id: message.authorId, bot: message.bot, displayName: `user-${message.authorId}`, username: `user-${message.authorId}` },
-  member: { displayName: `user-${message.authorId}` },
+  type: 0,
+  pinned: false,
+  tts: false,
+  flags: { bitfield: 0 },
+  editedTimestamp: null,
+  webhookId: null,
+  reference: null,
+  activity: null,
+  applicationId: null,
+  interaction: null,
+  roleSubscriptionData: null,
+  embeds: [],
+  components: [],
+  reactions: { cache: new Map() },
+  mentions: { everyone: false, users: new Map(), roles: new Map(), channels: new Map() },
+  channel: { isThread: () => false },
+  author: { id: message.authorId, bot: message.bot, displayName: `user-${message.authorId}`, username: `user-${message.authorId}`, globalName: null, avatar: null, banner: null, accentColor: null, flags: { bitfield: 0 } },
+  member: { displayName: `user-${message.authorId}`, nickname: null, user: { id: message.authorId, bot: message.bot, username: `user-${message.authorId}`, globalName: null, avatar: null, banner: null, accentColor: null, flags: { bitfield: 0 } } },
   createdTimestamp: message.createdAt,
   cleanContent: message.content,
   attachments: { size: 0, values: () => [] },
@@ -215,7 +236,14 @@ const historyMessage = (guildId: string, authorId: string, bot = false): History
   return {
     messageId: message.id, guildId, channelId: "c1", channelName: "하나",
     authorId, authorName: `user-${authorId}`, authorIsBot: bot, content: message.content,
-    createdTimestamp: message.createdAt
+    createdTimestamp: message.createdAt,
+    profile: {
+      userId: authorId, username: `user-${authorId}`, globalName: `name-${authorId}`, nickname: null,
+      displayName: `user-${authorId}`, avatarHash: null, avatarUrl: null, bannerHash: null, bannerUrl: null,
+      accentColor: null, bot, publicFlags: 0
+    },
+    media: [],
+    detail: null
   };
 };
 
@@ -306,8 +334,169 @@ test("rebuilds chat counts once for a guild whose history predates the precomput
   expect(ensureGuildChatStats(guildId)).toBe(0);
 });
 
-test("keeps chat-only and voice-only users in the same statistics ranking", () => {
-  expect(mergeStatisticsRows(
+const profileOf = (overrides: Partial<MessageProfile> = {}): MessageProfile => ({
+  userId: "p1", username: "giinii", globalName: "기니", nickname: null, displayName: "기니",
+  avatarHash: "hash-a", avatarUrl: "https://cdn.example/avatar-a.png", bannerHash: null, bannerUrl: null,
+  accentColor: null, bot: false, publicFlags: 0, ...overrides
+});
+
+const mediaOf = (id: string, kind: MediaRecord["kind"] = "attachment"): MediaRecord => ({
+  mediaId: id, kind, filename: `${id}.png`, contentType: "image/png",
+  bytes: 1024, width: 8, height: 8, duration: null, url: `http://127.0.0.1:1/${id}.png`,
+  ownerUserId: "p1"
+});
+
+const richMessage = (guildId: string, overrides: {
+  messageId?: string; profile?: MessageProfile; media?: MediaRecord[]; at?: number;
+} = {}): HistoryMessage => {
+  const base = historyMessage(guildId, overrides.profile?.userId ?? "p1");
+  return {
+    ...base,
+    messageId: overrides.messageId ?? nextFakeMessage("p1").id,
+    createdTimestamp: overrides.at ?? base.createdTimestamp,
+    profile: overrides.profile ?? profileOf(),
+    media: overrides.media ?? [mediaOf("m-1-attachment"), mediaOf("m-0-avatar", "avatar")],
+    detail: {
+      messageType: 0, pinned: true, editedTimestamp: null, webhookId: null, replyToMessageId: null,
+      threadId: null, mentionsEveryone: false, mentionUserIds: ["u9"], mentionRoleIds: [], mentionChannelIds: [],
+      reactionSummary: [{ emoji: "🔥", count: 3, me: true }], embedCount: 2, componentCount: 1,
+      position: null, flags: 0, activity: null, raw: JSON.stringify({ kept: true })
+    }
+  };
+};
+
+const ingest = (guildId: string, messages: HistoryMessage[]) => {
+  const inserted = storage.upsertMessages(messages);
+  recordChatCounts(guildId, inserted);
+  return recordMessageRecords(guildId, inserted);
+};
+
+const countRows = (table: string, where = "1=1", ...params: unknown[]) =>
+  storage.sql<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`, ...(params as never[]))?.n ?? 0;
+
+test("records message details, media rows and a profile history row on ingest", () => {
+  storage.initDatabase();
+  const guildId = "records-guild";
+  const message = richMessage(guildId);
+
+  const recorded = ingest(guildId, [message]);
+
+  expect(recorded.details).toBe(1);
+  expect(recorded.media).toBe(2);
+  expect(recorded.profiles).toBe(1);
+  const detail = storage.sql<{ pinned: number; mention_user_ids: string; reaction_summary: string; embed_count: number; raw: string }>(
+    "SELECT pinned, mention_user_ids, reaction_summary, embed_count, raw FROM message_details WHERE message_id = ?", message.messageId);
+  expect(detail?.pinned).toBe(1);
+  expect(detail?.mention_user_ids).toBe(JSON.stringify(["u9"]));
+  expect(detail?.reaction_summary).toBe(JSON.stringify([{ emoji: "🔥", count: 3, me: true }]));
+  expect(detail?.embed_count).toBe(2);
+  expect(detail?.raw).toBe(JSON.stringify({ kept: true }));
+  const media = storage.all<{ media_id: string; kind: string; status: string }>(
+    "SELECT media_id, kind, status FROM media_files WHERE message_id = ? ORDER BY media_id", message.messageId);
+  expect(media.map((row) => row.kind)).toEqual(["avatar", "attachment"]);
+  expect(media.every((row) => row.status === "pending")).toBe(true);
+});
+
+test("does not duplicate records when the same message arrives twice", () => {
+  storage.initDatabase();
+  const guildId = "dupe-guild";
+  const message = richMessage(guildId);
+  ingest(guildId, [message]);
+  const before = {
+    details: countRows("message_details", "message_id = ?", message.messageId),
+    media: countRows("media_files", "message_id = ?", message.messageId),
+    profiles: countRows("user_profiles", "guild_id = ?", guildId)
+  };
+
+  const second = ingest(guildId, [message]);
+
+  expect(second).toEqual({ details: 0, media: 0, profiles: 0 });
+  expect(countRows("message_details", "message_id = ?", message.messageId)).toBe(before.details);
+  expect(countRows("media_files", "message_id = ?", message.messageId)).toBe(before.media);
+  expect(countRows("user_profiles", "guild_id = ?", guildId)).toBe(before.profiles);
+});
+
+test("appends a profile history row only when the identity actually changes", () => {
+  storage.initDatabase();
+  const guildId = "rename-guild";
+  ingest(guildId, [richMessage(guildId, { messageId: "m-a", profile: profileOf({ nickname: null }) })]);
+  ingest(guildId, [richMessage(guildId, { messageId: "m-b", profile: profileOf({ nickname: "초보" }) })]);
+  ingest(guildId, [richMessage(guildId, { messageId: "m-c", profile: profileOf({ nickname: "초보" }) })]);
+  ingest(guildId, [richMessage(guildId, { messageId: "m-d", profile: profileOf({ nickname: "초보", avatarHash: "hash-b", avatarUrl: "https://cdn.example/avatar-b.png" }) })]);
+
+  const history = storage.all<{ nickname: string | null; avatar_hash: string | null; source: string }>(
+    "SELECT nickname, avatar_hash, source FROM user_profiles WHERE guild_id = ? ORDER BY id", guildId);
+  expect(history.map((row) => [row.nickname, row.avatar_hash])).toEqual([
+    [null, "hash-a"], ["초보", "hash-a"], ["초보", "hash-b"]
+  ]);
+  expect(history.every((row) => row.source === "message")).toBe(true);
+});
+
+test("seeds nickname history from the already stored corpus with first seen times", () => {
+  storage.initDatabase();
+  const guildId = "seed-guild";
+  const author = "seed-user";
+  storage.upsertMessages([
+    historyMessage(guildId, author),
+    { ...historyMessage(guildId, author), content: "두번째" },
+    { ...historyMessage(guildId, author), content: "세번째", authorName: "바뀐이름" }
+  ]);
+
+  const seeded = seedProfileHistoryFromMessages();
+  const again = seedProfileHistoryFromMessages();
+
+  expect(countRows("user_profiles", "guild_id = ? AND source = 'history-seed'", guildId)).toBe(2);
+  expect(again).toBe(0);
+  expect(seeded).toBeGreaterThanOrEqual(2);
+  const history = storage.all<{ display_name: string; observed_at: number; source: string }>(
+    "SELECT display_name, observed_at, source FROM user_profiles WHERE guild_id = ? ORDER BY observed_at", guildId);
+  expect(history.map((row) => row.display_name)).toEqual([`user-${author}`, "바뀐이름"]);
+  expect(history.every((row) => row.source === "history-seed")).toBe(true);
+  expect(history[1]!.observed_at).toBeGreaterThan(history[0]!.observed_at);
+});
+
+test("downloads media to disk and records its hash and byte length", async () => {
+  storage.initDatabase();
+  const png = createCanvas(4, 4).toBuffer("image/png");
+  const server = Bun.serve({ port: 0, fetch: () => new Response(new Uint8Array(png)) });
+  const mediaId = `dl-${Date.now()}`;
+  storage.run(`INSERT INTO media_files (media_id, kind, filename, url, status, recorded_at) VALUES (?, 'attachment', 'pixel.png', ?, 'pending', ?)`,
+    mediaId, `http://localhost:${server.port}/pixel.png`, Date.now());
+
+  try {
+    const tally = await drainPendingMedia();
+    expect(tally.downloaded).toBe(1);
+  } finally {
+    server.stop(true);
+  }
+
+  const row = storage.sql<{ status: string; local_path: string; sha256: string; stored_bytes: number }>(
+    "SELECT status, local_path, sha256, stored_bytes FROM media_files WHERE media_id = ?", mediaId);
+  expect(row?.status).toBe("downloaded");
+  expect(row?.sha256).toBe(createHash("sha256").update(png).digest("hex"));
+  expect(row?.stored_bytes).toBe(png.byteLength);
+  expect(row?.local_path.startsWith("/")).toBe(false);
+  const onDisk = resolveMediaPath(row!.local_path);
+  expect(existsSync(onDisk)).toBe(true);
+  expect(Bun.file(onDisk).size).toBe(png.byteLength);
+});
+
+test("rewrites environment absolute media paths to relative ones", () => {
+  storage.initDatabase();
+  const mediaId = `abs-${Date.now()}`;
+  const absolute = resolveMediaPath("avatar/relative-only.png");
+  storage.run(`INSERT INTO media_files (media_id, kind, filename, url, status, local_path, recorded_at) VALUES (?, 'avatar', 'a.png', 'http://127.0.0.1:1/a.png', 'downloaded', ?, ?)`,
+    mediaId, absolute, Date.now());
+
+  const normalized = normalizeStoredMediaPaths();
+
+  expect(normalized).toBeGreaterThan(0);
+  expect(storage.sql<{ local_path: string }>("SELECT local_path FROM media_files WHERE media_id = ?", mediaId)?.local_path)
+    .toBe("avatar/relative-only.png");
+  expect(normalizeStoredMediaPaths()).toBe(0);
+});
+
+test("keeps chat-only and voice-only users in the same statistics ranking", () => {  expect(mergeStatisticsRows(
     [{ user_id: "a", chat_count: 5 }],
     [{ user_id: "a", voice_seconds: 60 }, { user_id: "b", voice_seconds: 30 }]
   )).toEqual([

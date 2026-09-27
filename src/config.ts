@@ -1,5 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { getFreeModels, isFreeModelForProvider } from "./models.js";
 
 export type AiProvider = "gemini" | "opencode_zen" | "nvidia_nim" | "openrouter" | "bynara";
@@ -181,6 +181,9 @@ if (!isFreeModelForProvider(settings.fallbackProvider, settings.fallbackModel)) 
 export const config = {
   discordToken: required(process.env.DISCORD_BOT_TOKEN?.trim() ? "DISCORD_BOT_TOKEN" : "DISCORD_TOKEN"),
   guildId: process.env.DISCORD_GUILD_ID?.trim() || undefined,
+  mediaRoot: process.env.MEDIA_PATH?.trim() || join(dirname(databasePath), "media"),
+  mediaMaxBytes: toInt(process.env.MEDIA_MAX_BYTES, 50 * 1024 * 1024, 1024, 2_147_483_647),
+  mediaConcurrency: toInt(process.env.MEDIA_CONCURRENCY, 4, 1, 16),
   cooldownSeconds: toInt(process.env.QUESTION_COOLDOWN_SECONDS, 20, 0, 3600),
   webHost: process.env.WEB_HOST?.trim() || "0.0.0.0",
   webPort: toInt(process.env.WEB_PORT, 3003, 1, 65535),

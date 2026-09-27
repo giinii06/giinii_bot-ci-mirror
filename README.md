@@ -38,6 +38,9 @@ Bun + TypeScript로만 작성했고, 외부 서버 없이 `bun:sqlite` 하나와
 | 영역 | 내용 |
 | --- | --- |
 | **기록** | 디스코드 메시지를 실시간 저장 + 기동 시 전체 기록 백필(이미 저장된 구간은 건너뜀). SQLite `discord_messages` |
+| **유저 이력** | 닉네임·아바타·배너가 바뀔 때마다 한 줄씩 쌓음. 예전 기록은 소급 복원. `user_profiles` |
+| **메시지 부가 정보** | 리액션·임베드·컴포넌트·답글·스레드·멘션 등 접근 가능한 전 항목 + 원본 JSON. `message_details` |
+| **미디어** | 첨부 사진·동영상·음성메시지·스티커·아바타를 바이트까지 내려받아 `data/media`에 저장. `media_files` |
 | **활동 집계** | 채팅 수는 전체 DB에서 미리 계산해 `chat_stats`에 쌓고, 음성 체류 시간은 일/주/월/전체 버킷으로 누적. 기준시는 KST(UTC+9) |
 | **AI 분석** | 9개 분석 명령어. 서버对话 기록을 컨텍스트로 LLM 호출. 실패 시 자동 폴백 |
 | **통계 카드** | `/친밀도` `/통화량` `/통계` → 너비 2400 PNG 카드를 서버 내 렌더링 |
@@ -895,6 +898,66 @@ data/
 </details>
 
 <details>
+<summary><code>user_profiles</code> — 유저 신원 변경 이력 (유니크: guild_id + user_id + identity)</summary>
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| `guild_id` / `user_id` | TEXT | 서버 / 유저 ID |
+| `observed_at` | INTEGER | 이 신원을 처음 관측한 시각(ms) |
+| `source` | TEXT | `message` / `sweep` / `history-seed` |
+| `username` | TEXT | 디스코드 사용자명 |
+| `global_name` | TEXT | 표시 이름 |
+| `nickname` | TEXT | 서버별 닉네임 |
+| `display_name` | TEXT | 그 시점에 다른 사람들에게 보이던 이름 |
+| `avatar_hash` / `avatar_url` | TEXT | 아바타 해시와 실제 이미지 주소 |
+| `banner_hash` / `banner_url` | TEXT | 배너 해시와 실제 이미지 주소 |
+| `accent_color` | INTEGER | 프로필 강조색 |
+| `bot` / `public_flags` | INTEGER | 봇 여부 / 공개 플래그 |
+| `identity` | TEXT | 위 값들을 이어 붙인 중복 제거 키 |
+
+**바뀔 때만 한 줄이 붙습니다.** `identity` 유니크 인덱스 덕분에 같은 값으로 다시 관측돼도 행이 늘지 않습니다. 닉네임을 바꾸면 새 행이 생기고 `observed_at`이 그 시점이 됩니다.
+
+</details>
+
+<details>
+<summary><code>message_details</code> — 메시지 부가 정보 (PRIMARY KEY: message_id)</summary>
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| `message_type` / `pinned` / `position` | INTEGER | 메시지 종류, 고정 여부, 포럼 등 위치 |
+| `edited_timestamp` | INTEGER | 마지막 수정 시각(ms) |
+| `webhook_id` / `reply_to_message_id` / `thread_id` | TEXT | 웹훅 발신자, 답글 대상, 스레드 |
+| `mentions_everyone` | INTEGER | @everyone / @here 포함 여부 |
+| `mention_user_ids` / `mention_role_ids` / `mention_channel_ids` | TEXT | 멘션 대상 JSON 배열 |
+| `reaction_summary` | TEXT | 리액션 이모지, 개수, 본인 반응 여부 JSON 배열 |
+| `embed_count` / `component_count` | INTEGER | 임베드 / 컴포넌트 개수 |
+| `flags` | INTEGER | 메시지 플래그 비트필드 |
+| `raw` | TEXT | 접근 가능한 나머지 전 항목 JSON (응답, 첨부 메타, 스티커, 임베드 본문 등) |
+
+같은 메시지를 다시 만나면 현재 상태로 갱신됩니다.
+
+</details>
+
+<details>
+<summary><code>media_files</code> — 미디어 파일 (PRIMARY KEY: media_id)</summary>
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| `media_id` | TEXT | 첨부 ID 또는 `avatar-<유저>-<해시>` 형태 |
+| `kind` | TEXT | `attachment` / `sticker` / `avatar` / `banner` |
+| `guild_id` / `channel_id` / `message_id` / `owner_user_id` | TEXT | 출처 |
+| `filename` / `content_type` / `bytes` / `width` / `height` / `duration` | assorted | 파일 메타데이터 |
+| `url` | TEXT | 원본 주소 (Discord CDN) |
+| `local_path` | TEXT | `data/media` 기준 **상대 경로** |
+| `sha256` / `stored_bytes` | TEXT / INTEGER | 내려받은 바이트의 요약값과 실제 크기 |
+| `status` | TEXT | `pending` / `downloaded` / `failed` / `missing` / `too_large` |
+| `recorded_at` / `downloaded_at` | INTEGER | 기록 / 다운로드 시각(ms) |
+
+`local_path`는 컨테이너 경로가 아니라 상대 경로입니다. `MEDIA_PATH`를 어디로 잡든 같은 값이 유지되고 `resolveMediaPath()`로 실제 경로를 얻습니다. 검증할 때에는 디스크의 바이트를 직접 요약해 DB 값과 대조합니다.
+
+</details>
+
+<details>
 <summary><code>voice_sessions</code> — 현재 진행 중인 음성 세션 (PRIMARY KEY: guild_id + user_id)</summary>
 
 | 컬럼 | 타입 | 설명 |
@@ -1004,6 +1067,22 @@ data/
 
 `initDatabase()` 다음으로, 기동 시 `ensureChatStatsMigrated()`가 `chat_stats_state`에 행이 없는 서버만 찾아 `discord_messages` 전체로 채팅 수를 다시 계산합니다. 16만 건 규모의 DB에서도 4개 서버 전체가 335ms 걸립니다. 계산이 끝나면 상태 행을 남기므로 이후 기동은 몇 ms 안에 끝나고, 그 뒤로는 새로 들어온 메시지만 더합니다.
 
+`seedProfileHistoryFromMessages()`는 이미 쌓인 메시지에서 **표시 이름이 바뀐 이력을 소급 복원**합니다. 유저별로 서로 다른 `author_name`을 최초 등장 시각 순으로 접어 `user_profiles`에 넣습니다(16만 건에서 1,467행, 248ms). 같은 이름을 계속 썼다면 한 번만 기록되므로 재실행해도 늘지 않습니다.
+
+백필이 끝난 뒤에는 `enrichGuildHistory()`가 저장 범위를 무시하고 전체 기록을 한 번 더 훑습니다. 예전에 받은 메시지에는 첨부 정보가 아예 없었기 때문입니다. 이 패스는 `discord_messages`를 다시 쓰지 않고 상세/미디어/프로필만 채웁니다.
+
+`Discord는 과거 프로필을 API로 제공하지 않습니다.` 그래서 예전 프사는 복원할 수 없고, 서버 구성원을 일괄 조회해 **현재** 아바타·배너를 잡고(`sweepGuildProfiles`) 그 뒤로 바뀌는 것만 이어서 기록합니다.
+
+### 잡지 않는 것
+
+사용할 수 있는 범위를 넓히는 것과 가능한 한 다 저장하는 것은 다릅니다. 아래는 **의도적으로 뺀 것**입니다.
+
+- **음성 채널 오디오.** 음성 인원·시간만 기록합니다. 실시간 통화 내용을 녹음하는 것은 별도 기능입니다.
+- **과거 프로필.** 디스코드가 닉네임·아바타 변경 이력을 API로 주지 않습니다. 표시 이름 이력만 소급 복원됩니다.
+- **서버/채널/역할 메타.** 채널 목록, 역할, 초대, 밴 등 서버 설정은 저장하지 않습니다. 메시지와 그에 붙은 정보만 저장합니다.
+- **지워진 메시지.** 디스코드에서 삭제된 내용은 되살릴 수 없습니다.
+- **첨부 원본의 과거 상태.** 같은 첨부는 항상 같은 URL을 가리키므로, 나중에 파일이 교체되어도 우리는 당시 받은 바이트를 그대로 보관합니다.
+
 ---
 
 ## 환경변수
@@ -1076,6 +1155,9 @@ Bun은 `.env`를 자동으로 로드합니다. `src/config.ts`가 **모듈 평�
 | --- | --- | --- | --- |
 | `WEB_HOST` | `0.0.0.0` | — | 바인딩 주소. **`127.0.0.1`로 바꾸면 외부 접근 차단** |
 | `WEB_PORT` | `3003` | 1 ~ 65535 | 포트 |
+| `MEDIA_PATH` | `./data/media` | 경로 | 미디어 바이트를 저장할 디렉터리. `data` 아래면 컨테이너와 호스트가 공유합니다 |
+| `MEDIA_MAX_BYTES` | `52428800` (50MB) | 1KB ~ 2GB | 이 크기를 넘는 파일은 `too_large`로 건너뜁니다 |
+| `MEDIA_CONCURRENCY` | `4` | 1 ~ 16 | 동시에 내려받는 미디어 개수 |
 
 ### `.env` 덮어쓰기 규칙
 

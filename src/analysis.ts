@@ -3,7 +3,8 @@ import { ensureChatStatsMigrated, ensureGuildChatStats, markChatStatsCurrent, re
 import { config, MAX_HISTORY_MESSAGE_LIMIT } from "./config.js";
 import { createNoticeEmbed, createProgressEmbed, createResultEmbed } from "./embeds.js";
 import { askGemini, buildDebugPromptText } from "./gemini.js";
-import { cleanMessage, collectDiscordHistoryInBatches, collectHistory, type HistoryMessage } from "./history.js";
+import { recordMessageRecords } from "./records.js";
+import { cleanMessage, captureDetail, captureMedia, captureProfile, collectDiscordHistoryInBatches, collectHistory, safeCapture, type HistoryMessage, type MediaRecord } from "./history.js";
 import { fetchStoredChannelRanges, insertCommandLog, upsertMessages } from "./storage.js";
 import { splitForEmbeds } from "./text.js";
 
@@ -237,9 +238,14 @@ export const persistLiveMessage = async (message: Message) => {
   const historyMessage: HistoryMessage = { messageId: message.id, guildId: message.guildId, channelId: message.channelId,
     channelName: "name" in message.channel && typeof message.channel.name === "string" ? message.channel.name : message.channelId,
     authorId: message.author.id, authorName: message.member?.displayName || message.author.displayName || message.author.username,
-    authorIsBot: message.author.bot, content, createdTimestamp: message.createdTimestamp };
+    authorIsBot: message.author.bot, content, createdTimestamp: message.createdTimestamp,
+    profile: safeCapture("live profile", () => captureProfile(message), null),
+    media: safeCapture("live media", () => captureMedia(message), [] as MediaRecord[]),
+    detail: safeCapture("live detail", () => captureDetail(message), null) };
   try {
-    recordChatCounts(message.guildId, upsertMessages([historyMessage]));
+    const inserted = upsertMessages([historyMessage]);
+    recordChatCounts(message.guildId, inserted);
+    recordMessageRecords(message.guildId, inserted);
   } catch (error) { console.error("Failed to persist live message", error); }
 };
 
@@ -260,6 +266,7 @@ const backfillGuild = async (guild: Guild) => {
     const history = await collectDiscordHistoryInBatches(guild, { batchSize: INITIAL_BACKFILL_BATCH_SIZE, storedRanges }, async (messages, totalCollected) => {
       const inserted = upsertMessages(messages);
       recordChatCounts(guild.id, inserted);
+      recordMessageRecords(guild.id, inserted);
       saved += inserted.length;
       backfillStatuses.set(guild.id, { state: "running", messageCount: totalCollected, startedAt });
       console.log(`Backfill progress for ${guild.name}: ${totalCollected} fetched, ${saved} newly saved`);
@@ -267,11 +274,30 @@ const backfillGuild = async (guild: Guild) => {
     markChatStatsCurrent(guild.id);
     backfillStatuses.set(guild.id, { state: "ready", messageCount: history.messageCount, startedAt, completedAt: Date.now() });
     console.log(`Backfill ready for ${guild.name}: ${history.messageCount} fetched, ${saved} newly saved, ${history.scannedChannelCount} channel(s)`);
+    await enrichGuildHistory(guild).catch((error) => console.error(`Enrichment failed for ${guild.name}`, error));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     backfillStatuses.set(guild.id, { state: "error", messageCount: 0, startedAt, completedAt: Date.now(), error: message });
     console.error(`Backfill failed for ${guild.name} (${guild.id})`, error);
   }
+};
+
+/**
+ * 이미 저장된 구간은 백필이 건너뛰므로, 예전에 받은 메시지에는 부가 정보가 없다.
+ * 저장 범위를 무시하고 전부 다시 훑어 상세/미디어/프로필 이력을 채운다. 한 번만 돌면 된다.
+ */
+const enrichGuildHistory = async (guild: Guild) => {
+  const startedAt = Date.now();
+  let details = 0;
+  let media = 0;
+  let profiles = 0;
+  const history = await collectDiscordHistoryInBatches(guild, { batchSize: INITIAL_BACKFILL_BATCH_SIZE }, async (messages) => {
+    const recorded = recordMessageRecords(guild.id, messages);
+    details += recorded.details;
+    media += recorded.media;
+    profiles += recorded.profiles;
+  });
+  console.log(`Enrichment for ${guild.name} (${guild.id}): ${history.messageCount} messages revisited in ${Date.now() - startedAt}ms, ${details} details, ${media} media, ${profiles} profile rows`);
 };
 
 export const ensureBackfillStarted = async (guild: Guild) => {

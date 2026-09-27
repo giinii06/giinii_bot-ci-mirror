@@ -35,6 +35,37 @@ export const initDatabase = () => {
     CREATE TABLE IF NOT EXISTS chat_stats_state (
       guild_id TEXT PRIMARY KEY, built_messages INTEGER NOT NULL, built_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL, user_id TEXT NOT NULL, observed_at INTEGER NOT NULL, source TEXT NOT NULL,
+      username TEXT NOT NULL DEFAULT '', global_name TEXT, nickname TEXT, display_name TEXT,
+      avatar_hash TEXT, avatar_url TEXT, banner_hash TEXT, banner_url TEXT,
+      accent_color INTEGER, bot INTEGER NOT NULL DEFAULT 0, public_flags INTEGER NOT NULL DEFAULT 0,
+      identity TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS user_profiles_identity_idx ON user_profiles (guild_id, user_id, identity);
+    CREATE INDEX IF NOT EXISTS user_profiles_history_idx ON user_profiles (guild_id, user_id, observed_at);
+    CREATE TABLE IF NOT EXISTS message_details (
+      message_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, author_id TEXT NOT NULL,
+      message_type INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0,
+      edited_timestamp INTEGER, webhook_id TEXT, reply_to_message_id TEXT, thread_id TEXT,
+      mentions_everyone INTEGER NOT NULL DEFAULT 0, mention_user_ids TEXT NOT NULL DEFAULT '[]',
+      mention_role_ids TEXT NOT NULL DEFAULT '[]', mention_channel_ids TEXT NOT NULL DEFAULT '[]',
+      reaction_summary TEXT NOT NULL DEFAULT '[]', embed_count INTEGER NOT NULL DEFAULT 0,
+      component_count INTEGER NOT NULL DEFAULT 0, position INTEGER, flags INTEGER NOT NULL DEFAULT 0,
+      raw TEXT NOT NULL DEFAULT '{}', recorded_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS message_details_guild_idx ON message_details (guild_id, channel_id);
+    CREATE TABLE IF NOT EXISTS media_files (
+      media_id TEXT PRIMARY KEY, kind TEXT NOT NULL,
+      guild_id TEXT, channel_id TEXT, message_id TEXT, owner_user_id TEXT,
+      filename TEXT NOT NULL DEFAULT '', content_type TEXT, bytes INTEGER, width INTEGER, height INTEGER,
+      duration REAL, url TEXT NOT NULL, local_path TEXT, sha256 TEXT, status TEXT NOT NULL DEFAULT 'pending',
+      stored_bytes INTEGER NOT NULL DEFAULT 0, downloaded_at INTEGER, recorded_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS media_files_pending_idx ON media_files (status, recorded_at);
+    CREATE INDEX IF NOT EXISTS media_files_message_idx ON media_files (message_id);
+    CREATE INDEX IF NOT EXISTS media_files_owner_idx ON media_files (owner_user_id, kind);
     CREATE TABLE IF NOT EXISTS settings (guild_id TEXT PRIMARY KEY, target_role_id TEXT);
     CREATE TABLE IF NOT EXISTS voice_sessions (
       guild_id TEXT NOT NULL, user_id TEXT NOT NULL, channel_id TEXT NOT NULL,
@@ -180,7 +211,8 @@ export const fetchRecentMessages = (guildId: Snowflake, limit: number, channelId
   return rows.reverse().map((row): HistoryMessage => ({
     messageId: row.message_id, guildId: row.guild_id, channelId: row.channel_id, channelName: row.channel_name,
     authorId: row.author_id, authorName: row.author_name, authorIsBot: Boolean(row.author_is_bot),
-    content: row.content, createdTimestamp: row.created_at
+    content: row.content, createdTimestamp: row.created_at,
+    profile: null, media: [], detail: null
   }));
 };
 
