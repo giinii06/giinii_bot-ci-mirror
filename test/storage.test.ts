@@ -40,7 +40,7 @@ const { collectDiscordHistoryInBatches } = await import("../src/history.js");
 const { recordMessageRecords, seedProfileHistoryFromMessages, isGuildEnriched, markGuildEnriched } = await import("../src/records.js");
 const { drainPendingMedia, normalizeStoredMediaPaths, requeueRetryableMedia, resolveMediaPath } = await import("../src/media.js");
 const { isSeedStale, produceChunkedSeed, readSeedManifest } = await import("../src/seed.js");
-const { isChunkable, restoreChunkedMedia, produceChunkedMedia } = await import("../src/media-seed.js");
+const { chunkedMediaPaths, chunkIfOversized, isChunkable, readChunkedManifest, restoreChunkedMedia, produceChunkedMedia } = await import("../src/media-seed.js");
 const { loadStatisticsRows, mergeStatisticsRows } = await import("../src/voice-affinity-command.js");
 
 test("migrates and stores AI questions in command logs", () => {
@@ -618,6 +618,35 @@ test("keeps media over the github file cap out of the direct media tree", async 
   expect(statSync(restoredPath).size).toBe(bytes.length);
   expect(createHash("sha256").update(readFileSync(restoredPath)).digest("hex"))
     .toBe(createHash("sha256").update(bytes).digest("hex"));
+});
+
+test("chunks an over-cap file at save time and leaves no copy in the media tree", async () => {
+  storage.initDatabase();
+  const relative = `attachment/big-${Date.now()}.bin`;
+  const absolute = join(directory, "media", relative);
+  mkdirSync(join(directory, "media", "attachment"), { recursive: true });
+  const bytes = Buffer.alloc(2 * 1024 * 1024, 3);
+  writeFileSync(absolute, bytes);
+
+  const chunked = await chunkIfOversized(relative, 1024);
+
+  expect(chunked).toBe(true);
+  expect(existsSync(absolute)).toBe(false);
+  const manifest = await readChunkedManifest(relative);
+  expect(manifest?.bytes).toBe(bytes.length);
+  expect(manifest?.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+  expect((await chunkedMediaPaths())).toContain(relative);
+});
+
+test("leaves a file under the cap in the media tree unchunked", async () => {
+  storage.initDatabase();
+  const relative = `attachment/small-${Date.now()}.bin`;
+  const absolute = join(directory, "media", relative);
+  mkdirSync(join(directory, "media", "attachment"), { recursive: true });
+  writeFileSync(absolute, Buffer.alloc(1024, 5));
+
+  expect(await chunkIfOversized(relative, 1024 * 1024)).toBe(false);
+  expect(existsSync(absolute)).toBe(true);
 });
 
 test("keeps chat-only and voice-only users in the same statistics ranking", () => {  expect(mergeStatisticsRows(

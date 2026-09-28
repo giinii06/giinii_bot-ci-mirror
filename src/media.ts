@@ -1,4 +1,4 @@
-import { restoreChunkedMedia } from "./media-seed.js";
+import { chunkIfOversized, materializeChunkedMedia, readChunkedManifest, syncChunkedGitignore } from "./media-seed.js";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -48,15 +48,27 @@ const storeBuffer = async (target: string, bytes: Buffer) => {
   return { sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.byteLength };
 };
 
+const finishStored = async (mediaId: string, relative: string, stored: { sha256: string; bytes: number }, reused: boolean) => {
+  markStatus(mediaId, "downloaded", { localPath: relative, sha256: stored.sha256, bytes: stored.bytes });
+  if (await chunkIfOversized(relative)) {
+    console.log(`Media worker: chunked ${relative} into 30mb parts (${stored.bytes.toLocaleString()} bytes is over the git file cap)`);
+  }
+  return { status: "downloaded", localPath: relative, sha256: stored.sha256, bytes: stored.bytes, reused } satisfies MediaResult;
+};
+
 export const downloadMedia = async (media: PendingMedia) => {
   const relative = mediaRelativePath(media);
   const target = join(config.mediaRoot, relative);
+
+  const chunked = await readChunkedManifest(relative);
+  if (chunked && !existsSync(target)) {
+    return finishStored(media.media_id, relative, { sha256: chunked.sha256, bytes: chunked.bytes }, true);
+  }
+
+  await materializeChunkedMedia(relative);
   if (existsSync(target)) {
     const existing = Buffer.from(await Bun.file(target).arrayBuffer());
-    const sha256 = createHash("sha256").update(existing).digest("hex");
-    const bytes = existing.byteLength;
-    markStatus(media.media_id, "downloaded", { localPath: relative, sha256, bytes });
-    return { status: "downloaded", localPath: relative, sha256, bytes, reused: true } satisfies MediaResult;
+    return finishStored(media.media_id, relative, { sha256: createHash("sha256").update(existing).digest("hex"), bytes: existing.byteLength }, true);
   }
 
   const response = await fetch(media.url, { signal: AbortSignal.timeout(30_000) });
@@ -76,8 +88,7 @@ export const downloadMedia = async (media: PendingMedia) => {
     return { status: "too_large", bytes: bytes.byteLength } satisfies MediaResult;
   }
   const stored = await storeBuffer(target, bytes);
-  markStatus(media.media_id, "downloaded", { localPath: relative, ...stored });
-  return { status: "downloaded", localPath: relative, ...stored, reused: false } satisfies MediaResult;
+  return finishStored(media.media_id, relative, stored, false);
 };
 
 const takePending = (limit: number): PendingMedia[] =>
@@ -150,8 +161,9 @@ export const requeueRetryableMedia = () => {
 };
 
 export const startMediaWorker = async (intervalMs = 5_000) => {
-  const { restored, chunked } = await restoreChunkedMedia();
-  if (restored > 0) console.log(`Media worker: restored ${restored} of ${chunked} chunked media file(s)`);
+  // 조각 파일은 필요할 때 펼친다. 기동 시 전부 복원하면 data/media 에 다시 큰 파일이
+  // 나타나 git 트리가 푸시 불가해지고 시작도 느려진다.
+  await syncChunkedGitignore();
   const requeued = requeueRetryableMedia();
   if (requeued.oversized > 0 || requeued.failed > 0) {
     console.log(`Media worker: requeued ${requeued.oversized} oversized and ${requeued.failed} failed media file(s)`);

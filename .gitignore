@@ -2,6 +2,8 @@
 data/*
 !data/seed/
 !data/media/
+!data/media-seed/
+!data/.gitignore
 node_modules/
 .DS_Store
 .omo/

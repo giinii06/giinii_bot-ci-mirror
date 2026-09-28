@@ -1,24 +1,17 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { config } from "../src/config.js";
-import { mediaSeedDirectory, produceChunkedMedia } from "../src/media-seed.js";
+import { all } from "../src/storage.js";
+import { chunkIfOversized, chunkedMediaPaths } from "../src/media-seed.js";
 
-const produced = await produceChunkedMedia();
-const root = mediaSeedDirectory();
-
-for (const localPath of produced) console.log(`chunked  ${localPath}`);
-
-// 원본은 디스크에 남긴다(로컬에서는 바로 쓰인다). git 에서는 조각만 보내고 원본은 제외한다 —
-// 그래야 clone 한 곳에서 media-seed 가 원래 위치로 되살린다.
-const MARK_START = "# >>> chunked media (scripts/chunk-media.ts)";
-const MARK_END = "# <<< chunked media";
-const gitignorePath = join(config.mediaRoot, "..", "..", ".gitignore");
-const current = await readFile(gitignorePath, "utf8");
-const base = current.split(MARK_START)[0]!.trimEnd();
-await writeFile(
-  gitignorePath,
-  `${base}\n${MARK_START}\n${["!data/media-seed/", ...produced.map((p) => `data/media/${p}`)].join("\n")}\n${MARK_END}\n`
+/** 이미 저장돼 있는데 아직 조각으로 안 나간 파일을 처리한다. 평소에는 0건이다. */
+const rows = all<{ local_path: string }>(
+  "SELECT local_path FROM media_files WHERE status = 'downloaded' AND local_path IS NOT NULL"
 );
 
-console.log(`\n${produced.length} chunked under ${root}`);
-console.log(".gitignore 의 chunked media 블록을 갱신했습니다.");
+let chunked = 0;
+for (const row of rows) {
+  if (await chunkIfOversized(row.local_path)) {
+    console.log(`chunked  ${row.local_path}`);
+    chunked += 1;
+  }
+}
+
+console.log(`\n${chunked} newly chunked, ${(await chunkedMediaPaths()).length} chunked media file(s) total`);

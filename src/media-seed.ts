@@ -10,7 +10,7 @@ const CHUNK_BYTES = 30 * 1024 * 1024;
 /** GitHub 는 파일 하나가 100 MB 를 넘으면 push 를 거절하므로, 큰 파일은 30 MB 조각으로 보낸다. */
 export const CHUNKABLE_ABOVE_BYTES = 100 * 1024 * 1024 - 1024 * 1024;
 
-export const isChunkable = (bytes: number | null) => (bytes ?? 0) > CHUNKABLE_ABOVE_BYTES;
+export const isChunkable = (bytes: number | null, capBytes = CHUNKABLE_ABOVE_BYTES) => (bytes ?? 0) > capBytes;
 
 export const mediaSeedDirectory = () => join(dirname(databasePath), "media-seed");
 
@@ -81,6 +81,65 @@ const chunkDirectories = async (dir: string, out: string[] = []): Promise<string
     else if (name === "manifest.json") out.push(path.slice(0, -"manifest.json".length));
   }
   return out;
+};
+
+const GITIGNORE_START = "# >>> chunked media (maintained by src/media-seed.ts)";
+const GITIGNORE_END = "# <<< chunked media";
+
+/**
+ * data/ 는 호스트와 공유 볼륨이라 컨테이너도 쓸 수 있다. 저장소 루트 .gitignore 는
+ * 이미지에 없으므로 여기(data/.gitignore)에 써야 컨테이너에서 갱신할 수 있다.
+ */
+const syncGitignore = async (chunked: string[]) => {
+  const gitignore = join(dirname(config.mediaRoot), ".gitignore");
+  const current = await readFile(gitignore, "utf8").catch(() => "");
+  const base = current.split(GITIGNORE_START)[0]!.trimEnd();
+  const block = [GITIGNORE_START, ...[...chunked].sort().map((p) => `media/${p}`), GITIGNORE_END].join("\n");
+  await writeFile(gitignore, `${base}${base ? "\n" : ""}${block}\n`);
+  return true;
+};
+
+/** 기동 시점에 현재 조각 목록을 .gitignore 에 맞춘다. 이미 처리된 파일도 누락되지 않게. */
+export const syncChunkedGitignore = async () => {
+  await syncGitignore(await chunkedMediaPaths());
+};
+
+export const chunkedMediaPaths = async () => {
+  const root = mediaSeedDirectory();
+  return (await chunkDirectories(root))
+    .map((dir) => relative(root, dir))
+    .filter((p) => p && !p.startsWith(".."));
+};
+
+/**
+ * 저장 시점에 조각으로 바꾼다. 원본은 지운다 — 복사본을 남기면 아카이브가 큰 파일
+ * 크기만큼 더 커진다. 그리고 data/media 에서 빠진 경로를 .gitignore 에 자동 반영한다.
+ */
+export const chunkIfOversized = async (localPath: string, capBytes = CHUNKABLE_ABOVE_BYTES) => {
+  const source = mediaPathFor(localPath);
+  if (!existsSync(source)) return false;
+  const { size } = await stat(source);
+  if (!isChunkable(size, capBytes)) return false;
+
+  await splitInto(source, chunkDirectoryFor(localPath));
+  await rm(source, { force: true });
+  await syncGitignore(await chunkedMediaPaths());
+  return true;
+};
+
+/** 조각으로 보관된 파일의 정체는 manifest 가 이미 갖고 있다. 펼칠 필요가 없다. */
+export const readChunkedManifest = async (localPath: string) => {
+  const manifestPath = join(chunkDirectoryFor(localPath), "manifest.json");
+  return readFile(manifestPath, "utf8")
+    .then((text) => JSON.parse(text) as ChunkManifest)
+    .catch(() => null);
+};
+
+/** 조각으로만 남아 있는 파일을 원래 위치에 되살린다. */
+export const materializeChunkedMedia = async (localPath: string) => {
+  const target = mediaPathFor(localPath);
+  if (existsSync(target) && statSync(target).size > 0) return false;
+  return reassemble(chunkDirectoryFor(localPath), target);
 };
 
 export const restoreChunkedMedia = async () => {
