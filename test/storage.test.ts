@@ -1,4 +1,4 @@
-import { existsSync, createReadStream, createWriteStream, mkdirSync, statSync } from "node:fs";
+import { existsSync, createReadStream, createWriteStream, mkdirSync, statSync, writeFileSync, readFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,8 +38,9 @@ const { isDefenseSuccess } = await import("../src/roulette.js");
 const { ensureGuildChatStats, recordChatCounts } = await import("../src/activity.js");
 const { collectDiscordHistoryInBatches } = await import("../src/history.js");
 const { recordMessageRecords, seedProfileHistoryFromMessages, isGuildEnriched, markGuildEnriched } = await import("../src/records.js");
-const { drainPendingMedia, normalizeStoredMediaPaths, resolveMediaPath } = await import("../src/media.js");
+const { drainPendingMedia, normalizeStoredMediaPaths, requeueRetryableMedia, resolveMediaPath } = await import("../src/media.js");
 const { isSeedStale, produceChunkedSeed, readSeedManifest } = await import("../src/seed.js");
+const { isChunkable, restoreChunkedMedia, produceChunkedMedia } = await import("../src/media-seed.js");
 const { loadStatisticsRows, mergeStatisticsRows } = await import("../src/voice-affinity-command.js");
 
 test("migrates and stores AI questions in command logs", () => {
@@ -568,6 +569,55 @@ test("only reports a stale seed once the database grows past the threshold", asy
   expect(await isSeedStale(30 * 1024 * 1024, seedDir)).toBe(false);
   expect(await isSeedStale(0, seedDir)).toBe(false);
   expect(await isSeedStale(-1, seedDir)).toBe(true);
+});
+
+test("requeues oversized media once the limit allows it and retries transient failures", () => {
+  storage.initDatabase();
+  const oversizedId = `oversize-${Date.now()}`;
+  const failedId = `failed-${Date.now()}`;
+  const missingId = `missing-${Date.now()}`;
+  storage.run(`INSERT INTO media_files (media_id, kind, filename, url, status, bytes, recorded_at) VALUES (?, 'attachment', 'big.mp4', 'http://127.0.0.1:1/big.mp4', 'too_large', ?, ?)`,
+    oversizedId, 300 * 1024 * 1024, Date.now());
+  storage.run(`INSERT INTO media_files (media_id, kind, filename, url, status, bytes, recorded_at) VALUES (?, 'attachment', 'flaky.png', 'http://127.0.0.1:1/flaky.png', 'failed', ?, ?)`,
+    failedId, 1024, Date.now());
+  storage.run(`INSERT INTO media_files (media_id, kind, filename, url, status, bytes, recorded_at) VALUES (?, 'attachment', 'gone.png', 'http://127.0.0.1:1/gone.png', 'missing', ?, ?)`,
+    missingId, 1024, Date.now());
+
+  const requeued = requeueRetryableMedia();
+  const statusOf = (id: string) => storage.sql<{ status: string }>("SELECT status FROM media_files WHERE media_id = ?", id)?.status;
+
+  expect(requeued.oversized).toBeGreaterThanOrEqual(1);
+  expect(requeued.failed).toBeGreaterThanOrEqual(1);
+  expect(statusOf(oversizedId)).toBe("pending");
+  expect(statusOf(failedId)).toBe("pending");
+  expect(statusOf(missingId)).toBe("missing");
+});
+
+test("keeps media over the github file cap out of the direct media tree", async () => {
+  storage.initDatabase();
+  const relative = `attachment/chunked-${Date.now()}.bin`;
+  const chunkDir = join(directory, "media-seed", relative);
+  mkdirSync(chunkDir, { recursive: true });
+  const bytes = Buffer.alloc(1024 * 1024, 7);
+  writeFileSync(join(chunkDir, "part-001"), bytes.subarray(0, 600 * 1024));
+  writeFileSync(join(chunkDir, "part-002"), bytes.subarray(600 * 1024));
+  writeFileSync(join(chunkDir, "manifest.json"), JSON.stringify({
+    bytes: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    parts: [{ name: "part-001", bytes: 600 * 1024 }, { name: "part-002", bytes: 424 * 1024 }]
+  }));
+
+  expect(isChunkable(50 * 1024 * 1024)).toBe(false);
+  expect(isChunkable(294 * 1024 * 1024)).toBe(true);
+
+  const result = await restoreChunkedMedia();
+
+  expect(result.restored).toBeGreaterThanOrEqual(1);
+  const restoredPath = join(directory, "media", relative);
+  expect(existsSync(restoredPath)).toBe(true);
+  expect(statSync(restoredPath).size).toBe(bytes.length);
+  expect(createHash("sha256").update(readFileSync(restoredPath)).digest("hex"))
+    .toBe(createHash("sha256").update(bytes).digest("hex"));
 });
 
 test("keeps chat-only and voice-only users in the same statistics ranking", () => {  expect(mergeStatisticsRows(

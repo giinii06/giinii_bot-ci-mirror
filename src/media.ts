@@ -1,3 +1,4 @@
+import { restoreChunkedMedia } from "./media-seed.js";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -133,7 +134,28 @@ export const normalizeStoredMediaPaths = () => {
 };
 
 /** 백필이 도는 동안 조용히 받아 두었다가, 다 받아진 뒤 한 번에 정리한다. */
-export const startMediaWorker = (intervalMs = 5_000) => {
+/**
+ * 워커는 pending 만 처리하므로 일시적 실패(failed)는 기동마다 한 번 재시도하고,
+ * 크기 제한으로 건너뛴 항목(too_large)은 현재 제한 안에 들어왔을 때만 다시 받는다.
+ * 없는 파일(missing)은 영구 상태이므로 건드리지 않는다.
+ */
+export const requeueRetryableMedia = () => {
+  const oversized = all<{ media_id: string }>(
+    "SELECT media_id FROM media_files WHERE status = 'too_large' AND bytes IS NOT NULL AND bytes <= ?", config.mediaMaxBytes
+  );
+  for (const row of oversized) run("UPDATE media_files SET status = 'pending' WHERE media_id = ?", row.media_id);
+  const failed = all<{ media_id: string }>("SELECT media_id FROM media_files WHERE status = 'failed'");
+  for (const row of failed) run("UPDATE media_files SET status = 'pending' WHERE media_id = ?", row.media_id);
+  return { oversized: oversized.length, failed: failed.length };
+};
+
+export const startMediaWorker = async (intervalMs = 5_000) => {
+  const { restored, chunked } = await restoreChunkedMedia();
+  if (restored > 0) console.log(`Media worker: restored ${restored} of ${chunked} chunked media file(s)`);
+  const requeued = requeueRetryableMedia();
+  if (requeued.oversized > 0 || requeued.failed > 0) {
+    console.log(`Media worker: requeued ${requeued.oversized} oversized and ${requeued.failed} failed media file(s)`);
+  }
   const normalized = normalizeStoredMediaPaths();
   if (normalized > 0) console.log(`Media worker: normalized ${normalized} absolute path(s) to relative`);
   let busy = false;

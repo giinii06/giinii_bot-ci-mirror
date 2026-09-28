@@ -44,7 +44,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   initializeVoiceSessions(client);
   startVoiceTracker(client);
   startWebServer(readyClient);
-  startMediaWorker();
+  await startMediaWorker();
   startSeedWorker();
   console.log(`Using ${config.aiProvider} model: ${config.aiModel}`);
   console.log(`Seeding profile history from stored messages: ${seedProfileHistoryFromMessages()} rows`);

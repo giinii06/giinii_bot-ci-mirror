@@ -5,3 +5,7 @@ data/*
 node_modules/
 .DS_Store
 .omo/
+# >>> chunked media (scripts/chunk-media.ts)
+!data/media-seed/
+data/media/attachment/1535918520607711252.mp4
+# <<< chunked media

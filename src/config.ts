@@ -182,7 +182,7 @@ export const config = {
   discordToken: required(process.env.DISCORD_BOT_TOKEN?.trim() ? "DISCORD_BOT_TOKEN" : "DISCORD_TOKEN"),
   guildId: process.env.DISCORD_GUILD_ID?.trim() || undefined,
   mediaRoot: process.env.MEDIA_PATH?.trim() || join(dirname(databasePath), "media"),
-  mediaMaxBytes: toInt(process.env.MEDIA_MAX_BYTES, 50 * 1024 * 1024, 1024, 2_147_483_647),
+  mediaMaxBytes: toInt(process.env.MEDIA_MAX_BYTES, 512 * 1024 * 1024, 1024, 2_147_483_647),
   mediaConcurrency: toInt(process.env.MEDIA_CONCURRENCY, 4, 1, 16),
   skipBackfill: toBool(process.env.SKIP_BACKFILL, false),
   seedChunkBytes: toInt(process.env.SEED_CHUNK_BYTES, 30 * 1024 * 1024, 1024 * 1024, 2_147_483_647),
