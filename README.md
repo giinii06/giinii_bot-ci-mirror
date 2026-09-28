@@ -1216,6 +1216,7 @@ giinii_bot/
 │   ├── records.ts                  # 프로필 이력·메시지 상세·미디어 행 기록, 소급 복원, 스윕
 │   ├── media.ts                    # 미디어 다운로드 워커 (해시·크기 기록, 자가 치유)
 │   ├── seed.ts                     # DB 스냅샷 → 30MB 조각, 원자적 교체, 자동 갱신
+│   ├── git-guard.ts                # 커밋되는 파일의 30MB 상한, pre-commit 훅이 쓰는 검사기
 │   ├── analysis.ts                 # AI 명령 처리, 백필, 디버그 모드, command_logs
 │   ├── gemini.ts                   # provider별 LLM 호출, 재시도, 폴백, 로그 마스킹
 │   ├── embeds.ts                   # 진행/결과/안내 임베드 빌더
@@ -1374,7 +1375,7 @@ docker compose up -d
 수동으로 다시 만들고 싶으면:
 
 ```sh
-bun scripts/split-db.ts
+bun run scripts/split-db.ts
 ```
 
 | 환경변수 | 기본값 | 설명 |
@@ -1391,6 +1392,27 @@ bun run scripts/split-db.ts data/seed data/bot.sqlite
 ```
 
 > `docker compose up -d`은 **이미지가 있으면 재빌드하지 않습니다.** `src/`를 고친 뒤에는 반드시 `--build`를 붙여야 새 코드가 반영됩니다.
+
+### 30MB 규칙: 커밋되는 파일은 조각뿐
+
+GitHub 는 **파일 하나가 100 MB 를 넘으면 push 를 거절합니다.** 거절은 원격에서 일어나고, 그때는 이미 로컬 커밋이 만들어진 뒤입니다. 이 저장소는 그 경계에 오지 않도록 **30 MB 를 넘는 파일은 조각으로 나눠 커밋**합니다.
+
+| 대상 | 조각 위치 | 만드는 주체 | 복원 |
+| --- | --- | --- | --- |
+| `data/bot.sqlite` | `data/seed/bot.sqlite.part-NNN` | `src/seed.ts` 가 10분마다 자동, `bun run scripts/split-db.ts` 로 수동 | `bun run scripts/restore-db.ts` (compose 첫 기동에 자동 실행) |
+| `data/media/` 의 큰 파일 | `data/media-seed/<경로>/part-NNN` | 저장 시점에 자동, `bun run scripts/chunk-media.ts` 로 수동 | 필요할 때 `materializeChunkedMedia()` 로 펼침 |
+
+원본은 조각을 만든 뒤 **삭제**됩니다. 복사본을 남기면 아카이브가 큰 파일 크기만큼 더 커지고, 커밋 트리에 다시 30 MB 파일이 나타나기 때문입니다. 조각이 된 경로는 `data/.gitignore` 에 자동으로 기록됩니다.
+
+`src/git-guard.ts` 가 **30 MB = `MAX_COMMITTED_FILE_BYTES`** 를 정의하고, `.githooks/pre-commit` 이 커밋 직전에 스테이징된 blob 을 검사합니다. 30 MB 이상인 파일이 있으면 커밋이 중단되고, 조각을 만드는 명령어가 함께 출력됩니다.
+
+```sh
+git config core.hooksPath .githooks   # 최초 1회
+bun run scripts/check-large-files.ts            # 스테이징된 파일 검사
+bun run scripts/check-large-files.ts --tracked  # 커밋 트리 전체 검사
+```
+
+> 훅은 의존성 없이 실행되어야 하므로 `src/config.ts` 를 import 하지 않습니다(import 시점에 `DISCORD_BOT_TOKEN` 을 요구하기 때문).
 
 **수동 복원**
 
