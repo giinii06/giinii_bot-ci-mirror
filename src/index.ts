@@ -40,7 +40,7 @@ const replyButtonError = (interaction: ButtonInteraction, error: unknown) => {
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   initDatabase();
-  try { await syncCommands(client); } catch (error) { console.error("Slash command sync failed", error); }
+  void syncCommands(client).catch((error) => console.error("Slash command sync failed", error));
   initializeVoiceSessions(client);
   startVoiceTracker(client);
   startWebServer(readyClient);

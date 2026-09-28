@@ -73,7 +73,9 @@ const analysisCommandBuilders = [
 export const commands = [...rouletteCommandBuilders, ...voiceCommandBuilders, ...analysisCommandBuilders].map((command) => command.toJSON());
 
 export const syncCommands = async (client: Client) => {
-  if (client.application) await client.application.commands.set([]);
+  // 전역 명령 삭제는 기동을 막으면 안 된다. 이 엔드포인트는 공유 rate limit이 가장 빡빡해서
+  // 반복 등록하면 기동이 수 분씩 멈춘다. 길드 등록이 실제로 필요한 쪽이다.
+  void client.application?.commands.set([]).catch((error) => console.warn("global command cleanup skipped", error.message));
   const guilds = config.guildId
     ? [await client.guilds.fetch(config.guildId)]
     : [...client.guilds.cache.values()];
