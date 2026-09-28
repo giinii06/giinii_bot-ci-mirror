@@ -1,13 +1,9 @@
-
-data/*
-!data/seed/
-!data/media/
-!data/media-seed/
-!data/.gitignore
 node_modules/
+
+# 살아있는 데이터베이스. 저장소에는 data/seed/ 의 30MB 조각만 커밋한다 (scripts/split-db.ts 가 생성).
+data/bot.sqlite
+data/bot.sqlite-wal
+data/bot.sqlite-shm
+
 .DS_Store
 .omo/
-# >>> chunked media (scripts/chunk-media.ts)
-!data/media-seed/
-data/media/attachment/1535918520607711252.mp4
-# <<< chunked media

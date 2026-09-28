@@ -593,7 +593,7 @@ test("requeues oversized media once the limit allows it and retries transient fa
   expect(statusOf(missingId)).toBe("missing");
 });
 
-test("keeps media over the github file cap out of the direct media tree", async () => {
+test("keeps media over the 30 MB commit ceiling out of the direct media tree", async () => {
   storage.initDatabase();
   const relative = `attachment/chunked-${Date.now()}.bin`;
   const chunkDir = join(directory, "media-seed", relative);
@@ -607,7 +607,8 @@ test("keeps media over the github file cap out of the direct media tree", async 
     parts: [{ name: "part-001", bytes: 600 * 1024 }, { name: "part-002", bytes: 424 * 1024 }]
   }));
 
-  expect(isChunkable(50 * 1024 * 1024)).toBe(false);
+  expect(isChunkable(29 * 1024 * 1024)).toBe(false);
+  expect(isChunkable(50 * 1024 * 1024)).toBe(true);
   expect(isChunkable(294 * 1024 * 1024)).toBe(true);
 
   const result = await restoreChunkedMedia();

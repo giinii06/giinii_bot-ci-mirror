@@ -7,8 +7,8 @@ import { all } from "./storage.js";
 
 const CHUNK_BYTES = 30 * 1024 * 1024;
 
-/** GitHub 는 파일 하나가 100 MB 를 넘으면 push 를 거절하므로, 큰 파일은 30 MB 조각으로 보낸다. */
-export const CHUNKABLE_ABOVE_BYTES = 100 * 1024 * 1024 - 1024 * 1024;
+/** GitHub 는 파일 하나가 100 MB 를 넘으면 push 를 거절한다. 그보다 훨씬 앞선 30 MB 에서 조각으로 보낸다. */
+export const CHUNKABLE_ABOVE_BYTES = CHUNK_BYTES;
 
 export const isChunkable = (bytes: number | null, capBytes = CHUNKABLE_ABOVE_BYTES) => (bytes ?? 0) > capBytes;
 
@@ -156,7 +156,7 @@ export const restoreChunkedMedia = async () => {
   return { restored, chunked: dirs.length };
 };
 
-/** 100 MB 를 넘는 파일만 조각으로 만든다. 나머지는 data/media 로 그대로 커밋된다. */
+/** 30 MB 를 넘는 파일만 조각으로 만든다. 나머지는 data/media 로 그대로 커밋된다. */
 export const produceChunkedMedia = async () => {
   const rows = all<{ local_path: string; bytes: number }>(
     "SELECT local_path, bytes FROM media_files WHERE status = 'downloaded' AND bytes IS NOT NULL"

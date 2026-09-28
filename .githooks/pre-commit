@@ -1,0 +1,4 @@
+#!/bin/sh
+# 30 MB 를 넘는 파일이 커밋되면 GitHub 가 push 를 거절한다 (100 MB 하드 리밋).
+# staged blob 만 본다 — 커밋 트리 전체를 훅마다 훑으면 큰 저장소에서 느려진다.
+exec bun run "$(dirname "$0")/../scripts/check-large-files.ts"
