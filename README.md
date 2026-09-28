@@ -1184,7 +1184,7 @@ Bun은 `.env`를 자동으로 로드합니다. `src/config.ts`가 **모듈 평�
 | `WEB_HOST` | `0.0.0.0` | — | 바인딩 주소. **`127.0.0.1`로 바꾸면 외부 접근 차단** |
 | `WEB_PORT` | `3003` | 1 ~ 65535 | 포트 |
 | `MEDIA_PATH` | `./data/media` | 경로 | 미디어 바이트를 저장할 디렉터리. `data` 아래면 컨테이너와 호스트가 공유합니다 |
-| `MEDIA_MAX_BYTES` | `52428800` (50MB) | 1KB ~ 2GB | 이 크기를 넘는 파일은 `too_large`로 건너뜁니다 |
+| `MEDIA_MAX_BYTES` | `536870912` (512MB) | 1KB ~ 2GB | 이 크기를 넘는 파일은 `too_large`로 건너뜁니다. 디스코드가 허용하는 최대(500MB)보다 높게 잡아 사실상 전부 받습니다 |
 | `MEDIA_CONCURRENCY` | `4` | 1 ~ 16 | 동시에 내려받는 미디어 개수 |
 | `SKIP_BACKFILL` | `false` | 불리언 | 메시지 백필만 건너뜁니다. enrich(상세·미디어)는 그대로 돕니다. 임시 우회용 |
 | `SEED_CHUNK_BYTES` | `31457280` | 1MB ~ 2GB | `data/seed` 조각 하나 크기 |
@@ -1512,7 +1512,8 @@ console.log(db.query("SELECT kind, status, COUNT(*) n FROM media_files GROUP BY 
 
 - `pending`이 줄지 않으면 워커가 멈춘 것입니다. 기동 로그의 `Media worker: ... processed` 줄을 확인하십시오.
 - `failed` / `missing`면 다운로드가 실패한 것입니다. 원본 URL이 `media_files.url`에 남아 있습니다.
-- `too_large`면 `MEDIA_MAX_BYTES`(기본 50MB) 초과입니다. 값을 올리면 다시 시도합니다.
+- `too_large`면 `MEDIA_MAX_BYTES`(기본 512MB) 초과입니다. 값을 올리면 다음 기동에서 자동으로 다시 받습니다.
+- `failed`는 일시적인 실패입니다. **봇을 다시 띄우면 자동으로 재시도합니다.** URL이 이미 사라졌다면(404) `missing`이 되고 그것은 재시도하지 않습니다.
 - **첨부 종류가 아직 0개인 것은 정상입니다.** 백필이 끝난 뒤 `enrichGuildHistory` 패스가 이미 저장된 구간까지 다시 훑으면서 채웁니다. 그 전까지는 새로 발견되는 메시지만 채워집니다.
 - 디스크가 부족하면 `df -h .`로 `data`가 있는 파티션을 확인하십시오. 미디어는 커밋되지 않으므로 `data/seed`만으로는 복구되지 않습니다.
 - `MEDIA_PATH`를 바꾼 뒤에는 기존 행의 `local_path`가 옛 루트를 가리킵니다. 기동 시 `normalizeStoredMediaPaths()`가 현재 루트 아래 경로만 상대 경로로 되돌립니다. 루트를 옮겼다면 파일도 같이 옮기고 `resolveMediaPath()`로 경로를 확인하십시오.

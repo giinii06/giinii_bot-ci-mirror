@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { config, databasePath } from "./config.js";
 import { all } from "./storage.js";
 
@@ -88,7 +88,8 @@ export const restoreChunkedMedia = async () => {
   const dirs = await chunkDirectories(root);
   let restored = 0;
   for (const dir of dirs) {
-    const localPath = dir.slice(root.length + 1);
+    const localPath = relative(root, dir);
+    if (!localPath || localPath.startsWith("..")) continue;
     const target = mediaPathFor(localPath);
     if (existsSync(target) && statSync(target).size > 0) continue;
     if (await reassemble(dir, target)) restored += 1;
