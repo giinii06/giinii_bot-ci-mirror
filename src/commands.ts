@@ -73,15 +73,31 @@ const analysisCommandBuilders = [
 export const commands = [...rouletteCommandBuilders, ...voiceCommandBuilders, ...analysisCommandBuilders].map((command) => command.toJSON());
 
 export const syncCommands = async (client: Client) => {
-  // 전역 명령 삭제는 기동을 막으면 안 된다. 이 엔드포인트는 공유 rate limit이 가장 빡빡해서
-  // 반복 등록하면 기동이 수 분씩 멈춘다. 길드 등록이 실제로 필요한 쪽이다.
-  void client.application?.commands.set([]).catch((error) => console.warn("global command cleanup skipped", error.message));
+  // set(commands) 가 전체를 덮어쓰므로 먼저 빈 셋으로 지우는 호출은 불필요하다.
+  // 그 DELETE 가 명령 엔드포인트에서 가장 스로틀에 걸리는 호출이라 기동을 붙잡았다.
+  //
+  // 그리고 디스코드는 명령 '생성'을 하루 200회로 제한한다(code 30034). 매 기동마다
+  // 덮어쓰면 재시작 12번으로 quota 가 소진돼 명령이 사라진 채 복구되지 않는다.
+  // 그래서 내용이 같으면 아예 쓰지 않는다.
+  const started = Date.now();
   const guilds = config.guildId
     ? [await client.guilds.fetch(config.guildId)]
     : [...client.guilds.cache.values()];
+  console.log(`Command sync: ${guilds.length} guild(s) resolved in ${Date.now() - started}ms, comparing`);
   for (const guild of guilds) {
-    await guild.commands.set([]);
+    const wanted = commands as unknown as { name: string; options?: unknown[] }[];
+    const current = await guild.commands.fetch();
+    const same = current.size === wanted.length
+      && wanted.every((w) => {
+        const have = current.get(w.name);
+        return have && JSON.stringify(have.options) === JSON.stringify(w.options ?? []);
+      });
+    if (same) {
+      console.log(`Slash commands already up to date in ${guild.name} (${current.size}), skipped`);
+      continue;
+    }
+    const at = Date.now();
     const registered = await guild.commands.set(commands);
-    console.log(`Registered ${registered.size} slash commands in ${guild.name}`);
+    console.log(`Registered ${registered.size} slash commands in ${guild.name} (${Date.now() - at}ms)`);
   }
 };

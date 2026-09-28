@@ -71,13 +71,17 @@ client.on(Events.MessageCreate, async (message) => {
   if (!message.inGuild()) return;
   if (!message.author.bot && message.content === "!sync") {
     if (!message.member?.permissions.has(PermissionFlagsBits.Administrator)) return;
-    try {
-      await syncCommands(client);
-      await message.reply(`${commands.length}개 명령어를 서버에 등록했습니다.`);
-    } catch (error) {
-      console.error(error);
-      await message.reply("명령어 동기화에 실패했습니다. 봇 권한과 콘솔 오류를 확인하세요.");
-    }
+    void message.reply(`${commands.length}개 명령어를 등록합니다. 완료되면 알려줄게요.`);
+    const followUp = (text: string) => message.channel.send(text).catch(() => undefined);
+    syncCommands(client)
+      .then(() => {
+        void followUp(`${commands.length}개 명령어를 서버에 등록했습니다.`);
+        console.log("!sync: done");
+      })
+      .catch((error) => {
+        console.error("Slash command sync failed", error);
+        void followUp("명령어 동기화에 실패했습니다. 봇 권한과 콘솔 오류를 확인하세요.");
+      });
     return;
   }
   await persistLiveMessage(message);
