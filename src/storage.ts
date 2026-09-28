@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import type { Snowflake } from "discord.js";
@@ -171,6 +171,16 @@ export const upsertMessages = (messages: HistoryMessage[]): HistoryMessage[] => 
     db.exec("ROLLBACK");
     throw error;
   }
+};
+
+/**
+ * 기록 중인 DB를 그대로 복사하면 트랜잭션이 찢어질 수 있다.
+ * VACUUM INTO 는 쓰기 잠금을 걸고 일관된 스냅샷을 만든다.
+ */
+export const snapshotDatabase = (targetPath: string) => {
+  rmSync(targetPath, { force: true });
+  db.exec(`VACUUM INTO '${targetPath.split("'").join("''")}'`);
+  return targetPath;
 };
 
 export type StoredChannelRange = { oldest: Snowflake; newest: Snowflake };

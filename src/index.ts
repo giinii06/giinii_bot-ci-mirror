@@ -7,6 +7,7 @@ import { initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } fr
 import { commands, syncCommands } from "./commands.js";
 import { config } from "./config.js";
 import { startMediaWorker } from "./media.js";
+import { startSeedWorker } from "./seed.js";
 import { seedProfileHistoryFromMessages, sweepGuildProfiles } from "./records.js";
 import { handleRouletteCommand } from "./roulette.js";
 import { initDatabase } from "./storage.js";
@@ -44,6 +45,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   startVoiceTracker(client);
   startWebServer(readyClient);
   startMediaWorker();
+  startSeedWorker();
   console.log(`Using ${config.aiProvider} model: ${config.aiModel}`);
   console.log(`Seeding profile history from stored messages: ${seedProfileHistoryFromMessages()} rows`);
   void startInitialBackfill(client).catch((error) => console.error("Initial backfill failed", error));

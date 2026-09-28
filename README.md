@@ -1187,6 +1187,8 @@ Bun은 `.env`를 자동으로 로드합니다. `src/config.ts`가 **모듈 평�
 | `MEDIA_MAX_BYTES` | `52428800` (50MB) | 1KB ~ 2GB | 이 크기를 넘는 파일은 `too_large`로 건너뜁니다 |
 | `MEDIA_CONCURRENCY` | `4` | 1 ~ 16 | 동시에 내려받는 미디어 개수 |
 | `SKIP_BACKFILL` | `false` | 불리언 | 메시지 백필만 건너뜁니다. enrich(상세·미디어)는 그대로 돕니다. 임시 우회용 |
+| `SEED_CHUNK_BYTES` | `31457280` | 1MB ~ 2GB | `data/seed` 조각 하나 크기 |
+| `SEED_GROWTH_BYTES` | `31457280` | 0 ~ 2GB | DB 가 이만큼 커져야 조각을 다시 만듭니다 |
 
 ### `.env` 덮어쓰기 규칙
 
@@ -1213,6 +1215,7 @@ giinii_bot/
 │   ├── history.ts                  # 채널 선택, 메시지 수집, 프롬프트 조립, 부가 정보 추출
 │   ├── records.ts                  # 프로필 이력·메시지 상세·미디어 행 기록, 소급 복원, 스윕
 │   ├── media.ts                    # 미디어 다운로드 워커 (해시·크기 기록, 자가 치유)
+│   ├── seed.ts                     # DB 스냅샷 → 30MB 조각, 원자적 교체, 자동 갱신
 │   ├── analysis.ts                 # AI 명령 처리, 백필, 디버그 모드, command_logs
 │   ├── gemini.ts                   # provider별 LLM 호출, 재시도, 폴백, 로그 마스킹
 │   ├── embeds.ts                   # 진행/결과/안내 임베드 빌더
@@ -1229,7 +1232,7 @@ giinii_bot/
 │       └── BMDoHyeon-Regular.ttf   # 카드 렌더링 폰트
 ├── DESIGN.md                       # 통계 카드 디자인 시스템 (토큰 · 구조)
 ├── test/
-│   ├── storage.test.ts             # 마이그레이션, 영속성, 폴백, 백필, 기록·미디어 계약 (21개)
+│   ├── storage.test.ts             # 마이그레이션, 영속성, 폴백, 백필, 기록·미디어·시드 계약 (24개)
 │   ├── voice-affinity.test.ts      # 친밀도 계산 + PNG 렌더링
 │   └── text.test.ts                # 임베드 분할
 ├── audio/
@@ -1262,7 +1265,7 @@ giinii_bot/
 ```sh
 bun install --frozen-lockfile
 bun run check     # tsc --noEmit — src, test 포함
-bun test          # bun:test 27개
+bun test          # bun:test 30개
 bun run dev       # 파일 변경 시 자동 재시작
 ```
 
@@ -1270,7 +1273,7 @@ bun run dev       # 파일 변경 시 자동 재시작
 
 `tsconfig.json`은 `strict: true`, `target: ESNext`, `module/moduleResolution: Preserve/bundler`, `skipLibCheck: true`, `types: ["bun-types"]`이며 **`src`와 `test`를 모두 포함**합니다. 테스트 파일의 타입 오류도 걸립니다.
 
-### 테스트 27개가 검증하는 것
+### 테스트 30개가 검증하는 것
 
 | 파일 | 테스트 | 검증 대상 |
 | --- | --- | --- |
@@ -1294,6 +1297,9 @@ bun run dev       # 파일 변경 시 자동 재시작
 | | `downloads media to disk and records its hash and byte length` | 실제 HTTP 다운로드로 **경로·sha256·크기**가 DB와 일치 |
 | | `rewrites environment absolute media paths to relative ones` | 예전에 환경 절대 경로로 저장된 값을 **상대 경로로 되돌림**(자가 치유) |
 | | `marks a guild as enriched only once so restarts skip the full re-walk` | enrich 완료 표시가 한 번만 남고 재기동에 유지됨 |
+| | `splits the database into chunks whose reassembled bytes match the manifest sha256` | 청크 분할 뒤 재조립한 바이트가 manifest 해시와 일치하고 무결성 검사 통과 |
+| | `keeps the previous seed intact when a new split fails` | 새 분할이 실패해도 예전 시드와 manifest 가 그대로 남음 |
+| | `only reports a stale seed once the database grows past the threshold` | 시드 직후에는 "뒤처짐"이 아니고, 임계값을 넘는 growth 에서만 참 |
 | `voice-affinity.test.ts` | `voice affinity sums overlapping sessions` | 여러 구간의 **교집합 합산**과 순위 정렬, 다른 채널은 무시, 자기 자신 제외 |
 | | `normalizes equivalent user IDs` | 공백이 다른 동일 ID가 하나의 유저로 합쳐짐 |
 | | `renders a voice affinity PNG card` | 친밀도 모드 PNG 시그니처(`89504e47...`) 확인 |
@@ -1328,6 +1334,25 @@ data/
 ```
 
 `data/seed/`는 **DB만** 담습니다. `media/`는 통째로 GB 단위가 될 수 있어 커밋하지 않으며, 조각도 만들지 않습니다. 백업이 필요하면 `media/`를 별도로 저장소에 옮겨야 하고, DB만 복원하면 미디어 경로가 DB에 남지만 바이트는 비어 있습니다(`resolveMediaPath()`로 경로를 얻으면 존재 여부를 확인할 수 있습니다).
+
+### 자동 시드 갱신
+
+`data/seed/`의 조각은 **봇이 스스로 갱신합니다.** `startSeedWorker()`가 10분마다 확인하고, DB 가 마지막 시드 시점보다 기본 30MB 이상 커졌을 때만 다시 만듭니다(변화가 없으면 아무 일도 하지 않습니다).
+
+- 스냅샷은 `VACUUM INTO` 로 뜹니다. 살아있는 DB를 그대로 복사하면 기록 중인 트랜잭션이 찢어질 수 있기 때문입니다.
+- 조각은 임시 디렉터리에 먼저 쓰고 **디렉터리 교체로 한 번에 갈아 끼웁니다.** 도중에 죽어도 예전 시드가 그대로 남아 복구 경로가 깨지지 않습니다.
+- `manifest.json` 에는 `sourceBytes`(시드 시점의 DB 크기), `totalBytes`(스냅샷 크기), 조각별 `sha256` 이 들어갑니다. `scripts/restore-db.ts` 는 재조립 후 이 해시를 대조합니다.
+
+수동으로 다시 만들고 싶으면:
+
+```sh
+bun scripts/split-db.ts
+```
+
+| 환경변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `SEED_CHUNK_BYTES` | `31457280` (30MB) | 조각 하나 크기 |
+| `SEED_GROWTH_BYTES` | `31457280` (30MB) | 이만큼 커져야 시드를 다시 만듭니다 |
 
 **조각 갱신**
 

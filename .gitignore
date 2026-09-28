@@ -2,3 +2,5 @@
 data/*
 !data/seed/
 node_modules/
+.DS_Store
+.omo/

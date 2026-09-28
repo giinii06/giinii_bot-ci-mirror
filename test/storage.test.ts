@@ -1,10 +1,10 @@
+import { existsSync, createReadStream, createWriteStream, mkdirSync, statSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
 import { createCanvas } from "@napi-rs/canvas";
 import { ChannelType, type Guild } from "discord.js";
 import type { HistoryMessage, MediaRecord, MessageProfile } from "../src/history.js";
@@ -39,6 +39,7 @@ const { ensureGuildChatStats, recordChatCounts } = await import("../src/activity
 const { collectDiscordHistoryInBatches } = await import("../src/history.js");
 const { recordMessageRecords, seedProfileHistoryFromMessages, isGuildEnriched, markGuildEnriched } = await import("../src/records.js");
 const { drainPendingMedia, normalizeStoredMediaPaths, resolveMediaPath } = await import("../src/media.js");
+const { isSeedStale, produceChunkedSeed, readSeedManifest } = await import("../src/seed.js");
 const { loadStatisticsRows, mergeStatisticsRows } = await import("../src/voice-affinity-command.js");
 
 test("migrates and stores AI questions in command logs", () => {
@@ -508,6 +509,65 @@ test("marks a guild as enriched only once so restarts skip the full re-walk", ()
   markGuildEnriched(guildId, 99);
   expect(storage.sql<{ message_count: number }>("SELECT message_count FROM enrichment_state WHERE guild_id = ?", guildId)?.message_count).toBe(99);
   expect(countRows("enrichment_state", "guild_id = ?", guildId)).toBe(1);
+});
+
+test("splits the database into chunks whose reassembled bytes match the manifest sha256", async () => {
+  storage.initDatabase();
+  storage.run("INSERT OR REPLACE INTO settings (guild_id, target_role_id) VALUES (?, ?)", "seed-guild", "role-1");
+  const seedDir = join(directory, "seed-split");
+
+  const manifest = await produceChunkedSeed({ seedDir, chunkBytes: 4096 });
+
+  expect(manifest.parts.length).toBeGreaterThan(1);
+  expect(manifest.totalBytes).toBeGreaterThan(manifest.chunkBytes);
+  for (const part of manifest.parts.slice(0, -1)) expect(part.bytes).toBe(4096);
+  expect(manifest.parts.at(-1)!.bytes).toBeLessThanOrEqual(4096);
+
+  const reassembled = join(directory, "reassembled.sqlite");
+  const out = createWriteStream(reassembled);
+  for (const part of manifest.parts) {
+    for await (const chunk of createReadStream(join(seedDir, part.name))) out.write(chunk);
+  }
+  await new Promise((r) => out.end(r));
+
+  const bytes = Buffer.from(await Bun.file(reassembled).arrayBuffer());
+  expect(createHash("sha256").update(bytes).digest("hex")).toBe(manifest.sha256);
+  const restored = new Database(reassembled, { readonly: true });
+  expect((restored.query("PRAGMA integrity_check").get() as { integrity_check: string }).integrity_check).toBe("ok");
+  restored.close();
+  rmSync(reassembled, { force: true });
+});
+
+test("keeps the previous seed intact when a new split fails", async () => {
+  storage.initDatabase();
+  const seedDir = join(directory, "seed-keep");
+  const first = await produceChunkedSeed({ seedDir, chunkBytes: 1024 * 1024 });
+  const keptSha = first.sha256;
+
+  const occupied = join(seedDir, "bot.sqlite.part-001");
+  rmSync(occupied, { force: true });
+  await mkdirSync(occupied);
+  const chunkBytes = { value: 0 };
+  await expect(produceChunkedSeed({
+    seedDir,
+    get chunkBytes() { return chunkBytes.value; }
+  } as { seedDir: string; chunkBytes: number })).rejects.toThrow();
+
+  rmSync(occupied, { recursive: true, force: true });
+  const after = await readSeedManifest(seedDir);
+  expect(after?.sha256).toBe(keptSha);
+});
+
+test("only reports a stale seed once the database grows past the threshold", async () => {
+  storage.initDatabase();
+  const seedDir = join(directory, "seed-stale");
+  const manifest = await produceChunkedSeed({ seedDir, chunkBytes: 1024 * 1024 });
+  const { size } = statSync(storage.db.filename);
+
+  expect(manifest.sourceBytes).toBe(size);
+  expect(await isSeedStale(30 * 1024 * 1024, seedDir)).toBe(false);
+  expect(await isSeedStale(0, seedDir)).toBe(false);
+  expect(await isSeedStale(-1, seedDir)).toBe(true);
 });
 
 test("keeps chat-only and voice-only users in the same statistics ranking", () => {  expect(mergeStatisticsRows(
