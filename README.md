@@ -1324,16 +1324,44 @@ bun run dev       # 파일 변경 시 자동 재시작
 데이터베이스는 저장소에 **30MB 조각으로 나누어** `data/seed/`에 커밋합니다. `bot.sqlite`가 30MB를 넘으면 조각이 여러 개 생기고, `docker compose up`이 첫 기동 때 자동으로 이어붙여 `data/bot.sqlite`를 만듭니다.
 
 ```
-data/
-├── seed/                     # 커밋 대상
-│   ├── manifest.json         # 조각 목록, 총 크기, sha256
-│   ├── bot.sqlite.part-001   # 30MB
-│   └── bot.sqlite.part-002   # 나머지
-├── bot.sqlite                # 실행 중 DB (커밋 대상 아님, seed에서 자동 복원)
-└── media/                    # 미디어 바이트 (커밋 대상 아님)
+data/                     # 볼륨 — clone 하면 이미 채워져 있다
+├── seed/                 # 커밋 대상 — DB 30MB 조각
+│   ├── manifest.json     # 조각 목록, 총 크기, sha256
+│   ├── bot.sqlite.part-001 ~ part-00N
+├── media/                 # 커밋 대상 — 실제 미디어 바이트
+│   ├── attachment/        # 메시지 첨부 원본
+│   ├── sticker/           # 스티커 이미지
+│   ├── avatar/            # 유저 아바타
+│   └── banner/            # 유저 배너
+├── bot.sqlite             # 커밋 대상 아님 — seed 에서 자동 복원
+└── bot.sqlite-wal         # 커밋 대상 아님
 ```
 
 `data/seed/`는 **DB만** 담습니다. `media/`는 통째로 GB 단위가 될 수 있어 커밋하지 않으며, 조각도 만들지 않습니다. 백업이 필요하면 `media/`를 별도로 저장소에 옮겨야 하고, DB만 복원하면 미디어 경로가 DB에 남지만 바이트는 비어 있습니다(`resolveMediaPath()`로 경로를 얻으면 존재 여부를 확인할 수 있습니다).
+
+### 새 곳에서 복원하기
+
+**저장소를 clone 하고 `docker compose up -d` 하면 데이터가 그대로 살아있습니다.** DB와 미디어 둘 다.
+
+```sh
+git clone git@github.com:blond11qq/giinii_bot.git
+cd giinii_bot
+cp .env.example .env   # 토큰과 API 키 채우기
+docker compose up -d
+```
+
+무엇이 어떻게 도착하는가:
+
+| 데이터 | 도착 경로 |
+| --- | --- |
+| DB | `data/seed/` 의 30MB 조각 → 컨테이너 첫 기동에 `restore-db.ts` 가 하나로 이어 붙여 `data/bot.sqlite` 복원 |
+| 미디어 | `data/media/` 가 **그대로 커밋**되어 있고, compose의 `./data:/app/data` 마운트로 `/app/data/media` 에 그대로 나타남 |
+
+**미디어는 왜 복원 스크립트가 필요 없는가.** compose가 `./data` 를 `/app/data` 로 통째로 마운트하기 때문입니다. `data/media/` 가 레포에 있으면 클론하는 순간 이미 마운트 경로에 존재합니다. 별도 단계가 없습니다.
+
+`media_files.local_path` 는 미디어 루트 기준 **상대 경로**로 저장하므로, 어느 머신에서 열어도 같은 값이고 `resolveMediaPath()` 로 실제 경로를 얻습니다.
+
+> 대용량입니다. `data/media/` 는 현재 약 2.7GB이고 저장소도 그만큼 커졌습니다. 미디어는 DB와 달리 내용 단위로 저장되므로 새로 추가된 파일만 히스토리에 쌓입니다(전체 재업로드 없음). 그래도 clone 은 시간이 걸립니다.
 
 ### 자동 시드 갱신
 
