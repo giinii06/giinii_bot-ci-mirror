@@ -157,17 +157,19 @@ export const restoreChunkedMedia = async () => {
 };
 
 /** 30 MB 를 넘는 파일만 조각으로 만든다. 나머지는 data/media 로 그대로 커밋된다. */
-export const produceChunkedMedia = async () => {
-  const rows = all<{ local_path: string; bytes: number }>(
-    "SELECT local_path, bytes FROM media_files WHERE status = 'downloaded' AND bytes IS NOT NULL"
-  );
+export const produceChunkedMedia = async (guildIds: string[]) => {
   const produced: string[] = [];
-  for (const row of rows) {
-    if (!isChunkable(row.bytes)) continue;
-    const source = mediaPathFor(row.local_path);
-    if (!existsSync(source)) continue;
-    await splitInto(source, chunkDirectoryFor(row.local_path));
-    produced.push(row.local_path);
+  for (const guildId of guildIds) {
+    const rows = all<{ local_path: string; bytes: number }>(
+      guildId, "SELECT local_path, bytes FROM media_files WHERE status = 'downloaded' AND bytes IS NOT NULL"
+    );
+    for (const row of rows) {
+      if (!isChunkable(row.bytes)) continue;
+      const source = mediaPathFor(row.local_path);
+      if (!existsSync(source)) continue;
+      await splitInto(source, chunkDirectoryFor(row.local_path));
+      produced.push(row.local_path);
+    }
   }
   return produced;
 };

@@ -3,9 +3,12 @@ import {
   type ButtonInteraction, type ChatInputCommandInteraction
 } from "discord.js";
 import { analysisCommandNames, ensureBackfillStarted, handleAnalysisCommand, persistLiveMessage, startInitialBackfill } from "./analysis.js";
+import { handleAdminCommand } from "./admin-commands.js";
+import { isCommandEnabled } from "./command-rules.js";
 import { initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
 import { commands, syncCommands } from "./commands.js";
 import { config } from "./config.js";
+import { createNoticeEmbed } from "./embeds.js";
 import { startMediaWorker } from "./media.js";
 import { startSeedWorker } from "./seed.js";
 import { seedProfileHistoryFromMessages, sweepGuildProfiles } from "./records.js";
@@ -39,17 +42,18 @@ const replyButtonError = (interaction: ButtonInteraction, error: unknown) => {
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
-  initDatabase();
+  const guildIds = [...readyClient.guilds.cache.keys()];
+  initDatabase(guildIds);
   void syncCommands(client).catch((error) => console.error("Slash command sync failed", error));
-  initializeVoiceSessions(client);
-  startVoiceTracker(client);
+  initializeVoiceSessions(readyClient);
+  startVoiceTracker(readyClient);
   startWebServer(readyClient);
-  await startMediaWorker();
-  startSeedWorker();
+  await startMediaWorker(guildIds);
+  startSeedWorker(guildIds);
   console.log(`Using ${config.aiProvider} model: ${config.aiModel}`);
   console.log(`Seeding profile history from stored messages: ${seedProfileHistoryFromMessages()} rows`);
-  void startInitialBackfill(client).catch((error) => console.error("Initial backfill failed", error));
-  void sweepAllGuildProfiles(client).catch((error) => console.error("Profile sweep failed", error));
+  void startInitialBackfill(readyClient).catch((error) => console.error("Initial backfill failed", error));
+  void sweepAllGuildProfiles(readyClient).catch((error) => console.error("Profile sweep failed", error));
 });
 
 const sweepAllGuildProfiles = async (client: Client) => {
@@ -69,6 +73,7 @@ client.on(Events.GuildCreate, (guild) => {
 
 client.on(Events.MessageCreate, async (message) => {
   if (!message.inGuild()) return;
+  if (await handleAdminCommand(message, client)) return;
   if (!message.author.bot && message.content === "!sync") {
     if (!message.member?.permissions.has(PermissionFlagsBits.Administrator)) return;
     void message.reply(`${commands.length}개 명령어를 등록합니다. 완료되면 알려줄게요.`);
@@ -93,6 +98,11 @@ client.on(Events.VoiceStateUpdate, (_, newState) => {
 
 client.on(Events.InteractionCreate, (interaction) => {
   if (interaction.isChatInputCommand()) {
+    if (interaction.inCachedGuild() && !isCommandEnabled(interaction.guildId, interaction.commandName)) {
+      void interaction.reply({ embeds: [createNoticeEmbed("이 서버에서는 비활성화된 명령어예요",
+        `/${interaction.commandName} 명령어는 이 서버에서 꺼져 있습니다. 다른 서버에서는 쓸 수 있어요.`)], ephemeral: true });
+      return;
+    }
     if (interaction.commandName === "친밀도") {
       void handleVoiceAffinityCommand(interaction).catch((error) => replyInteractionError(interaction, error));
       return;

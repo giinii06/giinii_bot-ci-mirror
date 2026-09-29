@@ -1,6 +1,6 @@
 import type { Guild, Snowflake } from "discord.js";
 import { avatarMedia, bannerMedia, profileFromMember, type HistoryMessage, type MediaRecord, type MessageProfile } from "./history.js";
-import { all, db, each, run, sql } from "./storage.js";
+import { all, beginTransaction, commitTransaction, listGuildIds, rollbackTransaction, run, sql } from "./storage.js";
 
 const SEPARATOR = "\u001F";
 
@@ -15,7 +15,7 @@ export const recordProfileSnapshot = (
   profile: MessageProfile,
   observedAt: number,
   source: string
-) => run(`INSERT INTO user_profiles (
+) => run(guildId, `INSERT INTO user_profiles (
       guild_id, user_id, observed_at, source, username, global_name, nickname, display_name,
       avatar_hash, avatar_url, banner_hash, banner_url, accent_color, bot, public_flags, identity
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -27,13 +27,13 @@ export const recordProfileSnapshot = (
   ).changes;
 
 const recordMediaRows = (
-  guildId: string | null,
+  guildId: string,
   message: HistoryMessage | null,
   items: MediaRecord[]
 ) => {
   let stored = 0;
   for (const item of items) {
-    stored += run(`INSERT INTO media_files (
+    stored += run(guildId, `INSERT INTO media_files (
         media_id, kind, guild_id, channel_id, message_id, owner_user_id, filename, content_type,
         bytes, width, height, duration, url, status, recorded_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
@@ -49,7 +49,7 @@ const recordMediaRows = (
 const recordDetailRow = (guildId: string, message: HistoryMessage) => {
   const detail = message.detail;
   if (!detail) return 0;
-  return run(`INSERT INTO message_details (
+  return run(guildId, `INSERT INTO message_details (
       message_id, guild_id, channel_id, author_id, message_type, pinned, edited_timestamp, webhook_id,
       reply_to_message_id, thread_id, mentions_everyone, mention_user_ids, mention_role_ids,
       mention_channel_ids, reaction_summary, embed_count, component_count, position, flags, raw, recorded_at
@@ -77,7 +77,7 @@ export const recordMessageRecords = (guildId: string, messages: HistoryMessage[]
   let details = 0;
   let media = 0;
   let profiles = 0;
-  db.exec("BEGIN");
+  beginTransaction(guildId);
   try {
     for (const message of messages) {
       details += recordDetailRow(guildId, message);
@@ -90,9 +90,9 @@ export const recordMessageRecords = (guildId: string, messages: HistoryMessage[]
         if (appended > 0) media += recordMediaRows(guildId, message, identityScoped);
       }
     }
-    db.exec("COMMIT");
+    commitTransaction(guildId);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackTransaction(guildId);
     throw error;
   }
   return { details, media, profiles };
@@ -103,26 +103,26 @@ export const recordMessageRecords = (guildId: string, messages: HistoryMessage[]
  * 같은 유저가 같은 이름을 쓴 구간은 최초 시각 하나로 접힌다.
  */
 export const seedProfileHistoryFromMessages = () => {
-  const guilds = all<{ guild_id: string }>("SELECT DISTINCT guild_id FROM discord_messages");
   let seeded = 0;
-  for (const { guild_id: guildId } of guilds) {
+  for (const guildId of listGuildIds()) {
     const already = sql<{ present: number }>(
-      "SELECT EXISTS(SELECT 1 FROM user_profiles WHERE guild_id = ? AND source = 'history-seed') AS present", guildId
+      guildId, "SELECT EXISTS(SELECT 1 FROM user_profiles WHERE guild_id = ? AND source = 'history-seed') AS present", guildId
     )?.present;
     if (already) continue;
 
-    const rows = each<{ author_id: string; author_name: string; first_seen: number; messages: number }>(
-      `SELECT author_id, author_name, MIN(created_at) AS first_seen, COUNT(*) AS messages
+    const rows = all<{ author_id: string; author_name: string; first_seen: number }>(
+      guildId,
+      `SELECT author_id, author_name, MIN(created_at) AS first_seen
        FROM discord_messages
        WHERE guild_id = ? AND TRIM(author_name) <> ''
        GROUP BY author_id, author_name
        ORDER BY author_id, first_seen`,
       guildId
     );
-    db.exec("BEGIN");
+    beginTransaction(guildId);
     try {
       for (const row of rows) {
-        seeded += run(`INSERT INTO user_profiles (
+        seeded += run(guildId, `INSERT INTO user_profiles (
             guild_id, user_id, observed_at, source, username, global_name, nickname, display_name,
             avatar_hash, avatar_url, banner_hash, banner_url, accent_color, bot, public_flags, identity
           ) VALUES (?, ?, ?, 'history-seed', '', NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL, 0, 0, ?)
@@ -131,31 +131,31 @@ export const seedProfileHistoryFromMessages = () => {
           ["", "", "", row.author_name, "", "", ""].join(SEPARATOR)
         ).changes;
       }
-      db.exec("COMMIT");
+      commitTransaction(guildId);
     } catch (error) {
-      db.exec("ROLLBACK");
+      rollbackTransaction(guildId);
       throw error;
     }
   }
   return seeded;
 };
 
-/** 서버 구성원을 한 번에 읽어 현재 아바타/배너를 잡는다. Discord는 과거 프로필을 제공하지 않는다. */
 /**
  * enrich는 저장 구간을 무시하고 전량 재순회하므로, 완료한 서버를 다시 돌리지 않도록 표시를 남긴다.
  * 중간에 중단되면 표시가 없으므로 다음 기동에 다시 돕니다.
  */
 export const isGuildEnriched = (guildId: string) =>
-  Boolean(sql("SELECT 1 FROM enrichment_state WHERE guild_id = ?", guildId));
+  Boolean(sql(guildId, "SELECT 1 FROM enrichment_state WHERE guild_id = ?", guildId));
 
 export const markGuildEnriched = (guildId: string, messageCount: number) =>
-  run(`INSERT INTO enrichment_state (guild_id, enriched_at, message_count) VALUES (?, ?, ?)
+  run(guildId, `INSERT INTO enrichment_state (guild_id, enriched_at, message_count) VALUES (?, ?, ?)
     ON CONFLICT (guild_id) DO UPDATE SET enriched_at = excluded.enriched_at, message_count = excluded.message_count`,
     guildId, Date.now(), messageCount);
 
+/** 서버 구성원을 한 번에 읽어 현재 아바타/배너를 잡는다. Discord는 과거 프로필을 제공하지 않는다. */
 export const sweepGuildProfiles = async (guild: Guild) => {
   const authorIds = all<{ author_id: Snowflake }>(
-    "SELECT DISTINCT author_id FROM discord_messages WHERE guild_id = ? LIMIT 5000", guild.id
+    guild.id, "SELECT DISTINCT author_id FROM discord_messages WHERE guild_id = ? LIMIT 5000", guild.id
   ).map((row) => row.author_id);
   if (authorIds.length === 0) return { scanned: 0, appended: 0, media: 0 };
 

@@ -72,6 +72,11 @@ const analysisCommandBuilders = [
 
 export const commands = [...rouletteCommandBuilders, ...voiceCommandBuilders, ...analysisCommandBuilders].map((command) => command.toJSON());
 
+/** 서버별 on/off 설정과 대조할 슬래시 명령어 이름 목록. 순서는 등록 순서와 같다. */
+export const slashCommandNames = [
+  ...rouletteCommandBuilders, ...voiceCommandBuilders, ...analysisCommandBuilders
+].map((command) => command.name);
+
 export const syncCommands = async (client: Client) => {
   // set(commands) 가 전체를 덮어쓰므로 먼저 빈 셋으로 지우는 호출은 불필요하다.
   // 그 DELETE 가 명령 엔드포인트에서 가장 스로틀에 걸리는 호출이라 기동을 붙잡았다.

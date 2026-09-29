@@ -59,7 +59,7 @@ export const formatOversizedReport = (files: OversizedFile[]): string => {
     ...lines,
     "",
     "이 저장소는 30 MB 를 넘는 파일을 조각으로 나눠 커밋합니다.",
-    "  bun run scripts/split-db.ts     # data/bot.sqlite -> data/seed/ 조각",
+    "  bun run scripts/split-db.ts     # data/guilds/*.sqlite -> data/seed/<서버ID>/ 조각",
     "  bun run scripts/chunk-media.ts  # data/media 의 큰 파일 -> data/media-seed/ 조각",
     "조각을 만든 뒤 원본은 .gitignore 로 빠져야 합니다. 그 다음 git rm --cached <원본 경로> 로 인덱스에서 빼세요."
   ].join("\n");

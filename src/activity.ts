@@ -1,5 +1,5 @@
 import type { Client, VoiceState } from "discord.js";
-import { all, db, each, run, sql } from "./storage.js";
+import { all, beginTransaction, commitTransaction, listGuildIds, rollbackTransaction, run, sql } from "./storage.js";
 import type { HistoryMessage } from "./history.js";
 
 const KST = 9 * 60 * 60 * 1000;
@@ -21,19 +21,19 @@ export const bucketAt = (time: number, kind: Bucket) => {
 };
 
 const ensureUser = (guildId: string, userId: string) => {
-  run("INSERT OR IGNORE INTO users (guild_id, user_id) VALUES (?, ?)", guildId, userId);
+  run(guildId, "INSERT OR IGNORE INTO users (guild_id, user_id) VALUES (?, ?)", guildId, userId);
 };
 
 export const recordVoiceActivity = (guildId: string, userId: string, voiceSeconds: number, at: number) => {
   for (const kind of BUCKETS) {
-    run(`INSERT INTO activity (guild_id, user_id, bucket_type, bucket_key, chat_count, voice_seconds)
+    run(guildId, `INSERT INTO activity (guild_id, user_id, bucket_type, bucket_key, chat_count, voice_seconds)
       VALUES (?, ?, ?, ?, 0, ?)
       ON CONFLICT(guild_id, user_id, bucket_type, bucket_key) DO UPDATE SET
       voice_seconds = voice_seconds + excluded.voice_seconds`,
       guildId, userId, kind, bucketAt(at, kind), voiceSeconds);
   }
   ensureUser(guildId, userId);
-  run("UPDATE users SET voice_total = voice_total + ? WHERE guild_id = ? AND user_id = ?", voiceSeconds, guildId, userId);
+  run(guildId, "UPDATE users SET voice_total = voice_total + ? WHERE guild_id = ? AND user_id = ?", voiceSeconds, guildId, userId);
 };
 
 type ChatSample = { authorId: string; createdAt: number };
@@ -56,17 +56,17 @@ const groupChatStats = (samples: ChatSample[]) => {
 
 const applyChatStats = (guildId: string, groups: Map<string, ChatStatGroup>) => {
   if (groups.size === 0) return 0;
-  db.exec("BEGIN");
+  beginTransaction(guildId);
   try {
     for (const { userId, kind, key, count } of groups.values()) {
-      run(`INSERT INTO chat_stats (guild_id, user_id, bucket_type, bucket_key, chat_count) VALUES (?, ?, ?, ?, ?)
+      run(guildId, `INSERT INTO chat_stats (guild_id, user_id, bucket_type, bucket_key, chat_count) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(guild_id, user_id, bucket_type, bucket_key) DO UPDATE SET chat_count = chat_count + excluded.chat_count`,
         guildId, userId, kind, key, count);
     }
-    db.exec("COMMIT");
+    commitTransaction(guildId);
     return groups.size;
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackTransaction(guildId);
     throw error;
   }
 };
@@ -82,29 +82,28 @@ export const recordChatCounts = (guildId: string, messages: HistoryMessage[]) =>
 };
 
 const writeChatStatsState = (guildId: string, messages: number) =>
-  run(`INSERT INTO chat_stats_state (guild_id, built_messages, built_at) VALUES (?, ?, ?)
+  run(guildId, `INSERT INTO chat_stats_state (guild_id, built_messages, built_at) VALUES (?, ?, ?)
     ON CONFLICT(guild_id) DO UPDATE SET built_messages = excluded.built_messages, built_at = excluded.built_at`,
     guildId, messages, Date.now());
 
 /** discord_messages 전체에서 채팅량을 다시 계산해 chat_stats를 DB와 정확히 맞춘다. */
 export const rebuildGuildChatStats = (guildId: string) => {
-  const samples: ChatSample[] = [];
-  for (const row of each<{ author_id: string; created_at: number }>(
-    "SELECT author_id, created_at FROM discord_messages WHERE guild_id = ? AND author_is_bot = 0", guildId
-  )) samples.push({ authorId: row.author_id, createdAt: row.created_at });
+  const samples: ChatSample[] = all<{ author_id: string; created_at: number }>(
+    guildId, "SELECT author_id, created_at FROM discord_messages WHERE guild_id = ? AND author_is_bot = 0", guildId
+  ).map((row) => ({ authorId: row.author_id, createdAt: row.created_at }));
   const groups = groupChatStats(samples);
 
-  db.exec("BEGIN");
+  beginTransaction(guildId);
   try {
-    run("DELETE FROM chat_stats WHERE guild_id = ?", guildId);
+    run(guildId, "DELETE FROM chat_stats WHERE guild_id = ?", guildId);
     for (const { userId, kind, key, count } of groups.values()) {
-      run("INSERT INTO chat_stats (guild_id, user_id, bucket_type, bucket_key, chat_count) VALUES (?, ?, ?, ?, ?)",
+      run(guildId, "INSERT INTO chat_stats (guild_id, user_id, bucket_type, bucket_key, chat_count) VALUES (?, ?, ?, ?, ?)",
         guildId, userId, kind, key, count);
     }
     writeChatStatsState(guildId, samples.length);
-    db.exec("COMMIT");
+    commitTransaction(guildId);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackTransaction(guildId);
     throw error;
   }
   return { buckets: groups.size, messages: samples.length };
@@ -112,7 +111,7 @@ export const rebuildGuildChatStats = (guildId: string) => {
 
 /** 백필이 끝났다는 사실을 기록한다. 이 표가 있어야 chat_stats를 다시 만들지 않는다. */
 export const markChatStatsCurrent = (guildId: string) => {
-  const { stored } = sql<{ stored: number }>("SELECT COUNT(*) AS stored FROM discord_messages WHERE guild_id = ?", guildId)
+  const { stored } = sql<{ stored: number }>(guildId, "SELECT COUNT(*) AS stored FROM discord_messages WHERE guild_id = ?", guildId)
     ?? { stored: 0 };
   writeChatStatsState(guildId, stored);
   return stored;
@@ -120,8 +119,8 @@ export const markChatStatsCurrent = (guildId: string) => {
 
 /** 아직 한 번도 통째로 계산한 적 없는 서버만 다시 만든다. 이미 만든 서버는 즉시 끝난다. */
 export const ensureGuildChatStats = (guildId: string) => {
-  if (sql("SELECT 1 FROM chat_stats_state WHERE guild_id = ?", guildId)) return 0;
-  if (!sql<{ present: number }>("SELECT EXISTS(SELECT 1 FROM discord_messages WHERE guild_id = ?) AS present", guildId)?.present) return 0;
+  if (sql(guildId, "SELECT 1 FROM chat_stats_state WHERE guild_id = ?", guildId)) return 0;
+  if (!sql<{ present: number }>(guildId, "SELECT EXISTS(SELECT 1 FROM discord_messages WHERE guild_id = ?) AS present", guildId)?.present) return 0;
   const rebuilt = rebuildGuildChatStats(guildId);
   console.log(`Rebuilt precomputed chat counts for ${guildId}: ${rebuilt.messages} messages in ${rebuilt.buckets} buckets`);
   return rebuilt.buckets;
@@ -129,8 +128,8 @@ export const ensureGuildChatStats = (guildId: string) => {
 
 export const ensureChatStatsMigrated = () => {
   let rebuilt = 0;
-  for (const { guild_id } of all<{ guild_id: string }>("SELECT DISTINCT guild_id FROM discord_messages")) {
-    if (ensureGuildChatStats(guild_id) > 0) rebuilt += 1;
+  for (const guildId of listGuildIds()) {
+    if (ensureGuildChatStats(guildId) > 0) rebuilt += 1;
   }
   return rebuilt;
 };
@@ -146,12 +145,12 @@ const recordVoice = (guildId: string, userId: string, from: number, to: number) 
 };
 
 const startVoicePresence = (guildId: string, userId: string, channelId: string, startedAt: number) => {
-  run("INSERT INTO voice_presence_sessions (guild_id, user_id, channel_id, started_at) VALUES (?, ?, ?, ?)",
+  run(guildId, "INSERT INTO voice_presence_sessions (guild_id, user_id, channel_id, started_at) VALUES (?, ?, ?, ?)",
     guildId, userId, channelId, startedAt);
 };
 
 const endVoicePresence = (guildId: string, userId: string, endedAt: number) => {
-  run("UPDATE voice_presence_sessions SET ended_at = ? WHERE guild_id = ? AND user_id = ? AND ended_at IS NULL",
+  run(guildId, "UPDATE voice_presence_sessions SET ended_at = ? WHERE guild_id = ? AND user_id = ? AND ended_at IS NULL",
     endedAt, guildId, userId);
 };
 
@@ -159,21 +158,22 @@ export const settleSession = (session: VoiceSession, until: number) => {
   const elapsed = Math.max(0, until - session.last_tick);
   if (!elapsed) return session;
   recordVoice(session.guild_id, session.user_id, session.last_tick, until);
-  run("UPDATE voice_sessions SET last_tick = ? WHERE guild_id = ? AND user_id = ?",
+  run(session.guild_id, "UPDATE voice_sessions SET last_tick = ? WHERE guild_id = ? AND user_id = ?",
     until, session.guild_id, session.user_id);
   return { ...session, last_tick: until };
 };
 
 export const initializeVoiceSessions = (client: Client) => {
   const now = Date.now();
-  run("UPDATE voice_presence_sessions SET ended_at = ? WHERE ended_at IS NULL", now);
-  run("DELETE FROM voice_sessions");
   for (const guild of client.guilds.cache.values()) {
+    const guildId = guild.id;
+    run(guildId, "UPDATE voice_presence_sessions SET ended_at = ? WHERE ended_at IS NULL", now);
+    run(guildId, "DELETE FROM voice_sessions");
     for (const state of guild.voiceStates.cache.values()) {
       if (state.channelId && !state.member?.user.bot) {
-        run("INSERT OR IGNORE INTO voice_sessions (guild_id, user_id, channel_id, last_tick, limited) VALUES (?, ?, ?, ?, 0)",
-          guild.id, state.id, state.channelId, now);
-        startVoicePresence(guild.id, state.id, state.channelId, now);
+        run(guildId, "INSERT OR IGNORE INTO voice_sessions (guild_id, user_id, channel_id, last_tick, limited) VALUES (?, ?, ?, ?, 0)",
+          guildId, state.id, state.channelId, now);
+        startVoicePresence(guildId, state.id, state.channelId, now);
       }
     }
   }
@@ -181,25 +181,26 @@ export const initializeVoiceSessions = (client: Client) => {
 
 export const handleVoiceStateUpdate = async (newState: VoiceState) => {
   if (newState.member?.user.bot) return;
-  const session = sql<VoiceSession>("SELECT * FROM voice_sessions WHERE guild_id = ? AND user_id = ?", newState.guild.id, newState.id);
+  const guildId = newState.guild.id;
+  const session = sql<VoiceSession>(guildId, "SELECT * FROM voice_sessions WHERE guild_id = ? AND user_id = ?", guildId, newState.id);
   const now = Date.now();
   if (session) settleSession(session, now);
   if (!newState.channelId) {
-    endVoicePresence(newState.guild.id, newState.id, now);
-    run("DELETE FROM voice_sessions WHERE guild_id = ? AND user_id = ?", newState.guild.id, newState.id);
+    endVoicePresence(guildId, newState.id, now);
+    run(guildId, "DELETE FROM voice_sessions WHERE guild_id = ? AND user_id = ?", guildId, newState.id);
     return;
   }
   if (session?.channel_id === newState.channelId) return;
-  endVoicePresence(newState.guild.id, newState.id, now);
-  startVoicePresence(newState.guild.id, newState.id, newState.channelId, now);
-  run(`INSERT INTO voice_sessions (guild_id, user_id, channel_id, last_tick, limited) VALUES (?, ?, ?, ?, 0)
+  endVoicePresence(guildId, newState.id, now);
+  startVoicePresence(guildId, newState.id, newState.channelId, now);
+  run(guildId, `INSERT INTO voice_sessions (guild_id, user_id, channel_id, last_tick, limited) VALUES (?, ?, ?, ?, 0)
     ON CONFLICT(guild_id, user_id) DO UPDATE SET channel_id = excluded.channel_id, last_tick = excluded.last_tick`,
-    newState.guild.id, newState.id, newState.channelId, now);
+    guildId, newState.id, newState.channelId, now);
 };
 
 export const startVoiceTracker = (client: Client) => setInterval(() => {
   const now = Date.now();
-  for (const session of all<VoiceSession>("SELECT * FROM voice_sessions")) {
-    if (client.guilds.cache.has(session.guild_id)) settleSession(session, now);
+  for (const guild of client.guilds.cache.values()) {
+    for (const session of all<VoiceSession>(guild.id, "SELECT * FROM voice_sessions")) settleSession(session, now);
   }
 }, 60_000);

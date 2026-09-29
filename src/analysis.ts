@@ -5,7 +5,7 @@ import { createNoticeEmbed, createProgressEmbed, createResultEmbed } from "./emb
 import { askGemini, buildDebugPromptText } from "./gemini.js";
 import { recordMessageRecords, isGuildEnriched, markGuildEnriched } from "./records.js";
 import { cleanMessage, captureDetail, captureMedia, captureProfile, collectDiscordHistoryInBatches, collectHistory, safeCapture, type HistoryMessage, type MediaRecord } from "./history.js";
-import { fetchStoredChannelRanges, insertCommandLog, upsertMessages } from "./storage.js";
+import { fetchStoredChannelRanges, initDatabase, insertCommandLog, sql, upsertMessages } from "./storage.js";
 import { splitForEmbeds } from "./text.js";
 
 export const analysisCommandNames = new Set(["question", "mbti", "결투", "계급", "싸이코지수", "별명", "흑역사", "요약", "캐릭터"]);
@@ -198,7 +198,7 @@ export const handleAnalysisCommand = async (interaction: ChatInputCommandInterac
     });
     const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
     try {
-      insertCommandLog({ guildId, channelId: interaction.channelId, userId: interaction.user.id, userName: author.displayName,
+      insertCommandLog(guildId, { channelId: interaction.channelId, userId: interaction.user.id, userName: author.displayName,
         commandName: interaction.commandName, question: request.input, provider: config.aiProvider, model: config.aiModel, output: answer });
     } catch (error) { console.error("Failed to persist command log", error); }
     if (progressTimer) clearInterval(progressTimer);
@@ -243,41 +243,48 @@ export const persistLiveMessage = async (message: Message) => {
     media: safeCapture("live media", () => captureMedia(message), [] as MediaRecord[]),
     detail: safeCapture("live detail", () => captureDetail(message), null) };
   try {
-    const inserted = upsertMessages([historyMessage]);
+    const inserted = upsertMessages(message.guildId, [historyMessage]);
     recordChatCounts(message.guildId, inserted);
     recordMessageRecords(message.guildId, inserted);
   } catch (error) { console.error("Failed to persist live message", error); }
 };
 
 export const startInitialBackfill = async (client: Client) => {
-  ensureChatStatsMigrated();
   const guilds = config.guildId ? [await client.guilds.fetch(config.guildId)] : await Promise.all([...client.guilds.cache.values()].map((guild) => guild.fetch()));
+  initDatabase(guilds.map((guild) => guild.id));
+  ensureChatStatsMigrated();
   await Promise.all(guilds.map((guild) => backfillGuild(guild)));
 };
 
+const storedCount = (guildId: string) =>
+  sql<{ stored: number }>(guildId, "SELECT COUNT(*) AS stored FROM discord_messages WHERE guild_id = ?", guildId)?.stored ?? 0;
+
 const backfillGuild = async (guild: Guild) => {
   const startedAt = Date.now();
-  backfillStatuses.set(guild.id, { state: "running", messageCount: 0, startedAt });
+  const storedRanges = fetchStoredChannelRanges(guild.id);
+  if (config.skipBackfill) {
+    console.log(`Skipping backfill for ${guild.name} (${guild.id}) because SKIP_BACKFILL is set`);
+    // 건너뛰어도 DB에 이미 쌓인 기록은 그대로 쓸 수 있다. 이 표시가 없으면
+    // 분석 명령이 "준비 중"에서 영영 풀리지 않는다.
+    markChatStatsCurrent(guild.id);
+    backfillStatuses.set(guild.id, { state: "ready", messageCount: storedCount(guild.id), startedAt, completedAt: Date.now() });
+    return;
+  }
   try {
-    if (config.skipBackfill) {
-      console.log(`Skipping backfill for ${guild.name} (${guild.id}) because SKIP_BACKFILL is set`);
-    } else {
-      ensureGuildChatStats(guild.id);
-      const storedRanges = fetchStoredChannelRanges(guild.id);
-      console.log(`Backfilling ${guild.name} (${guild.id}): every readable message, ${storedRanges.size} channel(s) already saved`);
-      let saved = 0;
-      const history = await collectDiscordHistoryInBatches(guild, { batchSize: INITIAL_BACKFILL_BATCH_SIZE, storedRanges }, async (messages, totalCollected) => {
-        const inserted = upsertMessages(messages);
-        recordChatCounts(guild.id, inserted);
-        recordMessageRecords(guild.id, inserted);
-        saved += inserted.length;
-        backfillStatuses.set(guild.id, { state: "running", messageCount: totalCollected, startedAt });
-        console.log(`Backfill progress for ${guild.name}: ${totalCollected} fetched, ${saved} newly saved`);
-      });
-      markChatStatsCurrent(guild.id);
-      backfillStatuses.set(guild.id, { state: "ready", messageCount: history.messageCount, startedAt, completedAt: Date.now() });
-      console.log(`Backfill ready for ${guild.name}: ${history.messageCount} fetched, ${saved} newly saved, ${history.scannedChannelCount} channel(s)`);
-    }
+    ensureGuildChatStats(guild.id);
+    console.log(`Backfilling ${guild.name} (${guild.id}): every readable message, ${storedRanges.size} channel(s) already saved`);
+    let saved = 0;
+    const history = await collectDiscordHistoryInBatches(guild, { batchSize: INITIAL_BACKFILL_BATCH_SIZE, storedRanges }, async (messages, totalCollected) => {
+      const inserted = upsertMessages(guild.id, messages);
+      recordChatCounts(guild.id, inserted);
+      recordMessageRecords(guild.id, inserted);
+      saved += inserted.length;
+      backfillStatuses.set(guild.id, { state: "running", messageCount: totalCollected, startedAt });
+      console.log(`Backfill progress for ${guild.name}: ${totalCollected} fetched, ${saved} newly saved`);
+    });
+    markChatStatsCurrent(guild.id);
+    backfillStatuses.set(guild.id, { state: "ready", messageCount: history.messageCount, startedAt, completedAt: Date.now() });
+    console.log(`Backfill ready for ${guild.name}: ${history.messageCount} fetched, ${saved} newly saved, ${history.scannedChannelCount} channel(s)`);
     await enrichGuildHistory(guild).catch((error) => console.error(`Enrichment failed for ${guild.name}`, error));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -315,5 +322,6 @@ const enrichGuildHistory = async (guild: Guild) => {
 };
 
 export const ensureBackfillStarted = async (guild: Guild) => {
+  initDatabase([guild.id]);
   if (!backfillStatuses.has(guild.id)) await backfillGuild(guild);
 };

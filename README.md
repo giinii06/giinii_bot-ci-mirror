@@ -46,7 +46,7 @@ Bun + TypeScript로만 작성했고, 외부 서버 없이 `bun:sqlite` 하나와
 | **통계 카드** | `/친밀도` `/통화량` `/통계` → 너비 2400 PNG 카드를 서버 내 렌더링 |
 | **룰렛** | 관리자 대상 가위바위보. 방어권 역할, 65% 판정, 음성 재생 |
 | **웹 UI** | 브라우저에서 provider·모델·프롬프트·기록 범위 변경. 두 모델 동시 비교 Playground |
-| **데이터베이스** | `bun:sqlite` 단일 파일, WAL 모드. Docker 없이 로컬 실행 |
+| **데이터베이스** | `bun:sqlite`, **서버마다 파일 하나**(`data/guilds/<서버ID>.sqlite`), WAL 모드. Docker 없이 로컬 실행 |
 
 ### 명령어 한눈에 보기
 
@@ -65,11 +65,32 @@ Bun + TypeScript로만 작성했고, 외부 서버 없이 `bun:sqlite` 하나와
 
 `/타겟` `/관리자_타겟` `/관리자머리끄댕이` `/관리자머리끄댕이방어권_역할`
 
-**일반 메시지 명령 (3개)**
+**일반 메시지 명령 (6개)**
 
-`!sync` `!debug on` `!debug off`
+`!sync` `!debug on` `!debug off` `!서버목록` `!서버별명령어` `!도움`
+
+`!서버목록` `!서버별명령어` `!도움` 은 봇 관리자(코드에 지정된 단일 유저)만 쓸 수 있습니다.
 
 </details>
+
+### 여러 서버 지원
+
+봇이 올라가 있는 서버마다 **DB 파일을 따로** 씁니다(`data/guilds/<서버ID>.sqlite`).
+채팅내역 조회와 통화기록 조회는 언제나 그 명령을 쓴 서버의 파일만 읽으므로, 서버끼리 기록이 섞이지 않습니다.
+
+서버별로 슬래시 명령어를 꺼 둘 수 있습니다(기본값은 전부 허용).
+
+| 명령 | 하는 일 |
+| --- | --- |
+| `!서버목록` | 봇이 올라간 모든 서버의 이름·ID·저장된 기록 수를 보여줍니다 |
+| `!서버별명령어` | 모든 서버 × 슬래시 명령어 허용 상태를 보여줍니다 |
+| `!서버별명령어 [서버이름]` | 그 서버의 슬래시 명령어 허용 상태만 보여줍니다 |
+| `!서버별명령어 [서버이름] disable [명령어]` | 그 서버에서 명령어를 끕니다 |
+| `!서버별명령어 [서버이름] enable [명령어]` | 그 서버에서 명령어를 다시 켭니다 |
+| `!도움` | 사용법을 보여줍니다 |
+
+꺼 둔 명령어를 누르면 **누른 본인에게만 보이는 메시지**(ephemeral)로 안내가 뜹니다.
+설정은 `guild_command_rules` 표에 저장되므로 재시작해도 유지됩니다.
 
 ---
 
@@ -236,7 +257,7 @@ index.ts ──┬── config.ts ──── models.ts
 
 - **단일 프로세스, 인메모리 상태.** 실행 중 분석 목록(`runningGuilds`), 쿨다운(`cooldowns`), 백필 상태(`backfillStatuses`), 룰렛 실행(`rouletteRuns`), PNG 페이지 캐시(`voiceAffinityPages`)는 전부 `Map`/`Set`입니다. 재시작하면 사라집니다. 영속화해야 하는 상태는 전부 SQLite에 있습니다. 미디어 대기열도 예외가 아니라 SQLite의 `status = 'pending'`이므로, 재시작해도 이어받습니다.
 - **쓰기 경로가 없다.** 설정 화면은 `POST /api/settings` → `updateRuntimeSettings()` → `.env` 파일 재작성입니다. 데이터베이스를 건드리지 않습니다.
-- **SQLite를 싱글 스레드로 공유.** `bun:sqlite` `Database` 객체를 모듈 스코프에서 하나만 만들고 모든 쿼리가 그걸 씁니다. 트랜잭션 안에는 `await`가 없습니다. 그래서 백필 수십만 건을 처리하는 동안에도 음성 트래커와 웹 서버가 멈추지 않습니다.
+- **서버마다 DB 파일 하나.** `bun:sqlite` `Database` 객체를 서버별로 하나씩 만들고 모든 쿼리가 `guildId` 로 그 파일을 고릅니다. 트랜잭션 안에는 `await`가 없습니다. 그래서 백필 수십만 건을 처리하는 동안에도 음성 트래커와 웹 서버가 멈추지 않습니다. 채팅내역·통화기록 조회는 언제나 그 서버의 파일만 읽습니다.
 
 ---
 
@@ -835,22 +856,42 @@ API key 입력란은 **쓰기 전용**입니다. 로드 시 값을 비워 두고
 ### 파일 배치
 
 ```text
-data/
-├── bot.sqlite       # 메인 데이터베이스
-├── bot.sqlite-shm   # WAL 공유 메모리
-├── bot.sqlite-wal   # WAL 로그
-└── media/           # 미디어 바이트 (기본 경로, MEDIA_PATH로 변경 가능)
-    ├── attachment/  # 메시지 첨부 원본
-    ├── sticker/     # 스티커 이미지
-    ├── avatar/      # 유저 아바타 (해시가 바뀔 때마다 새 파일)
-    └── banner/      # 유저 배너
+/home/ubuntu/cod/giinii_bot/data/
+├── guilds/               # 서버별 데이터베이스 (server_id.sqlite)
+│   ├── <서버ID>.sqlite
+│   ├── <서버ID>.sqlite-shm   # WAL 공유 메모리
+│   └── <서버ID>.sqlite-wal   # WAL 로그
+├── seed/                 # 서버별 DB 의 30MB 조각 (백업)
+├── media-seed/           # 30MB 를 넘는 미디어 조각
+└── media/                # 미디어 바이트 (기본 경로, MEDIA_PATH로 변경 가능)
+    ├── attachment/       # 메시지 첨부 원본
+    ├── sticker/          # 스티커 이미지
+    ├── avatar/           # 유저 아바타 (해시가 바뀔 때마다 새 파일)
+    └── banner/           # 유저 배너
 ```
 
-기본 경로는 `./data/bot.sqlite`이며, `DATABASE_PATH`로 바꿀 수 있습니다. 디렉터리는 없으면 자동 생성합니다. 미디어는 기본적으로 DB 옆 `media/`에 쌓이며, `data` 아래에 두면 컨테이너와 호스트가 같은 볼륨을 공유하므로 그대로 보입니다.
+`DATABASE_PATH`의 **디렉터리**가 기준점이 됩니다. 서버별 DB는 그 옆의 `guilds/` 에 `data/guilds/<서버ID>.sqlite` 로 만들어집니다.
+디렉터리는 없으면 자동 생성합니다. 미디어는 기본적으로 DB 옆 `media/`에 쌓이며, `data` 아래에 두면 컨테이너와 호스트가 같은 볼륨을 공유하므로 그대로 보입니다.
 
 `media_files.local_path`에는 **환경 절대 경로가 아니라 이 루트 기준 상대 경로**를 저장합니다. 그래서 `MEDIA_PATH`를 어디로 잡든 DB 값은 같고, 실제 경로는 `resolveMediaPath()`로 구합니다.
 
 연결 시 `PRAGMA journal_mode = WAL`, `PRAGMA foreign_keys = ON`을 설정합니다.
+
+### 기존 단일 DB 에서 서버별 DB 로 옮기기
+
+서버별 DB 구조로 바꾸기 전에는 기록이 `data/bot.sqlite` 한 파일에 들어 있었습니다.
+그 기록을 서버별 파일로 자동 분할합니다.
+
+```sh
+docker compose stop bot
+bun run scripts/split-db-by-guild.ts     # data/bot.sqlite → data/guilds/<서버ID>.sqlite
+docker compose up -d
+```
+
+분할은 `INSERT OR REPLACE` 로 각 서버의 행만 옮긴 뒤 원본을 `data/bot.sqlite.legacy` 로 **이름만 바꿔** 남깁니다.
+확인한 뒤에는 이 파일을 지워도 됩니다. 되돌리려면 새 파일들을 지우고 이름을 되돌리면 됩니다.
+
+> `media_files` 중 `guild_id` 가 비어 있던 행은 어느 서버 소속인지 알 수 없어 옮기지 않습니다. 몇 행이 남았는지는 스크립트가 마지막에 알려 줍니다.
 
 ### 테이블
 
@@ -1133,7 +1174,7 @@ Bun은 `.env`를 자동으로 로드합니다. `src/config.ts`가 **모듈 평�
 
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
-| `DATABASE_PATH` | `./data/bot.sqlite` | SQLite 파일 경로. 상위 디렉터리 자동 생성 |
+| `DATABASE_PATH` | `./data/bot.sqlite` | SQLite 파일 경로. **디렉터리**가 기준점이 되고 서버별 DB 는 그 옆 `guilds/` 에 만들어집니다. 상위 디렉터리 자동 생성 |
 
 ### AI
 
@@ -1187,7 +1228,7 @@ Bun은 `.env`를 자동으로 로드합니다. `src/config.ts`가 **모듈 평�
 | `MEDIA_MAX_BYTES` | `536870912` (512MB) | 1KB ~ 2GB | 이 크기를 넘는 파일은 `too_large`로 건너뜁니다. 디스코드가 허용하는 최대(500MB)보다 높게 잡아 사실상 전부 받습니다 |
 | `MEDIA_CONCURRENCY` | `4` | 1 ~ 16 | 동시에 내려받는 미디어 개수 |
 | `SKIP_BACKFILL` | `false` | 불리언 | 메시지 백필만 건너뜁니다. enrich(상세·미디어)는 그대로 돕니다. 임시 우회용 |
-| `SEED_CHUNK_BYTES` | `31457280` | 1MB ~ 2GB | `data/seed` 조각 하나 크기 |
+| `SEED_CHUNK_BYTES` | `31457280` | 1MB ~ 2GB | `data/seed/<서버ID>/` 조각 하나 크기 |
 | `SEED_GROWTH_BYTES` | `31457280` | 0 ~ 2GB | DB 가 이만큼 커져야 조각을 다시 만듭니다 |
 
 ### `.env` 덮어쓰기 규칙
@@ -1322,20 +1363,23 @@ bun run dev       # 파일 변경 시 자동 재시작
 
 ## 백업과 복구
 
-데이터베이스는 저장소에 **30MB 조각으로 나누어** `data/seed/`에 커밋합니다. `bot.sqlite`가 30MB를 넘으면 조각이 여러 개 생기고, `docker compose up`이 첫 기동 때 자동으로 이어붙여 `data/bot.sqlite`를 만듭니다.
+데이터베이스는 저장소에 **30MB 조각으로 나누어** `data/seed/<서버ID>/`에 커밋합니다. 서버별 DB가 30MB를 넘으면 조각이 여러 개 생기고, `docker compose up`이 첫 기동 때 자동으로 이어붙여 `data/guilds/<서버ID>.sqlite`를 만듭니다.
 
 ```
-data/                     # 볼륨 — clone 하면 이미 채워져 있다
-├── seed/                 # 커밋 대상 — DB 30MB 조각
-│   ├── manifest.json     # 조각 목록, 총 크기, sha256
-│   ├── bot.sqlite.part-001 ~ part-00N
-├── media/                 # 커밋 대상 — 실제 미디어 바이트
-│   ├── attachment/        # 메시지 첨부 원본
-│   ├── sticker/           # 스티커 이미지
-│   ├── avatar/            # 유저 아바타
-│   └── banner/            # 유저 배너
-├── bot.sqlite             # 커밋 대상 아님 — seed 에서 자동 복원
-└── bot.sqlite-wal         # 커밋 대상 아님
+data/                       # 볼륨 — clone 하면 이미 채워져 있다
+├── seed/                   # 커밋 대상 — 서버별 DB 의 30MB 조각
+│   ├── <서버ID>/
+│   │   ├── manifest.json   # 조각 목록, 총 크기, sha256
+│   │   └── bot.sqlite.part-001 ~ part-00N
+├── media/                  # 커밋 대상 — 실제 미디어 바이트
+│   ├── attachment/         # 메시지 첨부 원본
+│   ├── sticker/            # 스티커 이미지
+│   ├── avatar/             # 유저 아바타
+│   └── banner/             # 유저 배너
+├── guilds/                 # 커밋 대상 아님 — seed 에서 자동 복원
+│   ├── <서버ID>.sqlite
+│   └── <서버ID>.sqlite-wal
+└── bot.sqlite.legacy       # 서버별 분할 전 단일 DB (확인 후 지우면 됩니다)
 ```
 
 `data/seed/`는 **DB만** 담습니다. `media/`는 통째로 GB 단위가 될 수 있어 커밋하지 않으며, 조각도 만들지 않습니다. 백업이 필요하면 `media/`를 별도로 저장소에 옮겨야 하고, DB만 복원하면 미디어 경로가 DB에 남지만 바이트는 비어 있습니다(`resolveMediaPath()`로 경로를 얻으면 존재 여부를 확인할 수 있습니다).
@@ -1355,7 +1399,7 @@ docker compose up -d
 
 | 데이터 | 도착 경로 |
 | --- | --- |
-| DB | `data/seed/` 의 30MB 조각 → 컨테이너 첫 기동에 `restore-db.ts` 가 하나로 이어 붙여 `data/bot.sqlite` 복원 |
+| DB | `data/seed/<서버ID>/` 의 30MB 조각 → 컨테이너 첫 기동에 `restore-db.ts` 가 서버별로 이어 붙여 `data/guilds/<서버ID>.sqlite` 복원 |
 | 미디어 | `data/media/` 가 **그대로 커밋**되어 있고, compose의 `./data:/app/data` 마운트로 `/app/data/media` 에 그대로 나타남 |
 
 **미디어는 왜 복원 스크립트가 필요 없는가.** compose가 `./data` 를 `/app/data` 로 통째로 마운트하기 때문입니다. `data/media/` 가 레포에 있으면 클론하는 순간 이미 마운트 경로에 존재합니다. 별도 단계가 없습니다.
@@ -1366,7 +1410,7 @@ docker compose up -d
 
 ### 자동 시드 갱신
 
-`data/seed/`의 조각은 **봇이 스스로 갱신합니다.** `startSeedWorker()`가 10분마다 확인하고, DB 가 마지막 시드 시점보다 기본 30MB 이상 커졌을 때만 다시 만듭니다(변화가 없으면 아무 일도 하지 않습니다).
+`data/seed/<서버ID>/`의 조각은 **봇이 스스로 갱신합니다.** `startSeedWorker()`가 10분마다 확인하고, 각 서버 DB가 마지막 시드 시점보다 기본 30MB 이상 커졌을 때만 다시 만듭니다(변화가 없으면 아무 일도 하지 않습니다).
 
 - 스냅샷은 `VACUUM INTO` 로 뜹니다. 살아있는 DB를 그대로 복사하면 기록 중인 트랜잭션이 찢어질 수 있기 때문입니다.
 - 조각은 임시 디렉터리에 먼저 쓰고 **디렉터리 교체로 한 번에 갈아 끼웁니다.** 도중에 죽어도 예전 시드가 그대로 남아 복구 경로가 깨지지 않습니다.
@@ -1387,8 +1431,8 @@ bun run scripts/split-db.ts
 
 ```sh
 docker compose down
-# 실행 중인 DB를 정리한 뒤
-bun run scripts/split-db.ts data/seed data/bot.sqlite
+# 실행 중인 DB를 정리한 뒤 (guilds/ 아래 모든 서버 DB 의 조각을 다시 만듭니다)
+bun run scripts/split-db.ts
 ```
 
 > `docker compose up -d`은 **이미지가 있으면 재빌드하지 않습니다.** `src/`를 고친 뒤에는 반드시 `--build`를 붙여야 새 코드가 반영됩니다.
@@ -1399,7 +1443,7 @@ GitHub 는 **파일 하나가 100 MB 를 넘으면 push 를 거절합니다.** �
 
 | 대상 | 조각 위치 | 만드는 주체 | 복원 |
 | --- | --- | --- | --- |
-| `data/bot.sqlite` | `data/seed/bot.sqlite.part-NNN` | `src/seed.ts` 가 10분마다 자동, `bun run scripts/split-db.ts` 로 수동 | `bun run scripts/restore-db.ts` (compose 첫 기동에 자동 실행) |
+| `data/guilds/<서버ID>.sqlite` | `data/seed/<서버ID>/bot.sqlite.part-NNN` | `src/seed.ts` 가 10분마다 자동, `bun run scripts/split-db.ts` 로 수동 | `bun run scripts/restore-db.ts` (compose 첫 기동에 자동 실행) |
 | `data/media/` 의 큰 파일 | `data/media-seed/<경로>/part-NNN` | 저장 시점에 자동, `bun run scripts/chunk-media.ts` 로 수동 | 필요할 때 `materializeChunkedMedia()` 로 펼침 |
 
 원본은 조각을 만든 뒤 **삭제**됩니다. 복사본을 남기면 아카이브가 큰 파일 크기만큼 더 커지고, 커밋 트리에 다시 30 MB 파일이 나타나기 때문입니다. 조각이 된 경로는 `data/.gitignore` 에 자동으로 기록됩니다.
@@ -1417,15 +1461,15 @@ bun run scripts/check-large-files.ts --tracked  # 커밋 트리 전체 검사
 **수동 복원**
 
 ```sh
-bun run scripts/restore-db.ts data/seed data/bot.sqlite          # 있으면 건너뜀
-bun run scripts/restore-db.ts data/seed data/bot.sqlite --force  # 강제 재생성
+bun run scripts/restore-db.ts data/seed data/guilds                # 있으면 건너뜀
+bun run scripts/restore-db.ts data/seed data/guilds --force        # 강제 재생성
 ```
 
 복원 시 `manifest.json`의 총 크기와 sha256을 검증하므로 조각이 깨져 있으면 실패합니다.
 
 **백업**
 
-SQLite가 **WAL 모드**이므로 실행 중인 파일은 `bot.sqlite`만 복사하면 안 됩니다. 봇을 중지하고 `data/` 디렉터리 전체를 통째로 복사하세요.
+SQLite가 **WAL 모드**이므로 실행 중인 파일은 `.sqlite`만 복사하면 안 됩니다. 봇을 중지하고 `data/` 디렉터리 전체를 통째로 복사하세요.
 
 ```sh
 docker compose stop bot
@@ -1438,7 +1482,11 @@ docker compose start bot
 **무결성 확인**
 
 ```sh
-bun -e 'const {Database}=require("bun:sqlite");const db=new Database("./data/bot.sqlite");console.log(db.query("PRAGMA integrity_check").get());console.log(db.query("SELECT COUNT(*) AS n FROM discord_messages").get())'
+# 서버별 DB 를 한 번에 확인합니다
+for f in data/guilds/*.sqlite; do
+  bun -e "const {Database}=require('bun:sqlite');const db=new Database('$f',{readonly:true});
+  console.log('$f', db.query('PRAGMA integrity_check').get(), db.query('SELECT COUNT(*) AS n FROM discord_messages').get())"
+done
 ```
 
 > **`discord_messages`가 비어 보일 수 있습니다.** 백필은 봇이 서버에 초대된 시점 이후의 채널 메시지만 가져오며, Discord API는 과거 메시지 접근을 제한합니다. 오래된 서버라면 백필 결과가 적을 수 있습니다.
@@ -1527,9 +1575,13 @@ Backfill progress for 서버이름: 4200 fetched, 4200 newly saved
 먼저 상태를 확인합니다.
 
 ```sh
-bun -e 'import {Database} from "bun:sqlite";
-const db = new Database("./data/bot.sqlite", {readonly: true});
-console.log(db.query("SELECT kind, status, COUNT(*) n FROM media_files GROUP BY kind, status").all());'
+# 여러 서버의 미디어 상태를 한 번에 봅니다
+for f in data/guilds/*.sqlite; do
+  echo "== $f"
+  bun -e "const {Database}=require('bun:sqlite');
+  const db = new Database('$f', {readonly: true});
+  console.log(db.query('SELECT kind, status, COUNT(*) n FROM media_files GROUP BY kind, status').all());"
+done
 ```
 
 - `pending`이 줄지 않으면 워커가 멈춘 것입니다. 기동 로그의 `Media worker: ... processed` 줄을 확인하십시오.

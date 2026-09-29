@@ -9,4 +9,4 @@ COPY audio ./audio
 COPY scripts ./scripts
 
 VOLUME ["/app/data"]
-CMD ["sh", "-c", "bun run scripts/restore-db.ts /app/data/seed /app/data/bot.sqlite && exec bun run start"]
+CMD ["sh", "-c", "bun run scripts/restore-db.ts /app/data/seed /app/data/guilds && exec bun run start"]

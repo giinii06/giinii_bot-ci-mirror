@@ -60,11 +60,11 @@ export const handleVoiceAffinityCommand = async (interaction: ChatInputCommandIn
   const target = interaction.options.getUser("유저", true);
   const now = Date.now();
   const targetSessions = all<VoiceInterval>(
-    "SELECT user_id, channel_id, started_at, ended_at FROM voice_presence_sessions WHERE guild_id = ? AND user_id = ?",
+    guild.id, "SELECT user_id, channel_id, started_at, ended_at FROM voice_presence_sessions WHERE guild_id = ? AND user_id = ?",
     guild.id, target.id,
   );
   const otherSessions = all<VoiceInterval>(
-    "SELECT user_id, channel_id, started_at, ended_at FROM voice_presence_sessions WHERE guild_id = ? AND user_id != ?",
+    guild.id, "SELECT user_id, channel_id, started_at, ended_at FROM voice_presence_sessions WHERE guild_id = ? AND user_id != ?",
     guild.id, target.id,
   );
   const affinities = buildVoiceAffinity(targetSessions, otherSessions, now).slice(0, 21);
@@ -95,7 +95,7 @@ export const handleVoiceVolumeCommand = async (interaction: ChatInputCommandInte
   const guild = interaction.guild;
   const now = Date.now();
   const users = all<{ user_id: string; voice_total: number }>(
-    "SELECT user_id, voice_total FROM users WHERE guild_id = ? AND voice_total > 0 ORDER BY voice_total DESC, user_id ASC",
+    guild.id, "SELECT user_id, voice_total FROM users WHERE guild_id = ? AND voice_total > 0 ORDER BY voice_total DESC, user_id ASC",
     guild.id,
   );
   const rankedUsers = users.slice(0, 21);
@@ -130,12 +130,13 @@ export const mergeStatisticsRows = (chats: ChatCountRow[], voices: VoiceSecondsR
 export const loadStatisticsRows = (guildId: string, period: StatisticsPeriod, now: number): StatisticsRow[] => {
   const bucket = bucketAt(now, period);
   const chats = all<ChatCountRow>(
-    "SELECT user_id, chat_count FROM chat_stats WHERE guild_id = ? AND bucket_type = ? AND bucket_key = ? AND chat_count > 0",
+    guildId, "SELECT user_id, chat_count FROM chat_stats WHERE guild_id = ? AND bucket_type = ? AND bucket_key = ? AND chat_count > 0",
     guildId, period, bucket,
   );
   const voices = period === "all"
-    ? all<VoiceSecondsRow>("SELECT user_id, voice_total AS voice_seconds FROM users WHERE guild_id = ? AND voice_total > 0", guildId)
+    ? all<VoiceSecondsRow>(guildId, "SELECT user_id, voice_total AS voice_seconds FROM users WHERE guild_id = ? AND voice_total > 0", guildId)
     : all<VoiceSecondsRow>(
+      guildId,
       "SELECT user_id, voice_seconds FROM activity WHERE guild_id = ? AND bucket_type = ? AND bucket_key = ? AND voice_seconds > 0",
       guildId, period, bucket,
     );

@@ -80,14 +80,13 @@ const publicSettings = (settings = getRuntimeSettings()) => ({
   hasBynaraApiKey: Boolean(settings.bynaraApiKey)
 });
 
-const publicServers = (client: Client) => {
-  const messageCounts = new Map(all<{ guild_id: string; message_count: number }>(
-    "SELECT guild_id, COUNT(*) AS message_count FROM discord_messages GROUP BY guild_id"
-  ).map((row) => [row.guild_id, row.message_count]));
-  return [...client.guilds.cache.values()]
-    .map((guild) => ({ id: guild.id, name: guild.name, messageCount: messageCounts.get(guild.id) ?? 0 }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-};
+const publicServers = (client: Client) => [...client.guilds.cache.values()]
+  .map((guild) => ({
+    id: guild.id,
+    name: guild.name,
+    messageCount: all<{ n: number }>(guild.id, "SELECT COUNT(*) AS n FROM discord_messages")[0]?.n ?? 0
+  }))
+  .sort((a, b) => a.name.localeCompare(b.name));
 
 const runPlayground = async (client: Client, body: unknown) => {
   if (!body || typeof body !== "object") throw new Error("잘못된 Playground 요청입니다.");

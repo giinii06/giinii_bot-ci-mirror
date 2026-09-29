@@ -1,9 +1,11 @@
+import { listGuildIds } from "../src/storage.js";
 import { produceChunkedSeed } from "../src/seed.js";
 
-const manifest = await produceChunkedSeed();
-
-for (const part of manifest.parts) {
-  console.log(`${part.name}  ${part.bytes.toLocaleString()} bytes  ${part.sha256.slice(0, 12)}`);
+for (const guildId of listGuildIds()) {
+  const manifest = await produceChunkedSeed(guildId);
+  console.log(`\n[${guildId}]`);
+  for (const part of manifest.parts) {
+    console.log(`  ${part.name}  ${part.bytes.toLocaleString()} bytes  ${part.sha256.slice(0, 12)}`);
+  }
+  console.log(`  ${manifest.parts.length} part(s), total ${manifest.totalBytes.toLocaleString()} bytes, manifest sha256 ${manifest.sha256}`);
 }
-console.log(`\n${manifest.parts.length} part(s), total ${manifest.totalBytes.toLocaleString()} bytes`);
-console.log(`manifest sha256 ${manifest.sha256}`);

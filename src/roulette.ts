@@ -104,7 +104,7 @@ const sendRouletteMessage = (
 
 const runAdminRoulette = async (interaction: ChatInputCommandInteraction, guild: Guild) => {
   await interaction.deferReply();
-  const settings = sql<{ target_role_id: string | null }>("SELECT target_role_id FROM settings WHERE guild_id = ?", guild.id);
+  const settings = sql<{ target_role_id: string | null }>(guild.id, "SELECT target_role_id FROM settings WHERE guild_id = ?", guild.id);
   const targetRole = settings?.target_role_id ? await guild.roles.fetch(settings.target_role_id).catch(() => null) : null;
   if (!targetRole) return interaction.editReply({ embeds: [rouletteEmbed("먼저 `/타겟`의 인자를 `지정`으로 선택해 타겟 역할을 설정하세요.", 0xed4245)] });
   if (!rouletteAudioPaths.some((path) => existsSync(path))) {
@@ -114,10 +114,10 @@ const runAdminRoulette = async (interaction: ChatInputCommandInteraction, guild:
   const invoker = guild.members.cache.get(interaction.user.id) ?? await guild.members.fetch(interaction.user.id);
   if (!invoker.roles.cache.has(targetRole.id)) return interaction.editReply({ embeds: [rouletteEmbed("ㅋ 역할도 없네 그지다", 0xed4245)] });
   const adminTargetRoleIds = new Set(all<{ role_id: string }>(
-    "SELECT role_id FROM admin_target_roles WHERE guild_id = ?", guild.id
+    guild.id, "SELECT role_id FROM admin_target_roles WHERE guild_id = ?", guild.id
   ).map(({ role_id }) => role_id));
   const defenseRoleIds = new Set(all<{ role_id: string }>(
-    "SELECT role_id FROM admin_defense_roles WHERE guild_id = ?", guild.id
+    guild.id, "SELECT role_id FROM admin_defense_roles WHERE guild_id = ?", guild.id
   ).map(({ role_id }) => role_id));
   const admins = [...guild.voiceStates.cache.values()]
     .filter((state) => state.channelId && state.member && !state.member.user.bot &&
@@ -218,17 +218,17 @@ export const handleRouletteCommand = async (interaction: ChatInputCommandInterac
       if (role.id === guild.id || role.managed || !me || role.position >= me.roles.highest.position) {
         return interaction.reply({ ephemeral: true, content: "봇 역할보다 낮고 관리되지 않은 역할만 설정할 수 있습니다." });
       }
-      run(`INSERT INTO settings (guild_id, target_role_id) VALUES (?, ?)
+      run(guild.id, `INSERT INTO settings (guild_id, target_role_id) VALUES (?, ?)
         ON CONFLICT(guild_id) DO UPDATE SET target_role_id = excluded.target_role_id`, guild.id, role.id);
       return interaction.reply({ ephemeral: true, content: `${role}을(를) 타겟 역할로 설정했습니다.` });
     }
     if (argument === "삭제") {
-      run("UPDATE settings SET target_role_id = NULL WHERE guild_id = ?", guild.id);
+      run(guild.id, "UPDATE settings SET target_role_id = NULL WHERE guild_id = ?", guild.id);
       return interaction.reply({ ephemeral: true, content: "타겟 역할 설정을 삭제했습니다." });
     }
     if (argument === "조회") {
       const targetRoleId = sql<{ target_role_id: string | null }>(
-        "SELECT target_role_id FROM settings WHERE guild_id = ?", guild.id
+        guild.id, "SELECT target_role_id FROM settings WHERE guild_id = ?", guild.id
       )?.target_role_id;
       if (!targetRoleId) return interaction.reply({ ephemeral: true, content: "설정된 타겟 역할이 없습니다." });
       return interaction.reply({ ephemeral: true, content: `현재 타겟 역할: <@&${targetRoleId}>` });
@@ -242,16 +242,16 @@ export const handleRouletteCommand = async (interaction: ChatInputCommandInterac
     if (argument === "지정") {
       if (!role) return interaction.reply({ ephemeral: true, content: "`지정`에는 `역할`을 함께 선택해야 합니다." });
       if (role.id === guild.id) return interaction.reply({ ephemeral: true, content: "@everyone 역할은 추가할 수 없습니다." });
-      run("INSERT OR IGNORE INTO admin_target_roles (guild_id, role_id) VALUES (?, ?)", guild.id, role.id);
+      run(guild.id, "INSERT OR IGNORE INTO admin_target_roles (guild_id, role_id) VALUES (?, ?)", guild.id, role.id);
       return interaction.reply({ ephemeral: true, content: `${role}을(를) 관리자 타겟 역할로 지정했습니다.` });
     }
     if (argument === "삭제") {
       if (!role) return interaction.reply({ ephemeral: true, content: "`삭제`에는 삭제할 `역할`을 함께 선택해야 합니다." });
-      run("DELETE FROM admin_target_roles WHERE guild_id = ? AND role_id = ?", guild.id, role.id);
+      run(guild.id, "DELETE FROM admin_target_roles WHERE guild_id = ? AND role_id = ?", guild.id, role.id);
       return interaction.reply({ ephemeral: true, content: `${role}을(를) 관리자 타겟 역할에서 삭제했습니다.` });
     }
     if (argument === "조회") {
-      const roles = all<{ role_id: string }>("SELECT role_id FROM admin_target_roles WHERE guild_id = ?", guild.id);
+      const roles = all<{ role_id: string }>(guild.id, "SELECT role_id FROM admin_target_roles WHERE guild_id = ?", guild.id);
       return interaction.reply({
         ephemeral: true,
         content: roles.length ? `현재 관리자 타겟 역할: ${roles.map(({ role_id }) => `<@&${role_id}>`).join(", ")}` : "설정된 관리자 타겟 역할이 없습니다."
@@ -267,16 +267,16 @@ export const handleRouletteCommand = async (interaction: ChatInputCommandInterac
     if (argument === "추가") {
       if (!role) return interaction.reply({ ephemeral: true, content: "`추가`에는 `역할`을 함께 선택해야 합니다." });
       if (role.id === guild.id) return interaction.reply({ ephemeral: true, content: "@everyone 역할은 추가할 수 없습니다." });
-      run("INSERT OR IGNORE INTO admin_defense_roles (guild_id, role_id) VALUES (?, ?)", guild.id, role.id);
+      run(guild.id, "INSERT OR IGNORE INTO admin_defense_roles (guild_id, role_id) VALUES (?, ?)", guild.id, role.id);
       return interaction.reply({ ephemeral: true, content: `${role}을(를) 관리자 머리끄댕이 방어권 역할로 추가했습니다.` });
     }
     if (argument === "제거") {
       if (!role) return interaction.reply({ ephemeral: true, content: "`제거`에는 제거할 `역할`을 함께 선택해야 합니다." });
-      run("DELETE FROM admin_defense_roles WHERE guild_id = ? AND role_id = ?", guild.id, role.id);
+      run(guild.id, "DELETE FROM admin_defense_roles WHERE guild_id = ? AND role_id = ?", guild.id, role.id);
       return interaction.reply({ ephemeral: true, content: `${role}을(를) 관리자 머리끄댕이 방어권 역할에서 제거했습니다.` });
     }
     if (argument === "조회") {
-      const roles = all<{ role_id: string }>("SELECT role_id FROM admin_defense_roles WHERE guild_id = ?", guild.id);
+      const roles = all<{ role_id: string }>(guild.id, "SELECT role_id FROM admin_defense_roles WHERE guild_id = ?", guild.id);
       return interaction.reply({
         ephemeral: true,
         content: roles.length ? `현재 방어권 역할: ${roles.map(({ role_id }) => `<@&${role_id}>`).join(", ")}` : "설정된 방어권 역할이 없습니다."
