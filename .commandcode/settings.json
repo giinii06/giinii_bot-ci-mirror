@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(ping:*)",
+      "Shell(nc -z -G 5 100.93.225.6 22)",
+      "Shell(for:*)",
+      "Shell(do:*)",
+      "Shell(done:*)",
+      "Shell(tailscale:*)",
+      "Shell(nc -z -G 3 192.168.0.27 22)",
+      "Shell(python3 -c  import json,sys d=json.load(sys.stdin) for ip,p in d.get('Peer',{}).items(): print(p.get('HostName'), ip, 'SSHHandlers=', p.get('SSHHandlers'), 'Caps=', bool(p.get('Caps')))  2 >& 1)",
+      "Shell(which:*)",
+      "Shell(nc -z -G 5 140.245.73.42 22)",
+      "Shell(nc -z -G 4 100.74.200.101 22)",
+      "Shell(grep:*)",
+      "Shell(echo \"=== SSHHandlers 확인 ===\"; tailscale netcheck >/dev/null 2>&1; tailscale status --json 2>/dev/null | python3 -c \" import json,sys d=json.load(sys.stdin) for ip,p in d.get('Peer',{}).items(): if p.get('DNSName','').startswith('xo'): print(p.get('HostName'), ip, 'SSHHandlers=', p.get('SSHHandlers')) \" 2>&1; echo \"=== 접속 시도 ===\"; ssh -o ConnectTimeout=8 -o BatchMode=yes -o StrictHostKeyChecking=accept-new xo@100.93.225.6 'echo CONNECTED as \\$(whoami) on \\$(hostname)' 2>&1 | tail -5)",
+      "Shell(ls -la scripts/ .githooks 2>/dev/null; echo \"---\"; git config --get core.hooksPath; echo \"---\"; ls -la .git/hooks | head -30)",
+      "Shell(ls -la data/ 2>/dev/null; echo \"=== seed ===\"; ls -la data/seed 2>/dev/null | head -20; echo \"=== media-seed ===\"; ls -la data/media-seed 2>/dev/null | head; echo \"=== gitignore ===\"; cat .gitignore; echo \"=== hook ===\"; cat .githooks/pre-commit)",
+      "Shell(cd /Users/xo/cod/giinii_bot && git status --short | head -40; echo \"=== check-ignore ===\"; git check-ignore -v data/bot.sqlite data/bot.sqlite-wal data/.DS_Store data/media/.DS_Store 2>&1; echo \"=== tracked large ===\"; git ls-files data | head -20)",
+      "Shell(bun:*)",
+      "Shell(cd /Users/xo/cod/giinii_bot && SP=\"/private/tmp/commandcode-501/-Users-xo-cod-giinii-bot/490a79ca-b049-4d2a-80b6-3dc9697c442a/scratchpad/restore-test\"; rm -rf \"$SP\"; mkdir -p \"$SP\"; cp -R data/seed \"$SP/seed\"; bun run scripts/restore-db.ts \"$SP/seed\" \"$SP/bot.sqlite\" 2>&1; echo \"exit=$?\"; echo \"=== compare with live ===\"; ls -l \"$SP/bot.sqlite\" data/bot.sqlite)",
+      "Shell(cd /Users/xo/cod/giinii_bot && SP=\"/private/tmp/commandcode-501/-Users-xo-cod-giinii-bot/490a79ca-b049-4d2a-80b6-3dc9697c442a/scratchpad/restore-test\"; bun -e ' import { Database } from \"bun:sqlite\"; for (const p of [\"'\"$SP\"'/bot.sqlite\", \"data/bot.sqlite\"]) { const db = new Database(p, { readonly: true }); const t = db.query(\"SELECT name FROM sqlite_master WHERE type=(?)\").all(\"table\").map(r=>r.name); const counts = t.map(n => { try { return n+\"=\"+db.query(`SELECT COUNT(*) c FROM \"${n}\"`).get().c } catch { return n+\"=?\" } }); console.log(p, \"->\", counts.join(\" \")); }' 2>&1 | tail -10)",
+      "Shell(cd /Users/xo/cod/giinii_bot && git rm --cached -q data/bot.sqlite data/bot.sqlite-shm data/bot.sqlite-wal data/.DS_Store data/media/.DS_Store .DS_Store 2>&1; echo \"exit=$?\"; echo \"=== check-ignore ===\"; git check-ignore -v data/bot.sqlite data/.DS_Store 2>&1)",
+      "Shell(git:*)",
+      "Shell(echo:*)",
+      "Shell(rm:*)",
+      "Shell(cd \"/private/tmp/commandcode-501/-Users-xo-cod-giinii-bot/490a79ca-b049-4d2a-80b6-3dc9697c442a/scratchpad/clone\" && bun run scripts/restore-db.ts /app/data/seed /app/data/bot.sqlite 2>&1; echo \"restore exit=$?\"; ls -l data/)",
+      "Shell(SP=\"/private/tmp/commandcode-501/-Users-xo-cod-giinii-bot/490a79ca-b049-4d2a-80b6-3dc9697c442a/scratchpad\"; rm -rf \"$SP/appdata\"; mkdir -p \"$SP/appdata\"; cp -R \"$SP/clone/data/.\" \"$SP/appdata/\"; cd /Users/xo/cod/giinii_bot && bun run scripts/restore-db.ts \"$SP/appdata/seed\" \"$SP/appdata/bot.sqlite\" 2>&1; echo \"restore exit=$?\"; ls -l \"$SP/appdata/bot.sqlite\")"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
