@@ -116,12 +116,15 @@ const runAdminRoulette = async (interaction: ChatInputCommandInteraction, guild:
   const adminTargetRoleIds = new Set(all<{ role_id: string }>(
     guild.id, "SELECT role_id FROM admin_target_roles WHERE guild_id = ?", guild.id
   ).map(({ role_id }) => role_id));
+  if (!adminTargetRoleIds.size) {
+    return interaction.editReply({ embeds: [rouletteEmbed("이 서버는 아직 비활성화된 기능입니다. 관리자가 `/관리자_타겟` 인자 `지정`으로 역할을 지정해야 사용할 수 있습니다.", 0xed4245)] });
+  }
   const defenseRoleIds = new Set(all<{ role_id: string }>(
     guild.id, "SELECT role_id FROM admin_defense_roles WHERE guild_id = ?", guild.id
   ).map(({ role_id }) => role_id));
   const admins = [...guild.voiceStates.cache.values()]
     .filter((state) => state.channelId && state.member && !state.member.user.bot &&
-      (state.member.permissions.has(PermissionFlagsBits.Administrator) || state.member.roles.cache.some((role) => adminTargetRoleIds.has(role.id))))
+      state.member.roles.cache.some((role) => adminTargetRoleIds.has(role.id)))
     .map((state) => state.member!);
   if (!admins.length) return interaction.editReply({ embeds: [rouletteEmbed("통화방에 관리자가 없습니다.", 0xed4245)] });
   const defenseMembers = [...guild.voiceStates.cache.values()]
