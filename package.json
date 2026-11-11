@@ -12,10 +12,12 @@
     "@google/genai": "^1.27.0",
     "@discordjs/voice": "^0.19.2",
     "@napi-rs/canvas": "^1.0.2",
-    "discord.js": "^14.25.1"
+    "discord.js": "^14.25.1",
+    "three": "^0.187.0"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/three": "^0.187.0",
     "typescript": "^5.9.3"
   }
 }

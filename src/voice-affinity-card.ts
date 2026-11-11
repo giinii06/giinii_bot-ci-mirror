@@ -1,349 +1,312 @@
 import { readFileSync } from "node:fs";
-import { createCanvas, GlobalFonts, type SKRSContext2D } from "@napi-rs/canvas";
+import { createCanvas, GlobalFonts, type CanvasGradient, type Image, type SKRSContext2D } from "@napi-rs/canvas";
+import { LatheGeometry, OrthographicCamera, Vector2, Vector3 } from "three";
 
 GlobalFonts.register(readFileSync(new URL("./assets/BMDoHyeon-Regular.ttf", import.meta.url)), "BM DoHyeon");
 
-export type VoiceAffinityEntry = { name: string; username: string; sharedMs: number };
+export type VoiceAffinityEntry = { name: string; username: string; sharedMs: number; avatar?: Image };
 export type VoiceCardMode = "affinity" | "volume" | "chat" | "activity";
 
-const CANVAS = { width: 2400, height: 1350, margin: 64 };
-const HEADER = { x: CANVAS.margin, y: CANVAS.margin, width: 2272, height: 248 };
-const PANEL = { x: CANVAS.margin, y: HEADER.y + HEADER.height + 32, width: 2272 };
-const SUMMARY = { first: { x: 1620, width: 340 }, second: { x: 1984, width: 312 }, y: 104, height: 168 };
-const ROW_RECT = { x: PANEL.x + 36, width: PANEL.width - 72 };
-const COLUMNS = { rank: 196, name: 236, nameWidth: 460, bar: 760, barWidth: 1080, value: 2264 };
-const ROW = { height: 118, gap: 10, top: PANEL.y + 108 };
-const PANEL_TEXT = { column: PANEL.y + 64, rule: PANEL.y + 86 };
-const EMPTY = { height: 208, padding: 24 };
-
-const COLORS = {
-  canvas: "#0A0E17",
-  canvasTop: "#121A2B",
-  panel: "#141C2E",
-  row: "#182338",
-  rowAlt: "#1D2A42",
-  rowLead: "#233450",
-  inset: "#0D1320",
-  border: "#253148",
-  text: "#F2F5FA",
-  muted: "#94A3BC",
-  subtle: "#64748F"
-} as const;
-
-const HEADER_TEXT = { eyebrow: 120, title: 212, subtitle: 272 };
-
-const COLUMN_BLOCK = ROW.top - PANEL.y;
-const BOTTOM_PAD = 40;
-
-const panelHeightFor = (rowCount: number) =>
-  rowCount === 0
-    ? EMPTY.padding * 2 + EMPTY.height
-    : COLUMN_BLOCK + rowCount * ROW.height - ROW.gap + BOTTOM_PAD;
-
-const canvasHeightFor = (rowCount: number) => PANEL.y + panelHeightFor(rowCount) + CANVAS.margin;
-
-const FONT = '"BM DoHyeon"';
-
-const RADIUS = { card: 20, row: 12, capsule: 999, inset: 16 } as const;
-
-type ModeSpec = {
-  accent: string;
-  accentSoft: string;
-  overline: string;
-  metric: string;
-  subtitle: string;
-  totalLabel: string;
-  countLabel: string;
-  title: (subject: string, total: number) => string;
-  emptyTitle: (subject: string) => string;
-  format: (value: number) => string;
-};
+const WIDTH = 1600;
+const SCALE = 1.5;
+const MARGIN = 34;
+const ROW_HEIGHT = 70;
+const INK = "#252a43";
+const MUTED = "#535c78";
 
 const formatDuration = (milliseconds: number) => {
   if (milliseconds <= 0) return "0분";
   const minutes = Math.floor(milliseconds / 60_000);
   if (!minutes) return "1분 미만";
-  return `${Math.floor(minutes / 60)}시간 ${minutes % 60}분`;
+  return `${Math.floor(minutes / 60).toLocaleString("ko-KR")}시간 ${minutes % 60}분`;
 };
 
-const formatCount = (value: number) => `${Math.round(value).toLocaleString("ko-KR")}개`;
-const formatPoints = (value: number) => `${Math.round(value).toLocaleString("ko-KR")}점`;
-const formatPeople = (value: number) => `${value.toLocaleString("ko-KR")}명`;
-
-const MODES: Record<VoiceCardMode, ModeSpec> = {
-  affinity: {
-    accent: "#6FE3C8",
-    accentSoft: "#2E5F5A",
-    overline: "VOICE AFFINITY",
-    metric: "함께 있던 시간",
-    subtitle: "같은 음성 채널에 함께 있었던 시간",
-    totalLabel: "전체 함께한 시간",
-    countLabel: "함께한 인원",
-    title: (subject, total) => `${subject}님의 음성 친밀도 TOP ${total}`,
-    emptyTitle: (subject) => `${subject}님의 음성 친밀도 기록 없음`,
-    format: formatDuration
-  },
-  volume: {
-    accent: "#7FC7F5",
-    accentSoft: "#2C5470",
-    overline: "GIINII BOARD · VOICE",
-    metric: "통화량",
-    subtitle: "음성 채널에 머문 시간",
-    totalLabel: "전체 통화량",
-    countLabel: "기록된 인원",
-    title: (_subject, total) => `전체 통화량 TOP ${total}`,
-    emptyTitle: () => "전체 통화량 기록 없음",
-    format: formatDuration
-  },
+const MODES = {
+  affinity: { title: "음성 친밀도", metric: "함께 있었던 시간", format: formatDuration },
+  volume: { title: "통화량", metric: "통화 시간", format: formatDuration },
   chat: {
-    accent: "#F2C86A",
-    accentSoft: "#6B5426",
-    overline: "GIINII BOARD · CHAT",
-    metric: "메시지 수",
-    subtitle: "보낸 메시지 수",
-    totalLabel: "전체 메시지",
-    countLabel: "기록된 인원",
-    title: (subject, total) => `${subject} 채팅량 TOP ${total}`,
-    emptyTitle: (subject) => `${subject} 채팅량 기록 없음`,
-    format: formatCount
+    title: "채팅량", metric: "메시지 수",
+    format: (count: number) => `${Math.round(count).toLocaleString("ko-KR")}개`,
   },
   activity: {
-    accent: "#C3AEF7",
-    accentSoft: "#4E4380",
-    overline: "GIINII BOARD · ACTIVITY",
-    metric: "활동 점수",
-    subtitle: "메시지 1개 + 통화 1분 = 1점",
-    totalLabel: "전체 활동 점수",
-    countLabel: "기록된 인원",
-    title: (subject, total) => `${subject} 종합 활동량 TOP ${total}`,
-    emptyTitle: (subject) => `${subject} 종합 활동량 기록 없음`,
-    format: formatPoints
+    title: "종합 활동량", metric: "활동 점수",
+    format: (points: number) => `${Math.round(points).toLocaleString("ko-KR")}점`,
+  },
+} satisfies Record<VoiceCardMode, { title: string; metric: string; format: (value: number) => string }>;
+
+const segmenter = new Intl.Segmenter("ko", { granularity: "grapheme" });
+
+const label = (
+  ctx: SKRSContext2D,
+  value: string,
+  x: number,
+  y: number,
+  size: number,
+  width: number,
+  align: CanvasTextAlign = "left",
+  color = INK,
+) => {
+  ctx.font = `${size}px "BM DoHyeon", sans-serif`;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.textBaseline = "middle";
+  if (ctx.measureText(value).width > width) {
+    let shortened = "";
+    for (const { segment } of segmenter.segment(value)) {
+      if (ctx.measureText(shortened + segment + "…").width > width) break;
+      shortened += segment;
+    }
+    value = shortened + "…";
+  }
+  ctx.fillText(value, x, y);
+};
+
+const rounded = (
+  ctx: SKRSContext2D, x: number, y: number, width: number, height: number, radius: number,
+  fill: string | CanvasGradient, border?: string,
+) => {
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, radius);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  if (border) {
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1;
+    ctx.stroke();
   }
 };
 
-const roundedRect = (ctx: SKRSContext2D, x: number, y: number, width: number, height: number, radius: number) => {
+const drawShadow = (
+  ctx: SKRSContext2D, x: number, y: number, width: number, height: number, radius: number,
+  spread: number, offset: number,
+) => {
+  // Layered fills keep full-width card shadows cheap on the CPU canvas.
+  for (let layer = 8; layer > 0; layer--) {
+    const expansion = spread * layer / 8;
+    const fill = layer > 4 ? "#74739d03" : "#74739d07";
+    rounded(ctx, x - expansion, y + offset - expansion, width + expansion * 2, height + expansion * 2, radius + expansion, fill);
+  }
+};
+
+const drawAvatar = (ctx: SKRSContext2D, entry: VoiceAffinityEntry, x: number, y: number, size: number) => {
+  const fill = ctx.createLinearGradient(x, y, x + size, y + size);
+  fill.addColorStop(0, "#b8bdeb");
+  fill.addColorStop(1, "#7d84bc");
+  rounded(ctx, x, y, size, size, size * 0.28, fill);
+  if (entry.avatar) {
+    ctx.save();
+    ctx.clip();
+    ctx.drawImage(entry.avatar, x, y, size, size);
+    ctx.restore();
+  } else {
+    const initial = [...segmenter.segment(entry.name)][0]?.segment ?? "?";
+    label(ctx, initial, x + size / 2, y + size / 2, size * 0.43, size, "center", "#ffffff");
+  }
+  ctx.strokeStyle = "#ffffffbd";
+  ctx.lineWidth = size > 80 ? 3 : 1.5;
+  ctx.stroke();
+};
+
+const PODIUM = [
+  { x: 1014, radius: 167, height: 94, avatar: 115, body: ["#dec392", "#f5e1b5", "#dfc18f"], top: "#fff1d3", rank: "#866844" },
+  { x: 720, radius: 129, height: 68, avatar: 92, body: ["#b2bbd9", "#dce2f4", "#bbc4df"], top: "#edf0fc", rank: "#5b6583" },
+  { x: 1308, radius: 129, height: 64, avatar: 92, body: ["#dcb4c0", "#f4d8e0", "#dcb6c3"], top: "#fce9ed", rank: "#886072" },
+];
+
+const SEGMENTS = 64;
+const camera = new OrthographicCamera(-1, 1, 1, -1, 1, 3000);
+camera.position.set(0, 425, 1800);
+camera.lookAt(0, 0, 0);
+camera.updateMatrixWorld();
+
+type ScreenPoint = { x: number; y: number };
+
+const silhouette = (points: ScreenPoint[]) => {
+  const sorted = points.sort((a, b) => a.x - b.x || a.y - b.y);
+  const edge = (ordered: ScreenPoint[]) => {
+    const result: ScreenPoint[] = [];
+    for (const point of ordered) {
+      while (result.length > 1) {
+        const a = result[result.length - 2]!;
+        const b = result[result.length - 1]!;
+        if ((b.x - a.x) * (point.y - a.y) > (b.y - a.y) * (point.x - a.x)) break;
+        result.pop();
+      }
+      result.push(point);
+    }
+    return result.slice(0, -1);
+  };
+  return [...edge(sorted), ...edge(sorted.reverse())];
+};
+
+const drawPedestal = (ctx: SKRSContext2D, pedestal: typeof PODIUM[number], rank: number, floor: number) => {
+  const { x, radius, height, body, top } = pedestal;
+  const bevel = 8;
+  const profile = [];
+  for (let step = 0; step <= 8; step++) {
+    const angle = step * Math.PI / 16;
+    profile.push(new Vector2(radius - bevel + bevel * Math.sin(angle), bevel - bevel * Math.cos(angle)));
+  }
+  for (let step = 0; step <= 8; step++) {
+    const angle = step * Math.PI / 16;
+    profile.push(new Vector2(radius - bevel + bevel * Math.cos(angle), height - bevel + bevel * Math.sin(angle)));
+  }
+
+  const geometry = new LatheGeometry(profile, SEGMENTS);
+  const positions = geometry.getAttribute("position");
+  const point = new Vector3();
+  const base = floor - radius * 0.215;
+  const rings = profile.map((_, ring) => Array.from({ length: SEGMENTS }, (_, segment) => {
+    point.fromBufferAttribute(positions, segment * profile.length + ring).project(camera);
+    return { x: x + point.x, y: base - point.y };
+  }));
+  geometry.dispose();
+  const bottom = rings[0]!;
+  const cap = rings.at(-1)!;
+
+  ctx.save();
+  ctx.translate(x + 8, floor + 1);
+  ctx.scale(radius * 1.18, 19);
+  const contact = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  contact.addColorStop(0, "#51496f87");
+  contact.addColorStop(0.62, "#51496f47");
+  contact.addColorStop(1, "#51496f00");
+  ctx.fillStyle = contact;
+  ctx.fillRect(-1, -1, 2, 2);
+  ctx.restore();
+
+  const trace = (vertex: ScreenPoint) => ctx.lineTo(vertex.x, vertex.y);
   ctx.beginPath();
-  ctx.roundRect(x, y, width, height, radius);
+  silhouette(rings.flat()).forEach(trace);
   ctx.closePath();
-};
-
-const fillRounded = (
-  ctx: SKRSContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-  color: string | CanvasGradient
-) => {
-  roundedRect(ctx, x, y, width, height, radius);
-  ctx.fillStyle = color;
+  const side = ctx.createLinearGradient(x - radius, 0, x + radius, 0);
+  side.addColorStop(0, body[0]!);
+  side.addColorStop(0.37, body[1]!);
+  side.addColorStop(1, body[2]!);
+  ctx.fillStyle = side;
   ctx.fill();
-};
+  const glaze = ctx.createLinearGradient(0, cap[SEGMENTS / 2]!.y, 0, bottom[0]!.y);
+  glaze.addColorStop(0, "#ffffff42");
+  glaze.addColorStop(0.52, "#ffffff0d");
+  glaze.addColorStop(0.8, "#55476412");
+  glaze.addColorStop(1, "#5547643d");
+  ctx.fillStyle = glaze;
+  ctx.fill();
 
-const strokeRounded = (ctx: SKRSContext2D, x: number, y: number, width: number, height: number, radius: number, color: string) => {
-  roundedRect(ctx, x, y, width, height, radius);
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-};
-
-const fitText = (ctx: SKRSContext2D, text: string, width: number) => {
-  if (ctx.measureText(text).width <= width) return text;
-  let shortened = text;
-  while (shortened && ctx.measureText(`${shortened}…`).width > width) shortened = shortened.slice(0, -1);
-  return `${shortened}…`;
-};
-
-const formatCheckedAt = (milliseconds: number) => new Intl.DateTimeFormat("ko-KR", {
-  timeZone: "Asia/Seoul",
-  year: "numeric",
-  month: "numeric",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: true
-}).format(new Date(milliseconds));
-
-const drawBackground = (ctx: SKRSContext2D, height: number) => {
-  const gradient = ctx.createLinearGradient(0, 0, CANVAS.width, height);
-  gradient.addColorStop(0, COLORS.canvasTop);
-  gradient.addColorStop(1, COLORS.canvas);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, CANVAS.width, height);
-};
-
-const drawSummaryBlock = (
-  ctx: SKRSContext2D,
-  box: { x: number; width: number },
-  label: string,
-  value: string,
-  spec: ModeSpec
-) => {
-  fillRounded(ctx, box.x, SUMMARY.y, box.width, SUMMARY.height, RADIUS.inset, COLORS.inset);
-  strokeRounded(ctx, box.x, SUMMARY.y, box.width, SUMMARY.height, RADIUS.inset, COLORS.border);
-  ctx.textAlign = "left";
-  ctx.fillStyle = COLORS.muted;
-  ctx.font = `28px ${FONT}`;
-  ctx.fillText(fitText(ctx, label, box.width - 48), box.x + 24, SUMMARY.y + 52);
-  ctx.fillStyle = spec.accent;
-  ctx.font = `48px ${FONT}`;
-  ctx.fillText(fitText(ctx, value, box.width - 48), box.x + 24, SUMMARY.y + 126);
-};
-
-const drawHeader = (
-  ctx: SKRSContext2D,
-  title: string,
-  checkedAt: number,
-  spec: ModeSpec,
-  totalValue: string,
-  countValue: string
-) => {
-  fillRounded(ctx, HEADER.x, HEADER.y, HEADER.width, HEADER.height, RADIUS.card, COLORS.panel);
-  strokeRounded(ctx, HEADER.x, HEADER.y, HEADER.width, HEADER.height, RADIUS.card, COLORS.border);
-
-  ctx.textAlign = "left";
-  ctx.fillStyle = spec.accent;
-  ctx.font = `30px ${FONT}`;
-  ctx.fillText(spec.overline, HEADER.x + 40, HEADER_TEXT.eyebrow);
-
-  ctx.fillStyle = COLORS.text;
-  ctx.font = `92px ${FONT}`;
-  ctx.fillText(fitText(ctx, title, SUMMARY.first.x - HEADER.x - 88), HEADER.x + 40, HEADER_TEXT.title);
-
-  ctx.fillStyle = COLORS.muted;
-  ctx.font = `34px ${FONT}`;
-  ctx.fillText(`${spec.subtitle} · ${formatCheckedAt(checkedAt)} 기준`, HEADER.x + 40, HEADER_TEXT.subtitle);
-
-  drawSummaryBlock(ctx, SUMMARY.first, spec.totalLabel, totalValue, spec);
-  drawSummaryBlock(ctx, SUMMARY.second, spec.countLabel, countValue, spec);
-};
-
-const drawColumnHeader = (ctx: SKRSContext2D, spec: ModeSpec) => {
-  ctx.textAlign = "right";
-  ctx.fillStyle = COLORS.subtle;
-  ctx.font = `26px ${FONT}`;
-  ctx.fillText("순위", COLUMNS.rank, PANEL_TEXT.column);
-  ctx.textAlign = "left";
-  ctx.fillText("멤버", COLUMNS.name, PANEL_TEXT.column);
-  ctx.textAlign = "right";
-  ctx.fillText(spec.metric, COLUMNS.value, PANEL_TEXT.column);
-
-  ctx.strokeStyle = COLORS.border;
-  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(ROW_RECT.x, PANEL_TEXT.rule);
-  ctx.lineTo(ROW_RECT.x + ROW_RECT.width, PANEL_TEXT.rule);
+  cap.forEach(trace);
+  ctx.closePath();
+  const surface = ctx.createLinearGradient(0, cap[SEGMENTS / 2]!.y, 0, cap[0]!.y);
+  surface.addColorStop(0, "#fffdf9");
+  surface.addColorStop(1, top);
+  ctx.fillStyle = surface;
+  ctx.fill();
+  ctx.strokeStyle = "#ffffff91";
+  ctx.lineWidth = 1;
   ctx.stroke();
+  label(ctx, String(rank), x, floor - (rank === 1 ? 43 : 29), rank === 1 ? 52 : 39, radius, "center", pedestal.rank);
+};
+
+const drawPodium = (ctx: SKRSContext2D, entries: VoiceAffinityEntry[], format: (value: number) => string) => {
+  for (const index of [1, 2, 0]) {
+    const entry = entries[index];
+    if (!entry) continue;
+    const pedestal = PODIUM[index]!;
+    const floor = index === 0 ? 411 : 404;
+    drawPedestal(ctx, pedestal, index + 1, floor);
+    const { x, avatar, radius, height } = pedestal;
+    const pillTop = floor - radius * 0.215 - height - 53;
+    const avatarTop = pillTop - 74 - avatar;
+    drawShadow(ctx, x - avatar / 2, avatarTop, avatar, avatar, avatar * 0.28, 6, 4);
+    drawAvatar(ctx, entry, x - avatar / 2, avatarTop, avatar);
+    label(ctx, entry.name, x, pillTop - 50, index === 0 ? 36 : 30, radius * 1.86, "center");
+    label(ctx, `@${entry.username}`, x, pillTop - 23, 21, radius * 1.86, "center", MUTED);
+    rounded(ctx, x - 104, pillTop, 208, 40, 20, "#fafaff", "#e0e1f0");
+    label(ctx, format(entry.sharedMs), x, pillTop + 21, 25, 192, "center");
+  }
 };
 
 const drawRow = (
-  ctx: SKRSContext2D,
-  entry: VoiceAffinityEntry,
-  rank: number,
-  top: number,
-  height: number,
-  ratio: number,
-  spec: ModeSpec
+  ctx: SKRSContext2D, entry: VoiceAffinityEntry, rank: number, y: number,
+  ratio: number, format: (value: number) => string,
 ) => {
-  const surface = rank === 1 ? COLORS.rowLead : rank % 2 === 0 ? COLORS.rowAlt : COLORS.row;
-  fillRounded(ctx, ROW_RECT.x, top, ROW_RECT.width, height, RADIUS.row, surface);
-
-  const centerY = top + height / 2;
-  ctx.textAlign = "right";
-  ctx.fillStyle = rank === 1 ? COLORS.text : COLORS.subtle;
-  ctx.font = `40px ${FONT}`;
-  ctx.fillText(String(rank).padStart(2, "0"), COLUMNS.rank, centerY + 14);
-
-  ctx.textAlign = "left";
-  ctx.fillStyle = COLORS.text;
-  ctx.font = `46px ${FONT}`;
-  ctx.fillText(fitText(ctx, entry.name, COLUMNS.nameWidth), COLUMNS.name, centerY - 6);
-  ctx.fillStyle = COLORS.muted;
-  ctx.font = `26px ${FONT}`;
-  ctx.fillText(fitText(ctx, `@${entry.username}`, COLUMNS.nameWidth), COLUMNS.name, centerY + 34);
-
-  const barHeight = Math.min(30, Math.max(18, height * 0.22));
-  const barY = top + (height - barHeight) / 2;
-  fillRounded(ctx, COLUMNS.bar, barY, COLUMNS.barWidth, barHeight, RADIUS.capsule, COLORS.inset);
-  const gradient = ctx.createLinearGradient(COLUMNS.bar, 0, COLUMNS.bar + COLUMNS.barWidth, 0);
-  gradient.addColorStop(0, spec.accent);
-  gradient.addColorStop(1, spec.accentSoft);
-  const filled = Math.max(barHeight, COLUMNS.barWidth * ratio);
-  fillRounded(ctx, COLUMNS.bar, barY, filled, barHeight, RADIUS.capsule, gradient);
-
-  ctx.textAlign = "right";
-  ctx.fillStyle = rank === 1 ? spec.accent : COLORS.text;
-  ctx.font = `44px ${FONT}`;
-  ctx.fillText(spec.format(entry.sharedMs), COLUMNS.value, centerY + 16);
-};
-
-const drawEmptyState = (ctx: SKRSContext2D, panelHeight: number, spec: ModeSpec) => {
-  const box = { x: PANEL.x + 120, width: PANEL.width - 240, height: EMPTY.height };
-  const boxY = PANEL.y + (panelHeight - EMPTY.height) / 2;
-  fillRounded(ctx, box.x, boxY, box.width, box.height, RADIUS.inset, COLORS.inset);
-  strokeRounded(ctx, box.x, boxY, box.width, box.height, RADIUS.inset, COLORS.border);
-  ctx.textAlign = "center";
-  ctx.fillStyle = COLORS.muted;
-  ctx.font = `44px ${FONT}`;
-  ctx.fillText("아직 기록이 없습니다", box.x + box.width / 2, boxY + 116);
-  ctx.fillStyle = COLORS.subtle;
-  ctx.font = `30px ${FONT}`;
-  ctx.fillText(`${spec.metric} 기준 · 기록이 쌓이면 이곳에 순위가 표시됩니다`, box.x + box.width / 2, boxY + 164);
+  drawShadow(ctx, 58, y, 1484, 65, 20, 4, 3);
+  rounded(ctx, 58, y, 1484, 65, 20, "#faf9ff", "#ffffff");
+  rounded(ctx, 72, y + 11, 72, 43, 18, "#eae8f7");
+  label(ctx, String(rank).padStart(2, "0"), 108, y + 34, 28, 64, "center", MUTED);
+  drawAvatar(ctx, entry, 182, y + 5, 55);
+  label(ctx, entry.name, 256, y + 21, 28, 220);
+  label(ctx, `@${entry.username}`, 256, y + 47, 19, 220, "left", MUTED);
+  rounded(ctx, 497, y + 23, 744, 19, 9.5, "#e2e1f2");
+  if (ratio > 0) {
+    const barWidth = 744 * Math.min(ratio, 1);
+    const gradient = ctx.createLinearGradient(497, 0, 497 + barWidth, 0);
+    gradient.addColorStop(0, "#a5baf3");
+    gradient.addColorStop(1, "#748cdc");
+    rounded(ctx, 497, y + 23, barWidth, 19, Math.min(9.5, barWidth / 2), gradient);
+  }
+  rounded(ctx, 1283, y + 11, 245, 43, 22, "#eae8f7");
+  label(ctx, format(entry.sharedMs), 1405, y + 34, 26, 226, "center");
 };
 
 export const renderVoiceAffinity = (
   targetName: string,
   entries: VoiceAffinityEntry[],
-  checkedAt: number,
   startRank = 1,
   totalEntries = entries.length,
   mode: VoiceCardMode = "affinity",
-  totalDurationMs = entries.reduce((sum, entry) => sum + entry.sharedMs, 0)
+  rankingMax = entries[0]?.sharedMs ?? 1,
 ) => {
   const spec = MODES[mode];
-  const visibleEntries = entries.slice(0, 7);
-  const isEmpty = totalEntries === 0;
-  const title = isEmpty ? spec.emptyTitle(targetName) : spec.title(targetName, totalEntries);
-  const panelHeight = panelHeightFor(visibleEntries.length);
-  const height = canvasHeightFor(visibleEntries.length);
-
-  const canvas = createCanvas(CANVAS.width, height);
+  const visible = entries.slice(0, 7);
+  const podium = startRank === 1 ? visible.slice(0, 3) : [];
+  const rows = visible.slice(podium.length);
+  const panelTop = podium.length ? 430 : 122;
+  const panelHeight = 135 + rows.length * ROW_HEIGHT;
+  const showPanel = rows.length > 0 || podium.length === 0;
+  const height = (showPanel ? panelTop + panelHeight : panelTop) + MARGIN;
+  const canvas = createCanvas(WIDTH * SCALE, Math.round(height * SCALE));
   const ctx = canvas.getContext("2d");
+  ctx.scale(SCALE, SCALE);
 
-  drawBackground(ctx, height);
-  drawHeader(
-    ctx,
-    title,
-    checkedAt,
-    spec,
-    isEmpty ? "—" : spec.format(totalDurationMs),
-    formatPeople(totalEntries)
-  );
+  const background = ctx.createLinearGradient(0, 0, WIDTH * 0.7, height);
+  background.addColorStop(0, "#f5f4ff");
+  background.addColorStop(0.54, "#ebedfc");
+  background.addColorStop(1, "#f5eaf5");
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, WIDTH, height);
 
-  fillRounded(ctx, PANEL.x, PANEL.y, PANEL.width, panelHeight, RADIUS.card, COLORS.panel);
-  strokeRounded(ctx, PANEL.x, PANEL.y, PANEL.width, panelHeight, RADIUS.card, COLORS.border);
-
-  if (visibleEntries.length === 0) {
-    drawEmptyState(ctx, panelHeight, spec);
-    return canvas.toBuffer("image/png");
+  const subject = mode === "affinity" ? `${targetName}님의` : targetName;
+  const range = startRank > 1 ? `${startRank}–${startRank + visible.length - 1}위` : `TOP ${totalEntries}`;
+  const title = totalEntries > 0 ? `${spec.title} ${range}` : spec.title;
+  if (podium.length) {
+    label(ctx, subject, 66, 117, 52, 498);
+    label(ctx, title, 66, 174, 52, 498);
+    drawPodium(ctx, podium, spec.format);
+  } else {
+    label(ctx, `${subject} ${title}`, 64, 68, 50, WIDTH - 128);
   }
 
-  drawColumnHeader(ctx, spec);
+  if (showPanel) {
+    drawShadow(ctx, MARGIN, panelTop, WIDTH - MARGIN * 2, panelHeight, 29, 16, 10);
+    rounded(ctx, MARGIN, panelTop, WIDTH - MARGIN * 2, panelHeight, 29, "#f6f4fc", "#ffffff");
 
-  const maxValue = Math.max(...visibleEntries.map((entry) => entry.sharedMs), 1);
-  visibleEntries.forEach((entry, index) => {
-    drawRow(
-      ctx,
-      entry,
-      startRank + index,
-      ROW.top + index * ROW.height,
-      ROW.height - ROW.gap,
-      entry.sharedMs / maxValue,
-      spec
-    );
-  });
+    if (rows.length) {
+      [11, 22, 34, 22, 11].forEach((size, index) =>
+        rounded(ctx, 72 + index * 8, panelTop + 44 - size / 2, 5, size, 2.5, "#959ebc"),
+      );
+      label(ctx, `${spec.title} 랭킹`, 128, panelTop + 44, 30, 440);
+      label(ctx, "순위", 108, panelTop + 104, 20, 64, "center", MUTED);
+      label(ctx, "멤버", 224, panelTop + 104, 20, 240, "left", MUTED);
+      label(ctx, spec.metric, 1405, panelTop + 104, 20, 226, "center", MUTED);
+      rows.forEach((entry, index) => drawRow(
+        ctx, entry, startRank + podium.length + index, panelTop + 120 + index * ROW_HEIGHT,
+        entry.sharedMs / Math.max(rankingMax, 1), spec.format,
+      ));
+    } else {
+      label(ctx, "아직 기록이 없습니다", WIDTH / 2, panelTop + panelHeight / 2, 30, WIDTH - 128, "center", MUTED);
+    }
+  }
 
   return canvas.toBuffer("image/png");
 };

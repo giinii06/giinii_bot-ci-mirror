@@ -49,13 +49,13 @@ test("normalizes equivalent user IDs before merging", () => {
 });
 
 test("renders a voice affinity PNG card", () => {
-  const png = renderVoiceAffinity("테스트", [{ name: "멤버", username: "member", sharedMs: 120_000 }], Date.now());
+  const png = renderVoiceAffinity("테스트", [{ name: "멤버", username: "member", sharedMs: 120_000 }]);
 
   expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
 });
 
 test("renders a voice volume PNG card", () => {
-  const png = renderVoiceAffinity("전체", [{ name: "멤버", username: "member", sharedMs: 120_000 }], Date.now(), 1, 1, "volume", 3_600_000);
+  const png = renderVoiceAffinity("전체", [{ name: "멤버", username: "member", sharedMs: 120_000 }], 1, 1, "volume");
 
   expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
 });
@@ -63,30 +63,41 @@ test("renders a voice volume PNG card", () => {
 test("renders chat and combined activity PNG cards", () => {
   const entries = [{ name: "멤버", username: "member", sharedMs: 12 }];
 
-  expect(renderVoiceAffinity("오늘", entries, Date.now(), 1, 1, "chat", 24).subarray(0, 8).toString("hex"))
+  expect(renderVoiceAffinity("오늘", entries, 1, 1, "chat").subarray(0, 8).toString("hex"))
     .toBe("89504e470d0a1a0a");
-  expect(renderVoiceAffinity("오늘", entries, Date.now(), 1, 1, "activity", 36).subarray(0, 8).toString("hex"))
+  expect(renderVoiceAffinity("오늘", entries, 1, 1, "activity").subarray(0, 8).toString("hex"))
     .toBe("89504e470d0a1a0a");
 });
 
-test("keeps a fixed width and grows the card with the row count", () => {
-  const now = Date.now();
-  const empty = pngSize(renderVoiceAffinity("전체", [], now, 1, 0, "volume", 0));
-  const one = pngSize(renderVoiceAffinity("전체", makeEntries(1), now, 1, 1, "volume"));
-  const four = pngSize(renderVoiceAffinity("전체", makeEntries(4), now, 1, 4, "volume"));
-  const seven = pngSize(renderVoiceAffinity("전체", makeEntries(7), now, 1, 7, "volume"));
+test("uses a podium on the first page and adds height for rows below it", () => {
+  const empty = pngSize(renderVoiceAffinity("전체", [], 1, 0, "volume"));
+  const one = pngSize(renderVoiceAffinity("전체", makeEntries(1), 1, 1, "volume"));
+  const three = pngSize(renderVoiceAffinity("전체", makeEntries(3), 1, 3, "volume"));
+  const four = pngSize(renderVoiceAffinity("전체", makeEntries(4), 1, 4, "volume"));
+  const seven = pngSize(renderVoiceAffinity("전체", makeEntries(7), 1, 7, "volume"));
 
   expect([empty.width, one.width, four.width, seven.width]).toEqual([2400, 2400, 2400, 2400]);
   expect(empty.height).toBeLessThanOrEqual(one.height);
+  expect(three).toEqual(one);
   expect(one.height).toBeLessThan(four.height);
   expect(four.height).toBeLessThan(seven.height);
 });
 
+test("uses the same seven-row layout for both continuation pages", () => {
+  const entries = makeEntries(7);
+  const first = pngSize(renderVoiceAffinity("전체", entries, 1, 21, "volume"));
+  const second = pngSize(renderVoiceAffinity("전체", entries, 8, 21, "volume"));
+  const third = pngSize(renderVoiceAffinity("전체", entries, 15, 21, "volume"));
+
+  expect(second).toEqual(third);
+  expect(second.width).toBe(first.width);
+  expect(second.height).toBeLessThan(first.height);
+});
+
 test("gives every mode the same geometry for the same row count", () => {
-  const now = Date.now();
   const entries = makeEntries(5);
   const sizes = (["affinity", "volume", "chat", "activity"] as const)
-    .map((mode) => pngSize(renderVoiceAffinity("테스트", entries, now, 1, 5, mode)));
+    .map((mode) => pngSize(renderVoiceAffinity("테스트", entries, 1, 5, mode)));
 
   expect(new Set(sizes.map((size) => size.height)).size).toBe(1);
 });

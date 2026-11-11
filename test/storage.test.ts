@@ -369,7 +369,7 @@ test("serves statistics chat counts from the whole database while live counters 
     recordChatCounts(guildId, storage.upsertMessages(guildId, batch));
   }
 
-  const rows = loadStatisticsRows(guildId, "all", BASE_TIME + 86_400_000);
+  const rows = loadStatisticsRows(guildId);
 
   expect(rows.reduce((sum, row) => sum + row.chat_count, 0)).toBe(12_000);
   expect(storage.sql<{ total: number }>(

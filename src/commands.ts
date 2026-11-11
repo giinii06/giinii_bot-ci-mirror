@@ -33,17 +33,10 @@ const rouletteCommandBuilders = [
 ];
 
 const voiceCommandBuilders = [
-  new SlashCommandBuilder().setName("친밀도").setDescription("같은 음성 채널에 함께 있었던 사람 TOP 21을 봅니다")
+  new SlashCommandBuilder().setName("친밀도").setDescription("같은 음성 채널에 함께 있었던 사람 TOP 7을 봅니다")
     .addUserOption((option) => option.setName("유저").setDescription("친밀도를 확인할 유저").setRequired(true)),
   new SlashCommandBuilder().setName("통화량").setDescription("서버 전체 통화량 TOP 21을 봅니다"),
-  new SlashCommandBuilder().setName("통계").setDescription("채팅량·통화량·종합 활동량 카드 3장을 봅니다")
-    .addStringOption((option) => option.setName("기간").setDescription("통계를 확인할 기간").setRequired(false)
-      .addChoices(
-        { name: "오늘", value: "day" },
-        { name: "이번 주", value: "week" },
-        { name: "이번 달", value: "month" },
-        { name: "전체", value: "all" }
-      ))
+  new SlashCommandBuilder().setName("통계").setDescription("전체 통화량·채팅량·종합 활동량 TOP 7 카드 3장을 봅니다")
 ];
 
 const analysisCommandBuilders = [
