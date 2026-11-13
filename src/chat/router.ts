@@ -220,7 +220,12 @@ export class OpenRouterClient {
     for (let step = 0; step <= MAX_TOOL_STEPS; step += 1) {
       const reply = await this.request(working, options, tools);
       if (!reply.tool_calls) return this.requireText(reply);
-      if (step === MAX_TOOL_STEPS) break;
+      if (step === MAX_TOOL_STEPS) {
+        // 마지막 호출까지 툴을 부르면 지금까지 받은 답이라도 돌려준다.
+        const content = reply.content?.trim();
+        if (content) return content;
+        break;
+      }
 
       working.push({ role: "assistant", content: reply.content, tool_calls: reply.tool_calls });
 
