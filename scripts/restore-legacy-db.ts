@@ -1,7 +1,6 @@
-import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { assembleParts } from "../src/chunk-files.js";
 
 /**
  * 서버별 DB 구조로 옮기기 전의 단일 시드(data/seed/bot.sqlite.part-NNN)만 임시로 복원한다.
@@ -33,32 +32,17 @@ if (partsPresent.length < manifest.parts.length) {
   process.exit(1);
 }
 
-await mkdir(dirname(TARGET), { recursive: true });
-const staging = `${TARGET}.restoring`;
-await rm(staging, { force: true });
-
-const out = createWriteStream(staging);
-const hash = createHash("sha256");
-let written = 0;
-for (const part of manifest.parts) {
-  for await (const chunk of createReadStream(join(SEED_DIR, part.name))) {
-    hash.update(chunk);
-    written += chunk.length;
-    if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
+const result = await assembleParts(SEED_DIR, TARGET, manifest.parts, {
+  bytes: manifest.totalBytes,
+  sha256: manifest.sha256
+});
+if (!result.ok) {
+  if (result.reason === "size") {
+    console.error(`restore failed: wrote ${result.bytes} bytes, manifest expects ${manifest.totalBytes}`);
+  } else {
+    console.error("restore failed: sha256 mismatch, seed parts are corrupt");
   }
-}
-await new Promise((r) => out.end(r));
-
-if (written !== manifest.totalBytes) {
-  await rm(staging, { force: true });
-  console.error(`restore failed: wrote ${written} bytes, manifest expects ${manifest.totalBytes}`);
-  process.exit(1);
-}
-if (hash.digest("hex") !== manifest.sha256) {
-  await rm(staging, { force: true });
-  console.error("restore failed: sha256 mismatch, seed parts are corrupt");
   process.exit(1);
 }
 
-await rename(staging, TARGET);
-console.log(`restored ${TARGET} from ${manifest.parts.length} part(s), ${written.toLocaleString()} bytes, sha256 ok`);
+console.log(`restored ${TARGET} from ${manifest.parts.length} part(s), ${result.bytes.toLocaleString()} bytes, sha256 ok`);

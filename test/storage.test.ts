@@ -25,7 +25,7 @@ const { recordMessageRecords, seedProfileHistoryFromMessages, isGuildEnriched, m
 const { drainPendingMedia, normalizeStoredMediaPaths, requeueRetryableMedia, resolveMediaPath } = await import("../src/media.js");
 const { isSeedStale, produceChunkedSeed, readSeedManifest } = await import("../src/seed.js");
 const PREFIX = "bot.sqlite.part-";
-const { chunkedMediaPaths, chunkIfOversized, isChunkable, readChunkedManifest, restoreChunkedMedia, produceChunkedMedia } = await import("../src/media-seed.js");
+const { chunkedMediaPaths, chunkIfOversized, isChunkable, materializeChunkedMedia, readChunkedManifest } = await import("../src/media-seed.js");
 const { loadStatisticsRows, mergeStatisticsRows } = await import("../src/voice-affinity-command.js");
 const { loadVoiceGraphData } = await import("../src/voice-affinity-graph-command.js");
 const { isCommandEnabled, setCommandEnabled, disabledCommandNames } = await import("../src/command-rules.js");
@@ -677,9 +677,7 @@ test("keeps media over the 30 MB commit ceiling out of the direct media tree", a
   expect(isChunkable(50 * 1024 * 1024)).toBe(true);
   expect(isChunkable(294 * 1024 * 1024)).toBe(true);
 
-  const result = await restoreChunkedMedia();
-
-  expect(result.restored).toBeGreaterThanOrEqual(1);
+  expect(await materializeChunkedMedia(relative)).toBe(true);
   const restoredPath = join(directory, "media", relative);
   expect(existsSync(restoredPath)).toBe(true);
   expect(statSync(restoredPath).size).toBe(bytes.length);
@@ -711,43 +709,6 @@ test("leaves a file under the cap in the media tree unchunked", async () => {
   writeFileSync(absolute, Buffer.alloc(1024, 5));
 
   expect(await chunkIfOversized(relative, 1024 * 1024)).toBe(false);
-  expect(existsSync(absolute)).toBe(true);
-});
-
-test("chunks oversized media of the given guilds only", async () => {
-  const guildId = "8888888888888888888";
-  const relative = `attachment/seeded-${Date.now()}.bin`;
-  // 30 MB 상한을 실제로 넘겨야 조각이 된다. 작은 파일을 넣으면 걸러지는 게 맞다.
-  const bytes = Buffer.alloc(31 * 1024 * 1024, 9);
-  const absolute = join(directory, "media", relative);
-  mkdirSync(join(directory, "media", "attachment"), { recursive: true });
-  writeFileSync(absolute, bytes);
-  storage.run(guildId, `INSERT INTO media_files (media_id, kind, filename, url, status, bytes, local_path, recorded_at) VALUES (?, 'attachment', 'x.bin', 'http://127.0.0.1:1/x.bin', 'downloaded', ?, ?, ?)`,
-    `${guildId}-media`, bytes.length, relative, Date.now());
-
-  const produced = await produceChunkedMedia([guildId]);
-
-  expect(produced).toContain(relative);
-  // 이 스크립트는 조각만 만들고 원본은 지우지 않는다(아카이브 크기만큼 복사본을 남기지 않는 건
-  // 저장 시점 경로인 chunkIfOversized 의 몫이다). 조각이 실제로 만들어졌는지로 판단한다.
-  const manifest = await readChunkedManifest(relative);
-  expect(manifest?.bytes).toBe(bytes.length);
-  expect(manifest?.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
-});
-
-test("leaves a small downloaded file unchunked for the given guilds", async () => {
-  const guildId = "9999999999999999999";
-  const relative = `attachment/tiny-${Date.now()}.bin`;
-  const bytes = Buffer.alloc(2 * 1024 * 1024, 4);
-  const absolute = join(directory, "media", relative);
-  mkdirSync(join(directory, "media", "attachment"), { recursive: true });
-  writeFileSync(absolute, bytes);
-  storage.run(guildId, `INSERT INTO media_files (media_id, kind, filename, url, status, bytes, local_path, recorded_at) VALUES (?, 'attachment', 'y.bin', 'http://127.0.0.1:1/y.bin', 'downloaded', ?, ?, ?)`,
-    `${guildId}-tiny`, bytes.length, relative, Date.now());
-
-  const produced = await produceChunkedMedia([guildId]);
-
-  expect(produced).not.toContain(relative);
   expect(existsSync(absolute)).toBe(true);
 });
 

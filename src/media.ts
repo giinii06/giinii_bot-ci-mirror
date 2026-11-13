@@ -1,4 +1,5 @@
-import { chunkIfOversized, materializeChunkedMedia, readChunkedManifest, sha256File, syncChunkedGitignore } from "./media-seed.js";
+import { chunkIfOversized, materializeChunkedMedia, readChunkedManifest, syncChunkedGitignore } from "./media-seed.js";
+import { sha256File } from "./chunk-files.js";
 import { createHash } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { mkdir, rm, stat } from "node:fs/promises";

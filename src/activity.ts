@@ -4,7 +4,7 @@ import type { HistoryMessage } from "./history.js";
 
 const KST = 9 * 60 * 60 * 1000;
 type Bucket = "day" | "week" | "month" | "all";
-export type VoiceSession = { guild_id: string; user_id: string; channel_id: string; last_tick: number; limited?: number };
+export type VoiceSession = { guild_id: string; user_id: string; channel_id: string; last_tick: number };
 
 const BUCKETS = ["day", "week", "month", "all"] as const;
 const pad = (value: number) => String(value).padStart(2, "0");
@@ -171,7 +171,7 @@ export const initializeVoiceSessions = (client: Client) => {
     run(guildId, "DELETE FROM voice_sessions");
     for (const state of guild.voiceStates.cache.values()) {
       if (state.channelId && !state.member?.user.bot) {
-        run(guildId, "INSERT OR IGNORE INTO voice_sessions (guild_id, user_id, channel_id, last_tick, limited) VALUES (?, ?, ?, ?, 0)",
+        run(guildId, "INSERT OR IGNORE INTO voice_sessions (guild_id, user_id, channel_id, last_tick) VALUES (?, ?, ?, ?)",
           guildId, state.id, state.channelId, now);
         startVoicePresence(guildId, state.id, state.channelId, now);
       }
@@ -193,7 +193,7 @@ export const handleVoiceStateUpdate = async (newState: VoiceState) => {
   if (session?.channel_id === newState.channelId) return;
   endVoicePresence(guildId, newState.id, now);
   startVoicePresence(guildId, newState.id, newState.channelId, now);
-  run(guildId, `INSERT INTO voice_sessions (guild_id, user_id, channel_id, last_tick, limited) VALUES (?, ?, ?, ?, 0)
+  run(guildId, `INSERT INTO voice_sessions (guild_id, user_id, channel_id, last_tick) VALUES (?, ?, ?, ?)
     ON CONFLICT(guild_id, user_id) DO UPDATE SET channel_id = excluded.channel_id, last_tick = excluded.last_tick`,
     guildId, newState.id, newState.channelId, now);
 };

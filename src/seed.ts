@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { config, databasePath } from "./config.js";
 import { dbFor, listGuildIds, snapshotDatabase } from "./storage.js";
+import { sha256File } from "./chunk-files.js";
 
 const PREFIX = "bot.sqlite.part-";
 
@@ -21,15 +21,6 @@ export const seedDirectory = () => join(dirname(databasePath), "seed");
 
 /** 서버별 DB 는 제각각 자란다. 시드 한 벌을 통째로 갱신하면 어느 서버가 오래된지 알 수 없으므로 서버별 시드를 따로 둔다. */
 export const guildSeedDirectory = (guildId: string) => join(seedDirectory(), guildId);
-
-const sha256File = (path: string) =>
-  new Promise<string>((resolvePromise, reject) => {
-    const hash = createHash("sha256");
-    createReadStream(path)
-      .on("data", (chunk) => hash.update(chunk))
-      .on("end", () => resolvePromise(hash.digest("hex")))
-      .on("error", reject);
-  });
 
 export const readSeedManifest = async (seedDir: string): Promise<SeedManifest | null> =>
   readFile(join(seedDir, "manifest.json"), "utf8")

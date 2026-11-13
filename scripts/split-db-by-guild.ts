@@ -23,7 +23,7 @@ const tableExists = (table: string) =>
 const tables = [
   "users", "activity", "chat_stats", "chat_stats_state", "user_profiles", "enrichment_state",
   "message_details", "media_files", "settings", "voice_sessions", "voice_presence_sessions",
-  "admin_target_roles", "admin_defense_roles", "discord_messages", "command_logs"
+  "admin_target_roles", "admin_defense_roles", "discord_messages"
 ].filter(tableExists);
 
 if (!tables.includes("discord_messages")) {

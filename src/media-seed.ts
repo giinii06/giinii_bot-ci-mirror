@@ -1,9 +1,8 @@
-import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync, statSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
+import { assembleParts, sha256File } from "./chunk-files.js";
 import { config, databasePath } from "./config.js";
-import { all } from "./storage.js";
 
 const CHUNK_BYTES = 30 * 1024 * 1024;
 
@@ -15,15 +14,6 @@ export const isChunkable = (bytes: number | null, capBytes = CHUNKABLE_ABOVE_BYT
 export const mediaSeedDirectory = () => join(dirname(databasePath), "media-seed");
 
 type ChunkManifest = { bytes: number; sha256: string; parts: { name: string; bytes: number }[] };
-
-export const sha256File = (path: string) =>
-  new Promise<string>((ok, no) => {
-    const hash = createHash("sha256");
-    createReadStream(path)
-      .on("data", (chunk) => hash.update(chunk))
-      .on("end", () => ok(hash.digest("hex")))
-      .on("error", no);
-  });
 
 const chunkDirectoryFor = (localPath: string) => join(mediaSeedDirectory(), localPath);
 const mediaPathFor = (localPath: string) => join(config.mediaRoot, localPath);
@@ -56,21 +46,7 @@ const reassemble = async (chunkDir: string, target: string) => {
     .then((text) => JSON.parse(text) as ChunkManifest)
     .catch(() => null);
   if (!manifest) return false;
-
-  const staging = `${target}.restoring`;
-  await mkdir(dirname(target), { recursive: true });
-  const out = createWriteStream(staging);
-  for (const part of manifest.parts) {
-    for await (const chunk of createReadStream(join(chunkDir, part.name))) {
-      if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
-    }
-  }
-  await new Promise((r) => out.end(r));
-
-  if (statSync(staging).size !== manifest.bytes) { await rm(staging, { force: true }); return false; }
-  if (await sha256File(staging) !== manifest.sha256) { await rm(staging, { force: true }); return false; }
-  await rename(staging, target);
-  return true;
+  return (await assembleParts(chunkDir, target, manifest.parts, manifest)).ok;
 };
 
 const chunkDirectories = async (dir: string, out: string[] = []): Promise<string[]> => {
@@ -142,34 +118,3 @@ export const materializeChunkedMedia = async (localPath: string) => {
   return reassemble(chunkDirectoryFor(localPath), target);
 };
 
-export const restoreChunkedMedia = async () => {
-  const root = mediaSeedDirectory();
-  const dirs = await chunkDirectories(root);
-  let restored = 0;
-  for (const dir of dirs) {
-    const localPath = relative(root, dir);
-    if (!localPath || localPath.startsWith("..")) continue;
-    const target = mediaPathFor(localPath);
-    if (existsSync(target) && statSync(target).size > 0) continue;
-    if (await reassemble(dir, target)) restored += 1;
-  }
-  return { restored, chunked: dirs.length };
-};
-
-/** 30 MB 를 넘는 파일만 조각으로 만든다. 나머지는 data/media 로 그대로 커밋된다. */
-export const produceChunkedMedia = async (guildIds: string[]) => {
-  const produced: string[] = [];
-  for (const guildId of guildIds) {
-    const rows = all<{ local_path: string; bytes: number }>(
-      guildId, "SELECT local_path, bytes FROM media_files WHERE status = 'downloaded' AND bytes IS NOT NULL"
-    );
-    for (const row of rows) {
-      if (!isChunkable(row.bytes)) continue;
-      const source = mediaPathFor(row.local_path);
-      if (!existsSync(source)) continue;
-      await splitInto(source, chunkDirectoryFor(row.local_path));
-      produced.push(row.local_path);
-    }
-  }
-  return produced;
-};

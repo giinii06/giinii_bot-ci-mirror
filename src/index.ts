@@ -6,7 +6,7 @@ import { ensureBackfillStarted, persistLiveMessage, startInitialBackfill } from 
 import { handleAdminCommand } from "./admin-commands.js";
 import { isAllowedGuild, isCommandEnabled, isRouletteGuild } from "./command-rules.js";
 import { initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
-import { commands, syncCommands } from "./commands.js";
+import { commands, rouletteCommandNames, syncCommands } from "./commands.js";
 import { config } from "./config.js";
 import { createNoticeEmbed } from "./embeds.js";
 import { startMediaWorker } from "./media.js";
@@ -29,18 +29,7 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message]
 });
 
-const rouletteCommandNames = new Set([
-  "타겟", "관리자_타겟", "관리자머리끄댕이", "관리자머리끄댕이방어권_역할"
-]);
-
-const replyInteractionError = (interaction: ChatInputCommandInteraction, error: unknown) => {
-  console.error(error);
-  const reply = "처리 중 오류가 발생했습니다.";
-  if (interaction.deferred) void interaction.editReply(reply).catch(() => undefined);
-  else if (!interaction.replied) void interaction.reply({ ephemeral: true, content: reply }).catch(() => undefined);
-};
-
-const replyButtonError = (interaction: ButtonInteraction, error: unknown) => {
+const replyInteractionError = (interaction: ChatInputCommandInteraction | ButtonInteraction, error: unknown) => {
   console.error(error);
   const reply = "처리 중 오류가 발생했습니다.";
   if (interaction.deferred) void interaction.editReply(reply).catch(() => undefined);
@@ -175,7 +164,7 @@ client.on(Events.InteractionCreate, (interaction) => {
     }
   }
   if (interaction.isButton() && interaction.customId.startsWith("voice-affinity:")) {
-    void handleVoiceAffinityComponent(interaction).catch((error) => replyButtonError(interaction, error));
+    void handleVoiceAffinityComponent(interaction).catch((error) => replyInteractionError(interaction, error));
   }
 });
 

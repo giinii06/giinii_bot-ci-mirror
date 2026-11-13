@@ -33,6 +33,9 @@ const rouletteCommandBuilders = [
     .addRoleOption((option) => option.setName("역할").setDescription("추가하거나 제거할 방어권 역할").setRequired(false))
 ];
 
+/** 룰렛 명령 4종. 전용 길드에서만 실행한다. */
+export const rouletteCommandNames = new Set(rouletteCommandBuilders.map((command) => command.name));
+
 const voiceCommandBuilders = [
   new SlashCommandBuilder().setName("친밀도그래프").setDescription("통화량 상위 20명의 친밀도 그래프를 FHD 이미지로 봅니다"),
   new SlashCommandBuilder().setName("친밀도").setDescription("같은 음성 채널에 함께 있었던 사람 TOP 7을 봅니다")

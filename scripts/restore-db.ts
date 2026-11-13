@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { assembleParts } from "../src/chunk-files.js";
 
 type Part = { name: string; bytes: number; sha256: string };
 type Manifest = { totalBytes: number; chunkBytes: number; sha256: string; parts: Part[] };
@@ -28,37 +28,20 @@ const restoreOne = async (seedDir: string, target: string) => {
     return;
   }
 
-  await mkdir(dirname(target), { recursive: true });
-
-  // 조각을 모으는 동안 실제 파일이 잠기지 않도록 임시 이름에 먼저 쓴 뒤 옮긴다.
-  const staging = `${target}.restoring`;
-  await rm(staging, { force: true });
-  const out = createWriteStream(staging);
-  const hash = createHash("sha256");
-  let written = 0;
-
-  for (const part of manifest.parts) {
-    for await (const chunk of createReadStream(join(seedDir, part.name))) {
-      hash.update(chunk);
-      written += chunk.length;
-      if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
+  const result = await assembleParts(seedDir, target, manifest.parts, {
+    bytes: manifest.totalBytes,
+    sha256: manifest.sha256
+  });
+  if (!result.ok) {
+    if (result.reason === "size") {
+      console.error(`restore failed for ${target}: wrote ${result.bytes} bytes, manifest expects ${manifest.totalBytes}`);
+    } else {
+      console.error(`restore failed for ${target}: sha256 mismatch, seed parts are corrupt`);
     }
-  }
-  await new Promise((r) => out.end(r));
-
-  if (written !== manifest.totalBytes) {
-    await rm(staging, { force: true });
-    console.error(`restore failed for ${target}: wrote ${written} bytes, manifest expects ${manifest.totalBytes}`);
-    process.exit(1);
-  }
-  if (hash.digest("hex") !== manifest.sha256) {
-    await rm(staging, { force: true });
-    console.error(`restore failed for ${target}: sha256 mismatch, seed parts are corrupt`);
     process.exit(1);
   }
 
-  await rename(staging, target);
-  console.log(`restored ${target} from ${manifest.parts.length} seed part(s), ${written.toLocaleString()} bytes, sha256 ok`);
+  console.log(`restored ${target} from ${manifest.parts.length} seed part(s), ${result.bytes.toLocaleString()} bytes, sha256 ok`);
 };
 
 if (!existsSync(SEED_ROOT)) {

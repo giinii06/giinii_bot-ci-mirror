@@ -5,6 +5,3 @@ data
 .env
 .codegraph
 .codegraph/**
-.git
-node_modules
-.env

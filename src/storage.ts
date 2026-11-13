@@ -76,7 +76,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS settings (guild_id TEXT PRIMARY KEY, target_role_id TEXT);
   CREATE TABLE IF NOT EXISTS voice_sessions (
     guild_id TEXT NOT NULL, user_id TEXT NOT NULL, channel_id TEXT NOT NULL,
-    last_tick INTEGER NOT NULL, limited INTEGER NOT NULL DEFAULT 0,
+    last_tick INTEGER NOT NULL,
     PRIMARY KEY (guild_id, user_id)
   );
   CREATE TABLE IF NOT EXISTS voice_presence_sessions (
@@ -100,12 +100,6 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS discord_messages_guild_created_idx ON discord_messages(guild_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS discord_messages_guild_channel_created_idx ON discord_messages(guild_id, channel_id, created_at DESC);
-  CREATE TABLE IF NOT EXISTS command_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, user_id TEXT NOT NULL,
-    user_name TEXT NOT NULL, command_name TEXT NOT NULL, question TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL, model TEXT NOT NULL,
-    output TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
-  );
-  CREATE INDEX IF NOT EXISTS command_logs_guild_created_idx ON command_logs(guild_id, created_at DESC);
   CREATE TABLE IF NOT EXISTS guild_command_rules (
     guild_id TEXT NOT NULL, command_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
     updated_at INTEGER NOT NULL, updated_by TEXT,
@@ -115,7 +109,7 @@ const SCHEMA = `
 
 const openDatabases = new Map<string, Database>();
 
-/** 이 파일이 아는 모든 서버 DB를 닫는다. 기동 실패 후 프로세스가 남지 않게 할 때 쓴다. */
+/** 이 파일이 아는 모든 서버 DB를 닫는다. 테스트가 임시 디렉터리를 지우기 전에 쓴다. */
 export const closeAllDatabases = () => {
   for (const database of openDatabases.values()) {
     try { database.close(); } catch { /* 이미 닫혔으면 무시 */ }
@@ -162,9 +156,6 @@ export const all = <T>(guildId: Snowflake | string, query: string, ...params: SQ
 
 export const run = (guildId: Snowflake | string, query: string, ...params: SQLQueryBindings[]) =>
   dbFor(guildId).query(query).run(...params);
-
-export const each = <T>(guildId: Snowflake | string, query: string, ...params: SQLQueryBindings[]) =>
-  dbFor(guildId).query<T, SQLQueryBindings[]>(query).iterate(...params);
 
 export const beginTransaction = (guildId: Snowflake | string) => dbFor(guildId).exec("BEGIN");
 
