@@ -161,11 +161,14 @@ export const requeueRetryableMedia = (guildId: string) => {
   return { oversized: oversized.length, failed: failed.length };
 };
 
-export const startMediaWorker = async (guildIds: string[], intervalMs = 5_000) => {
+export const startMediaWorker = async (getGuildIds: string[] | (() => string[]), intervalMs = 5_000) => {
+  // 멀티 서버 모드: 기동 시점 스냅샷에 갇히지 않도록 tick 마다 live 목록을 다시 읽는다.
+  // GuildCreate 로 늦게 들어온 서버도 다음 tick 부터 자동으로 처리된다.
+  const resolveIds = () => (typeof getGuildIds === "function" ? getGuildIds() : getGuildIds);
   // 조각 파일은 필요할 때 펼친다. 기동 시 전부 복원하면 data/media 에 다시 큰 파일이
   // 나타나 git 트리가 푸시 불가해지고 시작도 느려진다.
   await syncChunkedGitignore();
-  for (const guildId of guildIds) {
+  for (const guildId of resolveIds()) {
     const requeued = requeueRetryableMedia(guildId);
     if (requeued.oversized > 0 || requeued.failed > 0) {
       console.log(`Media worker (${guildId}): requeued ${requeued.oversized} oversized and ${requeued.failed} failed media file(s)`);
@@ -178,7 +181,7 @@ export const startMediaWorker = async (guildIds: string[], intervalMs = 5_000) =
     if (busy) return;
     busy = true;
     try {
-      for (const guildId of guildIds) {
+      for (const guildId of resolveIds()) {
         const tally = await drainPendingMedia(guildId);
         if (tally.processed > 0) {
           console.log(`Media worker (${guildId}): ${tally.processed} processed, ${tally.downloaded} saved, ${tally.failed} failed, ${tally.tooLarge} too large, ${tally.missing} missing`);

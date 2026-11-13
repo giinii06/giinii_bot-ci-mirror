@@ -125,13 +125,15 @@ export const produceChunkedSeed = async (guildId: string, options: { seedDir?: s
   }
 };
 
-export const startSeedWorker = (guildIds: string[], intervalMs = 10 * 60_000) => {
+export const startSeedWorker = (getGuildIds: string[] | (() => string[]), intervalMs = 10 * 60_000) => {
+  // 멀티 서버 모드: 기동 시점 스냅샷에 갇히지 않도록 tick 마다 live 목록을 다시 읽는다.
+  const resolveIds = () => (typeof getGuildIds === "function" ? getGuildIds() : getGuildIds);
   let busy = false;
   const tick = async () => {
     if (busy) return;
     busy = true;
     try {
-      for (const guildId of guildIds) {
+      for (const guildId of resolveIds()) {
         if (!await isSeedStale(guildId)) continue;
         const startedAt = Date.now();
         const manifest = await produceChunkedSeed(guildId);
