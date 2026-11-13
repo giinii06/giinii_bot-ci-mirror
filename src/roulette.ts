@@ -190,9 +190,6 @@ const runAdminRoulette = async (interaction: ChatInputCommandInteraction, guild:
 
   let target: GuildMember;
   const remainingAdmins = admins.filter(({ id }) => !autoDefendedIds.has(id));
-  if (!remainingAdmins.length) {
-    return sendRouletteMessage(interaction, countdownChannels, "저런... 통방에 남은 관리자가 없군요 ㅠㅠ ");
-  }
   const lucky = Math.random() < 0.05 && !!invoker.voice.channelId;
   target = lucky && !autoDefendedIds.has(invoker.id)
     ? invoker

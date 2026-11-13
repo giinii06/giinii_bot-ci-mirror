@@ -5,8 +5,9 @@ import { renderVoiceAffinity, type VoiceAffinityEntry, type VoiceCardMode } from
 import { buildVoiceAffinity, type VoiceInterval } from "./voice-affinity.js";
 
 type CardPage = { name: string; attachment: Buffer };
+type StoredCards = { userId: string; cards: CardPage[] };
 
-const voiceAffinityPages = new Map<string, CardPage[]>();
+const voiceAffinityPages = new Map<string, StoredCards>();
 const MAX_STORED_CARD_PAGES = 20;
 const PAGE_SIZE = 7;
 const RANK_LIMIT = 21;
@@ -21,8 +22,8 @@ const voiceAffinityComponents = (page: number, pageCount: number) => [new Action
   new ButtonBuilder().setCustomId(`voice-affinity:${page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page === pageCount - 1),
 )];
 
-const rememberCards = (messageId: string, cards: CardPage[]) => {
-  voiceAffinityPages.set(messageId, cards);
+const rememberCards = (messageId: string, userId: string, cards: CardPage[]) => {
+  voiceAffinityPages.set(messageId, { userId, cards });
   while (voiceAffinityPages.size > MAX_STORED_CARD_PAGES) {
     const oldest = voiceAffinityPages.keys().next().value;
     if (oldest === undefined) break;
@@ -37,7 +38,7 @@ const sendCardPages = async (interaction: ChatInputCommandInteraction, cards: Ca
     files: [cards[0]!],
     components: voiceAffinityComponents(0, cards.length),
   });
-  rememberCards(message.id, cards);
+  rememberCards(message.id, interaction.user.id, cards);
   return message;
 };
 
@@ -172,14 +173,17 @@ export const handleStatisticsCommand = async (interaction: ChatInputCommandInter
 
 export const handleVoiceAffinityComponent = async (interaction: ButtonInteraction) => {
   const page = Number(interaction.customId.slice("voice-affinity:".length));
-  const cards = Number.isInteger(page) ? voiceAffinityPages.get(interaction.message.id) : undefined;
-  const card = cards?.[page];
-  if (!card) {
+  const stored = Number.isInteger(page) ? voiceAffinityPages.get(interaction.message.id) : undefined;
+  if (stored && stored.userId !== interaction.user.id) {
+    return interaction.reply({ content: "이 카드는 다른 사람이 연 결과입니다. 직접 실행해 주세요.", ephemeral: true });
+  }
+  const card = stored?.cards[page];
+  if (!stored || !card) {
     return interaction.reply({ content: "카드 결과가 만료되었습니다. `/통화량` 또는 `/통계`를 다시 실행하세요.", ephemeral: true });
   }
   return interaction.update({
     attachments: [],
     files: [card],
-    components: voiceAffinityComponents(page, cards.length),
+    components: voiceAffinityComponents(page, stored.cards.length),
   });
 };

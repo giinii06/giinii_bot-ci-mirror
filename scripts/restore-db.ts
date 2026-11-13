@@ -50,12 +50,17 @@ if (!existsSync(SEED_ROOT)) {
 }
 
 const entries = await readdir(SEED_ROOT, { withFileTypes: true });
-const seedDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-if (seedDirs.length === 0) {
+const directories = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+const guildIds = directories.filter((name) => /^\d{15,25}$/.test(name));
+const skipped = directories.filter((name) => !/^\d{15,25}$/.test(name));
+if (skipped.length > 0) {
+  console.warn(`skipping ${skipped.length} seed folder(s) that are not guild IDs: ${skipped.join(", ")}`);
+}
+if (guildIds.length === 0) {
   console.log(`no per-guild seed under ${SEED_ROOT}, starting with empty databases`);
   process.exit(0);
 }
 
-for (const guildId of seedDirs) {
+for (const guildId of guildIds) {
   await restoreOne(join(SEED_ROOT, guildId), join(TARGET_ROOT, `${guildId}.sqlite`));
 }

@@ -7,7 +7,8 @@ const exec = promisify(execFile);
 
 /**
  * GitHub 는 100 MB 를 넘는 blob 을 push 단계에서 거절한다. 그때는 이미 커밋이 만들어진 뒤라
- * 복구가 어렵다. 30 MB 로 잘라 두면 조각만 올라가고 복원은 data/seed/manifest.json 이 담당한다.
+ * 복구가 어렵다. 30 MB 로 잘라 두면 조각만 올라가고, 복원은 각 조각의 manifest.json
+ * (서버 시드는 data/seed/<서버ID>/, 미디어는 data/media-seed/)이 담당한다.
  *
  * 조각 하나의 크기가 정확히 이 값이라 `>` 로 비교한다 — `>=` 면 조각 자체가 거부된다.
  *

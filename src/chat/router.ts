@@ -71,6 +71,20 @@ const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_REASONING_EFFORT = "high";
 const MAX_TOOL_STEPS = 3;
 
+export class OpenRouterRequestError extends Error {
+  constructor(readonly status: number, readonly detail: string, readonly usedTools: boolean) {
+    super(`OpenRouter ${status}: ${detail}`);
+    this.name = "OpenRouterRequestError";
+  }
+}
+
+export class ToolCallError extends Error {
+  constructor() {
+    super("툴 호출 횟수를 초과했습니다");
+    this.name = "ToolCallError";
+  }
+}
+
 export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export const isReasoningEffort = (value: string) => REASONING_EFFORTS.includes(value);
@@ -186,7 +200,7 @@ export class OpenRouterClient {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`OpenRouter ${response.status}: ${errorDetail(body)}`);
+      throw new OpenRouterRequestError(response.status, errorDetail(body), (tools?.length ?? 0) > 0);
     }
 
     const payload = (await response.json()) as CompletionResponse;
@@ -239,7 +253,7 @@ export class OpenRouterClient {
       working.push(...results);
     }
 
-    throw new Error("툴 호출 횟수를 초과했습니다");
+    throw new ToolCallError();
   }
 
   async listModels(force = false): Promise<ModelInfo[]> {
@@ -248,7 +262,7 @@ export class OpenRouterClient {
     const response = await fetch(endpoint(this.baseUrl, "/models"), { headers: this.headers() });
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`OpenRouter ${response.status}: ${errorDetail(body)}`);
+      throw new OpenRouterRequestError(response.status, errorDetail(body), false);
     }
 
     const payload = (await response.json()) as ModelListResponse;

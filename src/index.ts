@@ -6,7 +6,7 @@ import { ensureBackfillStarted, persistLiveMessage, startInitialBackfill } from 
 import { handleAdminCommand } from "./admin-commands.js";
 import { isAllowedGuild, isCommandEnabled, isRouletteGuild } from "./command-rules.js";
 import { initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
-import { commands, rouletteCommandNames, syncCommands } from "./commands.js";
+import { commandScopeCounts, rouletteCommandNames, syncCommands } from "./commands.js";
 import { config } from "./config.js";
 import { createNoticeEmbed } from "./embeds.js";
 import { startMediaWorker } from "./media.js";
@@ -73,11 +73,11 @@ client.on(Events.MessageCreate, async (message) => {
     if (await handleAdminCommand(message, client)) return;
     if (!message.author.bot && message.content === "!sync") {
       if (!message.member?.permissions.has(PermissionFlagsBits.Administrator)) return;
-      void message.reply(`${commands.length}개 명령어를 전역·전용 서버 범위에 동기화합니다. 완료되면 알려줄게요.`);
+      void message.reply(`전역 명령 ${commandScopeCounts.global}개와 전용 서버 명령 ${commandScopeCounts.dedicated}개를 동기화합니다. 완료되면 알려줄게요.`);
       const followUp = (text: string) => message.channel.send(text).catch(() => undefined);
       syncCommands(client)
         .then(() => {
-          void followUp(`${commands.length}개 명령어를 동기화했습니다. 일반 명령어는 전역, 룰렛은 전용 서버에서 사용할 수 있어요.`);
+          void followUp(`전역 명령 ${commandScopeCounts.global}개와 전용 서버 명령 ${commandScopeCounts.dedicated}개를 동기화했습니다. 일반 명령어는 전역, 룰렛과 대화 명령은 전용 서버에서 사용할 수 있어요.`);
           console.log("!sync: done");
         })
         .catch((error) => {

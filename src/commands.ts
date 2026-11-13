@@ -1,4 +1,4 @@
-import { ApplicationIntegrationType, InteractionContextType, PermissionFlagsBits, SlashCommandBuilder, type ApplicationCommandManager, type Client, type Guild } from "discord.js";
+import { ApplicationIntegrationType, InteractionContextType, PermissionFlagsBits, SlashCommandBuilder, type APIApplicationCommand, type ApplicationCommandManager, type Client, type Guild } from "discord.js";
 import { chatCommandBuilders } from "./chat/commands.js";
 import { ALLOWED_GUILD_ID } from "./command-rules.js";
 
@@ -51,6 +51,7 @@ const chatCommands = chatCommandBuilders.map((command) => command.toJSON());
 /** 전용 서버(ALLOWED_GUILD_ID)에만 등록하는 명령. 룰렛 4종과 기니봇아 대화 2종. */
 const dedicatedGuildCommands = [...rouletteCommands, ...chatCommands];
 export const commands = [...dedicatedGuildCommands, ...globalCommands];
+export const commandScopeCounts = { global: globalCommands.length, dedicated: dedicatedGuildCommands.length };
 
 /** 서버별 on/off 설정과 대조할 슬래시 명령어 이름 목록. 순서는 등록 순서와 같다. */
 export const slashCommandNames = [
@@ -61,9 +62,10 @@ const syncCommandSet = async (manager: Pick<ApplicationCommandManager, "fetch" |
   const current = await manager.fetch();
   if (current.size === wanted.length && wanted.every((command) => {
     const existing = current.find((entry) => entry.name === command.name);
-    return existing?.equals({ ...command, id: existing.id, application_id: existing.applicationId,
-      version: existing.version, type: command.type ?? 1, nsfw: command.nsfw ?? false,
-      default_member_permissions: command.default_member_permissions ?? null }, true);
+    if (!existing) return false;
+    // toJSON()은 값이 undefined인 키를 남긴다. 실제 전송 본문처럼 그 키를 떨어뜨려 비교한다.
+    const normalized = JSON.parse(JSON.stringify(command)) as APIApplicationCommand;
+    return existing.equals(normalized, true);
   })) {
     console.log(`Slash commands already up to date in ${scope} (${current.size}), skipped`);
     return;

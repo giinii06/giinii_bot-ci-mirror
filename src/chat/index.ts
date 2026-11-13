@@ -6,7 +6,7 @@ import { ChannelHistory, type HistoryEntry } from "./history.js";
 import { loadInstructions } from "./instructions.js";
 import { extractMemories, formatMemoryNotice, MemoryStore } from "./memory.js";
 import { buildSystemPrompt } from "./prompt.js";
-import { OpenRouterClient, type ChatMessage } from "./router.js";
+import { OpenRouterClient, OpenRouterRequestError, ToolCallError, type ChatMessage } from "./router.js";
 import { detectTrigger } from "./triggers.js";
 import { createWebSearchTool } from "./websearch.js";
 
@@ -51,10 +51,9 @@ export const toHistoryEntry = (
   };
 };
 
-const isToolError = (error: unknown): boolean => {
-  const message = error instanceof Error ? error.message.toLowerCase() : "";
-  return message.includes("tool") || message.includes("function");
-};
+const isToolError = (error: unknown): boolean =>
+  error instanceof ToolCallError
+  || (error instanceof OpenRouterRequestError && error.usedTools && error.status === 400);
 
 const recordOwnMessage = (target: ChatDeps, sent: Message | null): void => {
   if (!sent) return;

@@ -165,7 +165,7 @@ export const drainPendingMedia = async (guildId: string, limit = 200) => {
   return tally;
 };
 
-/** 예전에 환경 절대 경로로 저장된 행을 상대 경로로 되돌린다. 한 번 고치고 나면 다시 일어난다. */
+/** 예전에 환경 절대 경로로 저장된 행을 상대 경로로 되돌린다. 한 번 고치고 나면 다시 일어나지 않는다. */
 export const normalizeStoredMediaPaths = (guildId: string) => {
   const root = config.mediaRoot.endsWith("/") ? config.mediaRoot : `${config.mediaRoot}/`;
   const rows = all<{ media_id: string; local_path: string }>(
