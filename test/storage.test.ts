@@ -18,7 +18,6 @@ const directory = mkdtempSync(join(tmpdir(), "giinii-board-"));
 process.env.DATABASE_PATH = join(directory, "bot.sqlite");
 
 const storage = await import("../src/storage.js");
-const { askGemini } = await import("../src/gemini.js");
 const { isDefenseSuccess } = await import("../src/roulette.js");
 const { ensureGuildChatStats, recordChatCounts } = await import("../src/activity.js");
 const { collectDiscordHistoryInBatches } = await import("../src/history.js");
@@ -28,11 +27,42 @@ const { isSeedStale, produceChunkedSeed, readSeedManifest } = await import("../s
 const PREFIX = "bot.sqlite.part-";
 const { chunkedMediaPaths, chunkIfOversized, isChunkable, readChunkedManifest, restoreChunkedMedia, produceChunkedMedia } = await import("../src/media-seed.js");
 const { loadStatisticsRows, mergeStatisticsRows } = await import("../src/voice-affinity-command.js");
+const { loadVoiceGraphData } = await import("../src/voice-affinity-graph-command.js");
 const { isCommandEnabled, setCommandEnabled, disabledCommandNames } = await import("../src/command-rules.js");
 const { isAdminCommand } = await import("../src/admin-commands.js");
 
 const GUILD_A = "1111111111111111111";
 const GUILD_B = "2222222222222222222";
+
+test("voice graph selects the top 20 and sums only same-guild same-room overlaps including live sessions", () => {
+  const guildId = "voice-graph-test";
+  storage.initDatabase([guildId]);
+  expect(loadVoiceGraphData(guildId, 10_000)).toEqual({ users: [], pairs: [] });
+  for (let i = 0; i < 22; i++) {
+    storage.run(guildId, "INSERT INTO users (guild_id, user_id, voice_total) VALUES (?, ?, ?)",
+      guildId, `user${String(i).padStart(2, "0")}`, 100 - i);
+  }
+  const sessions = [
+    [guildId, "user00", "room", 1000, 5000],
+    [guildId, "user01", "room", 3000, 7000],
+    [guildId, "user00", "room", 8000, null],
+    [guildId, "user01", "room", 8000, null],
+    [guildId, "user02", "other-room", 1000, null],
+    [guildId, "user03", "room", 0, 1000],
+    [guildId, "user21", "room", 0, null],
+    ["other-guild", "user01", "room", 0, null],
+  ];
+  for (const session of sessions) {
+    storage.run(guildId,
+      "INSERT INTO voice_presence_sessions (guild_id, user_id, channel_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?)",
+      ...session);
+  }
+  const result = loadVoiceGraphData(guildId, 10_000);
+  expect(result.users).toHaveLength(20);
+  expect(result.users[0]?.user_id).toBe("user00");
+  expect(result.users.at(-1)?.user_id).toBe("user19");
+  expect(result.pairs).toEqual([{ source: "user00", target: "user01", sharedMs: 4000 }]);
+});
 
 test("gives every guild its own sqlite file", () => {
   storage.initDatabase([GUILD_A, GUILD_B]);
@@ -126,56 +156,6 @@ test("uses a 65 percent defense boundary", () => {
   expect(isDefenseSuccess(0.65)).toBe(false);
 });
 
-test("falls back to the configured model after an AI request error", async () => {
-  const originalFetch = globalThis.fetch;
-  const requests: string[] = [];
-  let fallbackCalled = false;
-  globalThis.fetch = (async (_input, init) => {
-    requests.push(String(init?.body));
-    if (requests.length === 1) throw new Error("primary request failed");
-    return new Response(JSON.stringify({ choices: [{ message: { content: "fallback answer" } }] }), { status: 200 });
-  }) as typeof fetch;
-
-  try {
-    await expect(askGemini("질문", "기록", undefined, "프롬프트", { onFallback: () => { fallbackCalled = true; } }))
-      .resolves.toBe("fallback answer");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  expect(fallbackCalled).toBe(true);
-  expect(requests).toHaveLength(2);
-  expect(JSON.parse(requests[1]!).model).toBe("mimo-v2.5-free");
-});
-
-test("uses provider and model overrides for concurrent playground requests", async () => {
-  const originalFetch = globalThis.fetch;
-  const requests: Array<{ url: string; model: string }> = [];
-  globalThis.fetch = (async (input, init) => {
-    const body = JSON.parse(String(init?.body)) as { model: string };
-    requests.push({ url: String(input), model: body.model });
-    return new Response(JSON.stringify({ choices: [{ message: { content: body.model } }] }), { status: 200 });
-  }) as typeof fetch;
-
-  try {
-    const [first, second] = await Promise.all([
-      askGemini("질문 A", "기록", undefined, "프롬프트", {
-        provider: "opencode_zen", model: "mimo-v2.5-free", allowFallback: false
-      }),
-      askGemini("질문 B", "기록", undefined, "프롬프트", {
-        provider: "nvidia_nim", model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", allowFallback: false
-      })
-    ]);
-    expect([first, second].sort()).toEqual(["mimo-v2.5-free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"].sort());
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  expect(requests).toHaveLength(2);
-  expect(requests.some((request) => request.url.includes("opencode.ai") && request.model === "mimo-v2.5-free")).toBe(true);
-  expect(requests.some((request) => request.url.includes("integrate.api.nvidia.com") && request.model === "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")).toBe(true);
-});
-
 const BACKFILL_GUILD = "3333333333333333333";
 const BASE_TIME = Date.UTC(2026, 0, 15, 12, 0, 0);
 
@@ -192,7 +172,7 @@ const nextFakeMessage = (authorId: string, bot = false) => {
 };
 
 type FakeMessage = ReturnType<typeof nextFakeMessage>;
-type ChannelSpec = { id: string; name: string; messages: FakeMessage[] };
+type ChannelSpec = { id: string; name: string; messages: FakeMessage[]; readable?: boolean };
 
 const HISTORY_CHANNELS: ChannelSpec[] = (() => {
   const authors = ["u1", "u2", "u3", "u4", "u5", "u6"];
@@ -252,6 +232,7 @@ const createFakeGuild = (specs: ChannelSpec[], calls: { count: number }) => {
     id: BACKFILL_GUILD,
     name: "백필 서버",
     roles: { everyone: {} },
+    members: { me: {} },
     channels: { fetch: async () => cache, cache }
   } as unknown as Guild;
 
@@ -263,7 +244,7 @@ const createFakeGuild = (specs: ChannelSpec[], calls: { count: number }) => {
       name: spec.name,
       type: ChannelType.GuildText,
       position: 0,
-      permissionsFor: () => ({ has: () => true }),
+      permissionsFor: (member: unknown) => ({ has: () => member === guild.members.me && spec.readable !== false }),
       messages: {
         fetch: async ({ limit, before }: { limit: number; before?: string }) => {
           calls.count += 1;
@@ -325,6 +306,22 @@ test("stores every readable message of every channel when a guild is backfilled"
   expect(history.scannedChannelCount).toBe(3);
   expect(storedCount(BACKFILL_GUILD)).toBe(HISTORY_TOTAL);
   expect(chatTotal(BACKFILL_GUILD)).toBe(HISTORY_TOTAL - HISTORY_BOT_MESSAGES);
+});
+
+test("backfills role-gated channels the bot can read and skips inaccessible channels", async () => {
+  const calls = { count: 0 };
+  const guild = createFakeGuild([
+    { id: "allowed", name: "역할 채널", messages: [nextFakeMessage("u1")] },
+    { id: "denied", name: "접근 불가", messages: [nextFakeMessage("u2")], readable: false }
+  ], calls);
+
+  const history = await collectDiscordHistoryInBatches(guild, { batchSize: 100 }, async (messages) => {
+    expect(messages.map((message) => message.channelId)).toEqual(["allowed"]);
+  });
+
+  expect(history.messageCount).toBe(1);
+  expect(history.scannedChannelCount).toBe(1);
+  expect(history.failedChannels).toBe(0);
 });
 
 test("skips the already stored range when the same guild is backfilled again", async () => {

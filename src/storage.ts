@@ -243,34 +243,3 @@ export const fetchStoredChannelRanges = (guildId: Snowflake): StoredChannelRange
   }
   return ranges;
 };
-
-export const fetchRecentMessages = (guildId: Snowflake, limit: number, channelIds: Snowflake[], includeBotMessages: boolean) => {
-  if (channelIds.length === 0) return [] as HistoryMessage[];
-  const placeholders = channelIds.map(() => "?").join(",");
-  const rows = all<{
-    message_id: string; guild_id: string; channel_id: string; channel_name: string;
-    author_id: string; author_name: string; author_is_bot: number; content: string; created_at: number;
-  }>(
-    guildId,
-    `SELECT message_id, guild_id, channel_id, channel_name, author_id, author_name, author_is_bot, content, created_at
-     FROM discord_messages
-     WHERE guild_id = ? AND (${includeBotMessages ? "1" : "author_is_bot = 0"}) AND channel_id IN (${placeholders})
-     ORDER BY created_at DESC LIMIT ?`,
-    guildId, ...channelIds, limit
-  );
-  return rows.reverse().map((row): HistoryMessage => ({
-    messageId: row.message_id, guildId: row.guild_id, channelId: row.channel_id, channelName: row.channel_name,
-    authorId: row.author_id, authorName: row.author_name, authorIsBot: Boolean(row.author_is_bot),
-    content: row.content, createdTimestamp: row.created_at,
-    profile: null, media: [], detail: null
-  }));
-};
-
-export const insertCommandLog = (guildId: Snowflake | string, log: {
-  channelId: Snowflake; userId: Snowflake; userName: string;
-  commandName: string; question: string; provider: string; model: string; output: string;
-}) => {
-  run(guildId, `INSERT INTO command_logs (guild_id, channel_id, user_id, user_name, command_name, question, provider, model, output)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, String(guildId), log.channelId, log.userId, log.userName,
-    log.commandName, log.question, log.provider, log.model, log.output);
-};

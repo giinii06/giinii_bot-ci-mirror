@@ -20,7 +20,6 @@ import { initChat, handleChatMessage, chatRouter } from "./chat/index.js";
 import {
   handleModelAutocomplete, handleModelCommand, handleReasoningAutocomplete, handleReasoningCommand
 } from "./chat/commands.js";
-import { startWebServer } from "./web.js";
 
 const client = new Client({
   intents: [
@@ -56,10 +55,8 @@ client.once(Events.ClientReady, async (readyClient) => {
   await initChat(readyClient);
   initializeVoiceSessions(readyClient);
   startVoiceTracker(readyClient);
-  startWebServer(readyClient);
   await startMediaWorker(() => [...readyClient.guilds.cache.keys()]);
   startSeedWorker(() => [...readyClient.guilds.cache.keys()]);
-  console.log(`Using ${config.aiProvider} model: ${config.aiModel}`);
   console.log(`Seeding profile history from stored messages: ${seedProfileHistoryFromMessages()} rows`);
   void startInitialBackfill(readyClient).catch((error) => console.error("Initial backfill failed", error));
   void sweepAllGuildProfiles(readyClient).catch((error) => console.error("Profile sweep failed", error));

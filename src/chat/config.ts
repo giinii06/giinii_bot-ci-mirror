@@ -1,7 +1,8 @@
 import { dirname, join } from "node:path";
-import { config, databasePath } from "../config.js";
+import { databasePath } from "../config.js";
 
 const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
+const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 
 const readEnv = (name: string) => {
   const value = process.env[name]?.trim();
@@ -14,17 +15,18 @@ const readEnv = (name: string) => {
  * 모델 호출은 giinii_chat에서 가져와 giinii_bot .env에 넣은 CHAT_OPENROUTER_API_KEY를 쓴다.
  */
 const explicitKey = readEnv("CHAT_OPENROUTER_API_KEY");
-const apiKey = explicitKey ?? config.openrouterApiKey;
+const fallbackKey = readEnv("OPENROUTER_API_KEY");
+const apiKey = explicitKey ?? fallbackKey ?? "";
 const keySource = explicitKey
   ? "CHAT_OPENROUTER_API_KEY"
-  : config.openrouterApiKey
+  : fallbackKey
     ? "OPENROUTER_API_KEY"
     : "없음";
 
 export const chatConfig = {
   apiKey,
   keySource,
-  baseUrl: config.openrouterBaseUrl,
+  baseUrl: readEnv("OPENROUTER_BASE_URL") ?? DEFAULT_BASE_URL,
   model: readEnv("OPENROUTER_MODEL") ?? DEFAULT_MODEL,
   reasoningEffort: readEnv("REASONING_EFFORT") ?? "high",
   exaApiKey: readEnv("EXA_API_KEY"),
