@@ -1,7 +1,8 @@
-import { chunkIfOversized, materializeChunkedMedia, readChunkedManifest, syncChunkedGitignore } from "./media-seed.js";
+import { chunkIfOversized, materializeChunkedMedia, readChunkedManifest, sha256File, syncChunkedGitignore } from "./media-seed.js";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
+import { mkdir, rm, stat } from "node:fs/promises";
+import { finished } from "node:stream/promises";
 import { dirname, join } from "node:path";
 import { config } from "./config.js";
 import { all, run } from "./storage.js";
@@ -42,10 +43,36 @@ const markStatus = (guildId: string, mediaId: string, status: string, extra: { l
     status, extra.localPath ?? null, extra.sha256 ?? null, extra.bytes ?? null,
     status, Date.now(), mediaId);
 
-const storeBuffer = async (target: string, bytes: Buffer) => {
+class MediaTooLargeError extends Error {
+  constructor(readonly bytes: number) {
+    super(`media is larger than ${config.mediaMaxBytes} bytes`);
+    this.name = "MediaTooLargeError";
+  }
+}
+
+/** 파일 전체를 메모리에 올리지 않고 내려받으면서 해시를 만든다. */
+const streamToFile = async (target: string, response: Response) => {
   await mkdir(dirname(target), { recursive: true });
-  await writeFile(target, bytes);
-  return { sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.byteLength };
+  const hash = createHash("sha256");
+  const out = createWriteStream(target);
+  let bytes = 0;
+  try {
+    if (!response.body) throw new Error(`empty response body for ${target}`);
+    for await (const chunk of response.body) {
+      const buffer = Buffer.from(chunk);
+      bytes += buffer.byteLength;
+      if (bytes > config.mediaMaxBytes) throw new MediaTooLargeError(bytes);
+      hash.update(buffer);
+      if (!out.write(buffer)) await new Promise((resolve) => out.once("drain", resolve));
+    }
+    out.end();
+    await finished(out);
+  } catch (error) {
+    out.destroy();
+    await rm(target, { force: true });
+    throw error;
+  }
+  return { sha256: hash.digest("hex"), bytes };
 };
 
 const finishStored = async (guildId: string, mediaId: string, relative: string, stored: { sha256: string; bytes: number }, reused: boolean) => {
@@ -67,8 +94,8 @@ export const downloadMedia = async (guildId: string, media: PendingMedia) => {
 
   await materializeChunkedMedia(relative);
   if (existsSync(target)) {
-    const existing = Buffer.from(await Bun.file(target).arrayBuffer());
-    return finishStored(guildId, media.media_id, relative, { sha256: createHash("sha256").update(existing).digest("hex"), bytes: existing.byteLength }, true);
+    const info = await stat(target);
+    return finishStored(guildId, media.media_id, relative, { sha256: await sha256File(target), bytes: info.size }, true);
   }
 
   const response = await fetch(media.url, { signal: AbortSignal.timeout(30_000) });
@@ -82,13 +109,16 @@ export const downloadMedia = async (guildId: string, media: PendingMedia) => {
     return { status: "too_large", bytes: declared } satisfies MediaResult;
   }
 
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.byteLength > config.mediaMaxBytes) {
-    markStatus(guildId, media.media_id, "too_large");
-    return { status: "too_large", bytes: bytes.byteLength } satisfies MediaResult;
+  try {
+    const stored = await streamToFile(target, response);
+    return finishStored(guildId, media.media_id, relative, stored, false);
+  } catch (error) {
+    if (error instanceof MediaTooLargeError) {
+      markStatus(guildId, media.media_id, "too_large");
+      return { status: "too_large", bytes: error.bytes } satisfies MediaResult;
+    }
+    throw error;
   }
-  const stored = await storeBuffer(target, bytes);
-  return finishStored(guildId, media.media_id, relative, stored, false);
 };
 
 const takePending = (guildId: string, limit: number): PendingMedia[] =>

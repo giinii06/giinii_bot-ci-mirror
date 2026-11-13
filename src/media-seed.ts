@@ -16,7 +16,7 @@ export const mediaSeedDirectory = () => join(dirname(databasePath), "media-seed"
 
 type ChunkManifest = { bytes: number; sha256: string; parts: { name: string; bytes: number }[] };
 
-const sha256File = (path: string) =>
+export const sha256File = (path: string) =>
   new Promise<string>((ok, no) => {
     const hash = createHash("sha256");
     createReadStream(path)
