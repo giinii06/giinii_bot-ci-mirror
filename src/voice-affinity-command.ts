@@ -7,6 +7,7 @@ import { buildVoiceAffinity, type VoiceInterval } from "./voice-affinity.js";
 type CardPage = { name: string; attachment: Buffer };
 
 const voiceAffinityPages = new Map<string, CardPage[]>();
+const MAX_STORED_CARD_PAGES = 20;
 const PAGE_SIZE = 7;
 const RANK_LIMIT = 21;
 
@@ -20,14 +21,23 @@ const voiceAffinityComponents = (page: number, pageCount: number) => [new Action
   new ButtonBuilder().setCustomId(`voice-affinity:${page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page === pageCount - 1),
 )];
 
+const rememberCards = (messageId: string, cards: CardPage[]) => {
+  voiceAffinityPages.set(messageId, cards);
+  while (voiceAffinityPages.size > MAX_STORED_CARD_PAGES) {
+    const oldest = voiceAffinityPages.keys().next().value;
+    if (oldest === undefined) break;
+    voiceAffinityPages.delete(oldest);
+  }
+  setTimeout(() => voiceAffinityPages.delete(messageId), 15 * 60_000).unref();
+};
+
 const sendCardPages = async (interaction: ChatInputCommandInteraction, cards: CardPage[]) => {
   if (cards.length === 1) return interaction.editReply({ files: cards });
   const message = await interaction.editReply({
     files: [cards[0]!],
     components: voiceAffinityComponents(0, cards.length),
   });
-  voiceAffinityPages.set(message.id, cards);
-  setTimeout(() => voiceAffinityPages.delete(message.id), 15 * 60_000).unref();
+  rememberCards(message.id, cards);
   return message;
 };
 

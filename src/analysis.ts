@@ -14,12 +14,13 @@ export const persistLiveMessage = async (message: Message) => {
   if (!message.inGuild()) return;
   const content = cleanMessage(message);
   if (!content) return;
+  const profile = safeCapture("live profile", () => captureProfile(message), null);
   const historyMessage: HistoryMessage = { messageId: message.id, guildId: message.guildId, channelId: message.channelId,
     channelName: "name" in message.channel && typeof message.channel.name === "string" ? message.channel.name : message.channelId,
     authorId: message.author.id, authorName: message.member?.displayName || message.author.displayName || message.author.username,
     authorIsBot: message.author.bot, content, createdTimestamp: message.createdTimestamp,
-    profile: safeCapture("live profile", () => captureProfile(message), null),
-    media: safeCapture("live media", () => captureMedia(message), [] as MediaRecord[]),
+    profile,
+    media: safeCapture("live media", () => captureMedia(message, profile), [] as MediaRecord[]),
     detail: safeCapture("live detail", () => captureDetail(message), null) };
   try {
     const inserted = upsertMessages(message.guildId, [historyMessage]);
@@ -35,7 +36,8 @@ export const startInitialBackfill = async (client: Client) => {
   const guilds = await Promise.all([...client.guilds.cache.values()].map((guild) => guild.fetch()));
   initDatabase(guilds.map((guild) => guild.id));
   ensureChatStatsMigrated();
-  await Promise.all(guilds.map((guild) => backfillGuild(guild, { force: storedCount(guild.id) === 0 })));
+  // 길드마다 전체 기록을 훑는 작업이라 동시에 돌리면 Discord 레이트리밋만 앞당긴다.
+  for (const guild of guilds) await backfillGuild(guild, { force: storedCount(guild.id) === 0 });
 };
 
 const storedCount = (guildId: string) =>

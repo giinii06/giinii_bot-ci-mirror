@@ -265,7 +265,7 @@ export const profileFromMember = (member: GuildMember): MessageProfile | null =>
   };
 };
 
-export const captureMedia = (message: Message): MediaRecord[] => {
+export const captureMedia = (message: Message, profile = captureProfile(message)): MediaRecord[] => {
   const media: MediaRecord[] = [];
   for (const attachment of message.attachments.values()) {
     media.push({
@@ -295,7 +295,6 @@ export const captureMedia = (message: Message): MediaRecord[] => {
       ownerUserId: null
     });
   }
-  const profile = captureProfile(message);
   const avatar = profile ? avatarMedia(profile) : null;
   const banner = profile ? bannerMedia(profile) : null;
   return [...media, ...(avatar ? [avatar] : []), ...(banner ? [banner] : [])];
@@ -365,6 +364,7 @@ const fetchChannelMessagePage = async (channel: GuildTextBasedChannel, limit: nu
   for (const message of batch.values()) {
     const content = cleanMessage(message);
     if (!content) continue;
+    const profile = safeCapture("profile", () => captureProfile(message), null);
 
     messages.push({
       messageId: message.id,
@@ -376,8 +376,8 @@ const fetchChannelMessagePage = async (channel: GuildTextBasedChannel, limit: nu
       authorIsBot: message.author.bot,
       content,
       createdTimestamp: message.createdTimestamp,
-      profile: safeCapture("profile", () => captureProfile(message), null),
-      media: safeCapture("media", () => captureMedia(message), [] as MediaRecord[]),
+      profile,
+      media: safeCapture("media", () => captureMedia(message, profile), [] as MediaRecord[]),
       detail: safeCapture("detail", () => captureDetail(message), null)
     });
   }

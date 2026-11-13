@@ -152,10 +152,25 @@ export const markGuildEnriched = (guildId: string, messageCount: number) =>
     ON CONFLICT (guild_id) DO UPDATE SET enriched_at = excluded.enriched_at, message_count = excluded.message_count`,
     guildId, Date.now(), messageCount);
 
+const PROFILE_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/** 아바타/배너는 실시간 메시지에서도 잡히므로, 스윕은 하루 한 번만 돌린다. */
+export const shouldSweepGuildProfiles = (guildId: string, now = Date.now()) => {
+  const last = sql<{ swept_at: number }>(guildId, "SELECT swept_at FROM profile_sweep_state WHERE guild_id = ?", guildId);
+  return !last || now - last.swept_at >= PROFILE_SWEEP_INTERVAL_MS;
+};
+
+const markGuildProfilesSwept = (guildId: string) =>
+  run(guildId, `INSERT INTO profile_sweep_state (guild_id, swept_at) VALUES (?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET swept_at = excluded.swept_at`, guildId, Date.now());
+
 /** 서버 구성원을 한 번에 읽어 현재 아바타/배너를 잡는다. Discord는 과거 프로필을 제공하지 않는다. */
 export const sweepGuildProfiles = async (guild: Guild) => {
+  if (!shouldSweepGuildProfiles(guild.id)) return { scanned: 0, appended: 0, media: 0 };
   const authorIds = all<{ author_id: Snowflake }>(
-    guild.id, "SELECT DISTINCT author_id FROM discord_messages WHERE guild_id = ? LIMIT 5000", guild.id
+    guild.id,
+    "SELECT author_id FROM discord_messages WHERE guild_id = ? GROUP BY author_id ORDER BY MAX(created_at) DESC LIMIT 5000",
+    guild.id
   ).map((row) => row.author_id);
   if (authorIds.length === 0) return { scanned: 0, appended: 0, media: 0 };
 
@@ -182,5 +197,6 @@ export const sweepGuildProfiles = async (guild: Guild) => {
     media += recordMediaRows(guild.id, null, pending);
   }
   console.log(`Profile sweep for ${guild.name} (${guild.id}): ${scanned} members, ${appended} new identities, ${media} media queued`);
+  markGuildProfilesSwept(guild.id);
   return { scanned, appended, media };
 };

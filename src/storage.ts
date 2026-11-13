@@ -49,6 +49,9 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS enrichment_state (
     guild_id TEXT PRIMARY KEY, enriched_at INTEGER NOT NULL, message_count INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS profile_sweep_state (
+    guild_id TEXT PRIMARY KEY, swept_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS message_details (
     message_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, author_id TEXT NOT NULL,
     message_type INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0,
@@ -183,7 +186,7 @@ export const upsertMessages = (guildId: Snowflake | string, messages: HistoryMes
     UPDATE discord_messages SET
       guild_id = ?, channel_id = ?, channel_name = ?, author_id = ?, author_name = ?, author_is_bot = ?,
       content = ?, updated_at = ?
-    WHERE message_id = ?
+    WHERE message_id = ? AND (content <> ? OR channel_name <> ? OR author_name <> ?)
   `);
   database.exec("BEGIN");
   try {
@@ -200,7 +203,8 @@ export const upsertMessages = (guildId: Snowflake | string, messages: HistoryMes
       }
       refresh.run(
         message.guildId, message.channelId, message.channelName, message.authorId, message.authorName,
-        message.authorIsBot ? 1 : 0, message.content, now, message.messageId
+        message.authorIsBot ? 1 : 0, message.content, now, message.messageId,
+        message.content, message.channelName, message.authorName
       );
     }
     database.exec("COMMIT");
