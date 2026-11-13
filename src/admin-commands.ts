@@ -33,9 +33,9 @@ const isAdmin = (message: Message) => message.author.id === ADMIN_USER_ID;
 const storedMessageCount = (guildId: string) =>
   all<{ n: number }>(guildId, "SELECT COUNT(*) AS n FROM discord_messages WHERE guild_id = ?", guildId)[0]?.n ?? 0;
 
-const storedVoiceHours = (guildId: string) =>
+const storedVoiceSeconds = (guildId: string) =>
   all<{ seconds: number }>(
-    guildId, "SELECT COALESCE(SUM(ended_at - started_at), 0) AS seconds FROM voice_presence_sessions WHERE ended_at IS NOT NULL", guildId
+    guildId, "SELECT COALESCE(SUM(ended_at - started_at), 0) / 1000 AS seconds FROM voice_presence_sessions WHERE ended_at IS NOT NULL", guildId
   )[0]?.seconds ?? 0;
 
 const formatDuration = (seconds: number) => {
@@ -55,7 +55,7 @@ const handleServerList = async (message: Message, client: Client) => {
   const lines = guilds.map((guild) => {
     const disabled = disabledCommandNames(guild.id);
     const marker = disabled.length ? `${disabled.length}개 비활성` : "전부 허용";
-    return `**${guild.name}** \`${guild.id}\`\n└ 메시지 ${storedMessageCount(guild.id).toLocaleString()}개 · 통화 ${formatDuration(storedVoiceHours(guild.id))} · ${marker}`;
+    return `**${guild.name}** \`${guild.id}\`\n└ 메시지 ${storedMessageCount(guild.id).toLocaleString()}개 · 통화 ${formatDuration(storedVoiceSeconds(guild.id))} · ${marker}`;
   });
   await sendLong(message, `서버 목록 (${guilds.length}개)`, lines.join("\n"));
 };
