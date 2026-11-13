@@ -6,6 +6,7 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 COPY src ./src
 COPY audio ./audio
+COPY SOUL.md ./SOUL.md
 COPY scripts ./scripts
 
 VOLUME ["/app/data"]

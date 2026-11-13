@@ -1,6 +1,18 @@
 import { all, run, sql } from "./storage.js";
 
 /**
+ * 룰렛 4종(타겟, 관리자_타겟, 관리자머리끄댕이, 관리자머리끄댕이방어권_역할) 전용 길드.
+ * 이 서버에서만 룰렛 명령어가 등록·실행된다. DB on/off 설정보다 우선한다.
+ */
+export const ALLOWED_GUILD_ID = "1489819911277641952";
+
+/** 봇의 전용 길드인지. 룰렛과 기니봇아 대화가 이 서버에서만 동작한다. guildId가 없으면(DM 등) false. */
+export const isAllowedGuild = (guildId: string | null | undefined) => guildId === ALLOWED_GUILD_ID;
+
+/** 룰렛 명령어가 허용된 길드인지. */
+export const isRouletteGuild = isAllowedGuild;
+
+/**
  * 서버별 슬래시 명령어 허용 여부.
  * 행이 없는 서버/명령어는 허용이다(기본값 허용) — 비활성화는 예외로만 저장한다.
  */
