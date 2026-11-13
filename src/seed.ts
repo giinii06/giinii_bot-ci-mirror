@@ -102,10 +102,9 @@ export const produceChunkedSeed = async (guildId: string, options: { seedDir?: s
   const staging = `${seedDir}.staging-${process.pid}`;
   const retired = `${seedDir}.retired-${process.pid}`;
 
-  let manifest: SeedManifest | null = null;
   try {
     snapshotDatabase(database, snapshot);
-    manifest = await splitInto(snapshot, staging, chunkBytes, await liveSize(database.filename), `${guildId}.sqlite`);
+    const manifest = await splitInto(snapshot, staging, chunkBytes, await liveSize(database.filename), `${guildId}.sqlite`);
 
     await rm(retired, { recursive: true, force: true });
     if (await stat(seedDir).then(() => true).catch(() => false)) await rename(seedDir, retired);
@@ -114,11 +113,10 @@ export const produceChunkedSeed = async (guildId: string, options: { seedDir?: s
     return manifest;
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
-    if (manifest === null) {
-      const stillThere = await stat(seedDir).then(() => true).catch(() => false);
-      const retiredThere = await stat(retired).then(() => true).catch(() => false);
-      if (!stillThere && retiredThere) await rename(retired, seedDir);
-    }
+    // 새 시드가 자리를 잡지 못했을 때만 예전 시드를 되돌린다.
+    const seedPresent = await stat(seedDir).then(() => true).catch(() => false);
+    const retiredPresent = await stat(retired).then(() => true).catch(() => false);
+    if (!seedPresent && retiredPresent) await rename(retired, seedDir);
     throw error;
   } finally {
     await rm(snapshot, { force: true });
