@@ -155,7 +155,6 @@ docker compose logs -f bot
 | --- | --- | --- |
 | `DISCORD_TOKEN` | O | 봇 토큰 |
 | `DISCORD_BOT_TOKEN` | X | 있으면 `DISCORD_TOKEN`보다 우선 |
-| `DISCORD_GUILD_ID` | X | 슬래시 명령을 특정 서버에 즉시 등록 |
 | `DATABASE_PATH` | X | 기본 `./data/bot.sqlite` |
 | `MEDIA_PATH` | X | 기본 `DATABASE_PATH` 옆 `media` |
 | `MEDIA_MAX_BYTES` | X | 이 크기를 넘는 파일은 건너뜀. 기본 512MB |
@@ -224,7 +223,7 @@ bun test
 **슬래시 명령이 안 보입니다**
 
 - 관리자 권한으로 `!sync`를 보냅니다.
-- 전역 등록은 최대 1시간 걸립니다. `.env`의 `DISCORD_GUILD_ID`를 쓰면 즉시 반영됩니다.
+- 전역 등록은 최대 1시간 걸립니다. `!sync`로 다시 동기화할 수 있습니다.
 - 룰렛과 대화 명령은 전용 서버에만 등록됩니다.
 
 **기억이 저장되지 않습니다**
