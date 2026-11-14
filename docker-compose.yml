@@ -7,4 +7,5 @@ services:
     volumes:
       - ./data:/app/data
       - ./.env:/app/.env
+      - ./SOUL.md:/app/SOUL.md:ro
     restart: unless-stopped
