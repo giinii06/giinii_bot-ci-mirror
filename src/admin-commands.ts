@@ -4,7 +4,7 @@ import { disabledCommandNames, isCommandEnabled, setCommandEnabled } from "./com
 import { all } from "./storage.js";
 import { splitForEmbeds } from "./text.js";
 
-/** 서버 설정을 바꿀 수 있는 유일한 유저. */
+/** 관리 명령을 실행할 수 있는 유일한 유저. */
 export const ADMIN_USER_ID = "1425196889288212691";
 
 const enabledMark = "✅";
@@ -125,11 +125,6 @@ const handleServerCommandRule = async (message: Message, client: Client, args: s
     return;
   }
 
-  if (!isAdmin(message)) {
-    await message.reply({ embeds: [denyEmbed("이 명령어는 봇 관리자만 쓸 수 있어요.")] });
-    return;
-  }
-
   const guild = resolveGuild(client, target);
   if (!guild) {
     await message.reply({ embeds: [noticeEmbed("서버를 못 찾았어요", `\`${target}\` 이름 또는 ID에 해당하는 서버가 없습니다. \`!서버목록\`으로 확인하세요.`)] });
@@ -189,6 +184,10 @@ export const handleAdminCommand = async (message: Message, client: Client): Prom
   if (message.author.bot) return false;
   const content = message.content.trim();
   if (!isAdminCommand(content)) return false;
+  if (!isAdmin(message)) {
+    await message.reply({ embeds: [denyEmbed("이 명령어는 봇 관리자만 쓸 수 있어요.")] });
+    return true;
+  }
 
   const separator = content.indexOf(" ");
   if (separator === -1) {

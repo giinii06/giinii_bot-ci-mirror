@@ -1,9 +1,9 @@
 import {
-  Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits,
+  Client, Events, GatewayIntentBits, Partials,
   type ButtonInteraction, type ChatInputCommandInteraction
 } from "discord.js";
 import { ensureBackfillStarted, persistLiveMessage, startInitialBackfill } from "./analysis.js";
-import { handleAdminCommand } from "./admin-commands.js";
+import { ADMIN_USER_ID, handleAdminCommand } from "./admin-commands.js";
 import { isAllowedGuild, isCommandEnabled, isRouletteGuild } from "./command-rules.js";
 import { initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
 import { commandScopeCounts, rouletteCommandNames, syncCommands } from "./commands.js";
@@ -72,7 +72,7 @@ client.on(Events.MessageCreate, async (message) => {
   if (message.inGuild()) {
     if (await handleAdminCommand(message, client)) return;
     if (!message.author.bot && message.content === "!sync") {
-      if (!message.member?.permissions.has(PermissionFlagsBits.Administrator)) return;
+      if (message.author.id !== ADMIN_USER_ID) return;
       void message.reply(`전역 명령 ${commandScopeCounts.global}개와 전용 서버 명령 ${commandScopeCounts.dedicated}개를 동기화합니다. 완료되면 알려줄게요.`);
       const followUp = (text: string) => message.channel.send(text).catch(() => undefined);
       syncCommands(client)
