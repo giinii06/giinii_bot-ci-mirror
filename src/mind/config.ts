@@ -47,6 +47,8 @@ export const mindConfig = {
     candidates: Math.round(toNumber("MIND_MEMORY_CANDIDATES", 8, 1, 12)),
     selected: Math.round(toNumber("MIND_MEMORY_SELECTED", 5, 0, 5)),
     charBudget: Math.round(toNumber("MIND_MEMORY_TOKEN_BUDGET", 400, 100, 2000)),
+    /** memory.md에서 옮긴 서버 공유 기억 예산. 28개 기준 약 900자. */
+    coreBudget: Math.round(toNumber("MIND_CORE_MEMORY_BUDGET", 1200, 0, 4000)),
     autoMemory: toBool("MIND_AUTO_MEMORY", true),
     /** 기존 memory.md를 처음 한 번 SQLite로 옮긴다. */
     migration: toBool("MIND_MEMORY_MIGRATION", true)

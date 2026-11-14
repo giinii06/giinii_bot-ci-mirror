@@ -79,8 +79,10 @@ export class MindEngine {
 
   prepareContext(request: MindRequest): MindContext {
     const now = this.now();
+    // "나 누군지 기억해?"처럼 본문에 이름이 없어도 발화자 이름으로 기억을 찾는다.
+    const query = `${request.displayName} ${request.text}`;
     const candidates = this.deps.config.memory.enabled
-      ? this.memories.candidates(request.userId, request.text, this.deps.config.memory.candidates)
+      ? this.memories.candidates(request.userId, query, this.deps.config.memory.candidates)
       : [];
 
     return {
@@ -338,6 +340,10 @@ export class MindEngine {
 
   listMemories(userId: string, limit = 25) {
     return this.memories.list(userId, limit);
+  }
+
+  sharedMemories(limit = 50) {
+    return this.memories.guildMemories(limit);
   }
 
   clearMemories(userId: string): number {

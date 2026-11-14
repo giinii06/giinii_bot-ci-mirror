@@ -145,6 +145,22 @@ export class MindMemoryStore {
     return rows.map(toRecord);
   }
 
+  /**
+   * 서버 전체가 공유하는 기억. 기존 memory.md를 옮긴 것들이 여기에 들어간다.
+   * 후보 검색에 걸리지 않아도 프롬프트에 항상 실어, 큐레이션된 사실이 사라지지 않게 한다.
+   */
+  guildMemories(limit = 50): MemoryRecord[] {
+    const rows = this.db
+      .query<MemoryRow, [string, number, number]>(
+        `SELECT * FROM mind_memories
+         WHERE guild_id = ? AND scope = 'guild' AND deleted_at IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)
+         ORDER BY id ASC LIMIT ?`
+      )
+      .all(this.guild, Date.now(), limit);
+    return rows.map(toRecord);
+  }
+
   count(userId: string): number {
     const row = this.db
       .query<{ n: number }, [string, string, number]>(

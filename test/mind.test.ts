@@ -297,6 +297,24 @@ describe("기억 저장소", () => {
     expect(store.candidates(USER, "서버", 10)).toHaveLength(1);
   });
 
+  test("서버 공용 기억은 검색과 무관하게 항상 꺼내 쓸 수 있다", () => {
+    const store = new MindMemoryStore(mindDb(), GUILD);
+    store.add({ ownerUserId: null, scope: "guild", content: "기니는 21살이다." });
+    store.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
+
+    expect(store.guildMemories().map((memory) => memory.content)).toEqual(["기니는 21살이다."]);
+  });
+
+  test("발화자 이름으로 기억을 찾는다", () => {
+    const store = new MindMemoryStore(mindDb(), GUILD);
+    store.add({ ownerUserId: null, scope: "guild", content: "기니는 21살이다." });
+    store.add({ ownerUserId: null, scope: "guild", content: "설하는 17살이다." });
+
+    const candidates = store.candidates(USER, "기니 나 누군지 기억해?", 8);
+    expect(candidates.map((item) => item.memory.content)).toContain("기니는 21살이다.");
+    expect(store.candidates(USER, "나 누군지 기억해?", 8)).toHaveLength(0);
+  });
+
   test("두 글자 한국어 단어로도 후보를 찾는다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
     store.add({ ownerUserId: USER, content: "민지는 시험 때문에 요즘 속상해한다" });
@@ -567,6 +585,25 @@ describe("MindEngine", () => {
       apiKey: "",
       config: mindConfig
     });
+
+  test("본문에 이름이 없어도 발화자 이름으로 기억 후보를 찾는다", () => {
+    const mind = engine();
+    mind.memories.add({
+      ownerUserId: null,
+      scope: "guild",
+      kind: "semantic",
+      content: "기니는 21살이다."
+    });
+
+    const context = mind.prepareContext({
+      ...contextOf().request,
+      displayName: "기니 (@giinii06)",
+      text: "나 누군지 기억해?"
+    });
+
+    expect(context.candidates.map((item) => item.memory.content)).toContain("기니는 21살이다.");
+    expect(mind.sharedMemories().map((memory) => memory.content)).toContain("기니는 21살이다.");
+  });
 
   test("API 키가 없으면 규칙 기반 폴백으로 판단한다", async () => {
     const mind = engine();

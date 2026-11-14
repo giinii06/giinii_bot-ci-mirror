@@ -118,16 +118,20 @@ const replyToTrigger = async (
   const frame = target.mind.compileFrame(context, decision, memoryResult);
 
   const instructions = await loadInstructions(chatConfig.agentsPath);
+  const sharedMemories = target.mind.sharedMemories(50);
+  const memoriesById = new Map(
+    [...sharedMemories, ...frame.selectedMemories].map((memory) => [memory.id, memory])
+  );
   const messages: ChatMessage[] = [
     {
       role: "system",
       content: buildSystemPrompt({
         instructions: instructions.text,
         frame,
-        memories: frame.selectedMemories,
+        memories: [...memoriesById.values()],
         memoryResult,
         web,
-        memoryBudget: mindConfig.memory.charBudget
+        memoryBudget: mindConfig.memory.coreBudget + mindConfig.memory.charBudget
       })
     },
     ...buildConversation(
