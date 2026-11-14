@@ -63,7 +63,7 @@ docker compose up -d --build
 docker compose logs -f bot
 ```
 
-이미지에 Bun 1.3.14와 ffmpeg가 들어 있어 별도 설치가 필요 없습니다. `./data`가 `/app/data`에 마운트되고, 기동 시 `scripts/restore-db.ts`가 `data/seed`의 청크를 복원한 뒤 봇을 시작합니다.
+이미지에 Bun 1.3.14와 ffmpeg가 들어 있어 별도 설치가 필요 없습니다. `./data`가 `/app/data`에 마운트되고, `data/seed`가 있으면 기동 시 `scripts/restore-db.ts`가 청크를 복원한 뒤 봇을 시작합니다. `data/`는 저장소에 없으므로 새로 받은 저장소는 빈 DB로 시작하고 디스코드 기록을 다시 백필합니다.
 
 ## Discord 설정
 
@@ -210,8 +210,9 @@ bun test
 ## 백업과 복구
 
 - 데이터베이스는 `data/guilds/<서버ID>.sqlite`에 있습니다. 서버별로 따로 백업합니다.
-- `data/seed`에는 커밋 가능한 크기로 쪼갠 DB 청크와 manifest가 있습니다. Docker 기동 시 자동 복원됩니다.
+- `data/seed`에는 DB 청크와 manifest가 있습니다. Docker 기동 시 자동 복원됩니다.
 - 미디어는 `data/media`에 있습니다. DB만 복구하면 미디어 경로는 남지만 파일은 없을 수 있습니다.
+- `data/`는 `.gitignore`에 있어 저장소에 올라가지 않습니다. 백업은 git이 아니라 `data/` 디렉터리를 직접 복사해서 합니다.
 
 ## 문제 해결
 
