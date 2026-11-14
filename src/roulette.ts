@@ -260,31 +260,6 @@ export const handleRouletteCommand = async (interaction: ChatInputCommandInterac
     return interaction.reply({ ephemeral: true, content: "인자는 `지정`, `삭제`, `조회` 중 하나여야 합니다." });
   }
 
-  if (interaction.commandName === "관리자머리끄댕이방어권_역할") {
-    if (!isAdmin(interaction)) return interaction.reply({ ephemeral: true, content: "관리자만 설정할 수 있습니다." });
-    const argument = interaction.options.getString("인자", true);
-    const role = interaction.options.getRole("역할");
-    if (argument === "추가") {
-      if (!role) return interaction.reply({ ephemeral: true, content: "`추가`에는 `역할`을 함께 선택해야 합니다." });
-      if (role.id === guild.id) return interaction.reply({ ephemeral: true, content: "@everyone 역할은 추가할 수 없습니다." });
-      run(guild.id, "INSERT OR IGNORE INTO admin_defense_roles (guild_id, role_id) VALUES (?, ?)", guild.id, role.id);
-      return interaction.reply({ ephemeral: true, content: `${role}을(를) 관리자 머리끄댕이 방어권 역할로 추가했습니다.` });
-    }
-    if (argument === "제거") {
-      if (!role) return interaction.reply({ ephemeral: true, content: "`제거`에는 제거할 `역할`을 함께 선택해야 합니다." });
-      run(guild.id, "DELETE FROM admin_defense_roles WHERE guild_id = ? AND role_id = ?", guild.id, role.id);
-      return interaction.reply({ ephemeral: true, content: `${role}을(를) 관리자 머리끄댕이 방어권 역할에서 제거했습니다.` });
-    }
-    if (argument === "조회") {
-      const roles = all<{ role_id: string }>(guild.id, "SELECT role_id FROM admin_defense_roles WHERE guild_id = ?", guild.id);
-      return interaction.reply({
-        ephemeral: true,
-        content: roles.length ? `현재 방어권 역할: ${roles.map(({ role_id }) => `<@&${role_id}>`).join(", ")}` : "설정된 방어권 역할이 없습니다."
-      });
-    }
-    return interaction.reply({ ephemeral: true, content: "인자는 `추가`, `조회`, `제거` 중 하나여야 합니다." });
-  }
-
   if (interaction.commandName !== "관리자머리끄댕이") return false;
   if (rouletteRuns.has(guild.id)) return interaction.reply({ ephemeral: true, content: "이미 진행 중인 관리자 러시안 룰렛이 있습니다." });
   rouletteRuns.add(guild.id);

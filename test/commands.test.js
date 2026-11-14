@@ -51,7 +51,7 @@ test("removes legacy AI commands globally and from guilds while preserving voice
     expect(state.get(guildPath(targetGuildId))).toEqual([]);
     // 기니봇아 대화 명령은 룰렛과 같이 전용 서버에만 등록한다.
     expect(state.get(guildPath(ALLOWED_GUILD_ID)).map((command) => command.name)).toEqual([
-      "타겟", "관리자_타겟", "관리자머리끄댕이", "관리자머리끄댕이방어권_역할", "model", "reasoning",
+      "타겟", "관리자_타겟", "관리자머리끄댕이", "model", "reasoning",
     ]);
     expect(writes).toHaveLength(3);
     await syncCommands(client);

@@ -21,19 +21,10 @@ const rouletteCommandBuilders = [
         { name: "조회", value: "조회" }
       ))
     .addRoleOption((option) => option.setName("역할").setDescription("지정하거나 삭제할 관리자 역할").setRequired(false)),
-  new SlashCommandBuilder().setName("관리자머리끄댕이").setDescription("관리자를 대상으로 러시안 룰렛을 실행합니다"),
-  new SlashCommandBuilder().setName("관리자머리끄댕이방어권_역할").setDescription("관리자 러시안 룰렛 방어권 역할을 관리합니다")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addStringOption((option) => option.setName("인자").setDescription("추가, 조회, 제거 중 하나를 선택하세요").setRequired(true)
-      .addChoices(
-        { name: "추가", value: "추가" },
-        { name: "조회", value: "조회" },
-        { name: "제거", value: "제거" }
-      ))
-    .addRoleOption((option) => option.setName("역할").setDescription("추가하거나 제거할 방어권 역할").setRequired(false))
+  new SlashCommandBuilder().setName("관리자머리끄댕이").setDescription("관리자를 대상으로 러시안 룰렛을 실행합니다")
 ];
 
-/** 룰렛 명령 4종. 전용 길드에서만 실행한다. */
+/** 룰렛 명령 3종. 전용 길드에서만 실행한다. */
 export const rouletteCommandNames = new Set(rouletteCommandBuilders.map((command) => command.name));
 
 const voiceCommandBuilders = [
@@ -48,7 +39,7 @@ const globalCommands = voiceCommandBuilders.map((command) => command
   .setContexts(InteractionContextType.Guild).setIntegrationTypes(ApplicationIntegrationType.GuildInstall).toJSON());
 const rouletteCommands = rouletteCommandBuilders.map((command) => command.toJSON());
 const chatCommands = chatCommandBuilders.map((command) => command.toJSON());
-/** 전용 서버(ALLOWED_GUILD_ID)에만 등록하는 명령. 룰렛 4종과 기니봇아 대화 2종. */
+/** 전용 서버(ALLOWED_GUILD_ID)에만 등록하는 명령. 룰렛 3종과 기니봇아 대화 2종. */
 const dedicatedGuildCommands = [...rouletteCommands, ...chatCommands];
 export const commands = [...dedicatedGuildCommands, ...globalCommands];
 export const commandScopeCounts = { global: globalCommands.length, dedicated: dedicatedGuildCommands.length };
