@@ -28,7 +28,7 @@ export const chatConfig = {
   keySource,
   baseUrl: readEnv("OPENROUTER_BASE_URL") ?? DEFAULT_BASE_URL,
   model: readEnv("OPENROUTER_MODEL") ?? DEFAULT_MODEL,
-  reasoningEffort: readEnv("REASONING_EFFORT") ?? "high",
+  reasoningEffort: readEnv("REASONING_EFFORT") ?? "low",
   exaApiKey: readEnv("EXA_API_KEY"),
   agentsPath: readEnv("AGENTS_PATH") ?? "SOUL.md",
   memoryPath: readEnv("MEMORY_PATH") ?? join(dirname(databasePath), "memory.md"),

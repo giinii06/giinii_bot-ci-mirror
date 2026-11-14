@@ -1,25 +1,30 @@
 import type { Client, Message } from "discord.js";
+import { ALLOWED_GUILD_ID, isAllowedGuild } from "../command-rules.js";
+import { mindConfig } from "../mind/config.js";
+import { ensureMindSchema, ensureRootSchema } from "../mind/db.js";
+import { MindEngine } from "../mind/engine.js";
+import { migrateLegacyMemory } from "../mind/memory/migration.js";
+import type { MindRequest, SearchHit } from "../mind/types.js";
 import { buildConversation } from "./context.js";
 import { chatConfig, isChatEnabled } from "./config.js";
-import { isAllowedGuild } from "../command-rules.js";
 import { ChannelHistory, type HistoryEntry } from "./history.js";
 import { loadInstructions } from "./instructions.js";
-import { extractMemories, formatMemoryNotice, MemoryStore } from "./memory.js";
 import { buildSystemPrompt } from "./prompt.js";
-import { OpenRouterClient, OpenRouterRequestError, ToolCallError, type ChatMessage } from "./router.js";
-import { detectTrigger } from "./triggers.js";
-import { createWebSearchTool } from "./websearch.js";
+import { OpenRouterClient, DuplicateTurnError, type ChatMessage } from "./router.js";
+import { detectTrigger, type Trigger } from "./triggers.js";
+import { KeyedSerialQueue, TurnGuard } from "./turns.js";
+import { searchBeforeReply } from "./websearch.js";
 
 export type ChatDeps = {
   botId: string;
   history: ChannelHistory;
-  memory: MemoryStore;
   router: OpenRouterClient;
+  mind: MindEngine;
+  turns: TurnGuard;
+  queue: KeyedSerialQueue;
 };
 
 const DISCORD_MESSAGE_LIMIT = 2000;
-const FALLBACK_WITH_MEMORY = "응, 기억 정리해뒀어.";
-const FALLBACK_EMPTY = "음, 방금 답을 놓쳤어. 한 번만 다시 말해줄래?";
 
 let deps: ChatDeps | null = null;
 
@@ -47,13 +52,10 @@ export const toHistoryEntry = (
     authorId: message.author.id,
     author: authorLabel(message),
     content,
-    fromBot: options.fromBot ?? message.author.bot
+    fromBot: options.fromBot ?? message.author.bot,
+    createdAt: message.createdTimestamp
   };
 };
-
-const isToolError = (error: unknown): boolean =>
-  error instanceof ToolCallError
-  || (error instanceof OpenRouterRequestError && error.usedTools && error.status === 400);
 
 const recordOwnMessage = (target: ChatDeps, sent: Message | null): void => {
   if (!sent) return;
@@ -61,95 +63,128 @@ const recordOwnMessage = (target: ChatDeps, sent: Message | null): void => {
   if (entry) target.history.record(sent.channelId, entry);
 };
 
-const replyToTrigger = async (message: Message, target: ChatDeps): Promise<boolean> => {
-  const trigger = detectTrigger(
-    {
-      content: message.content ?? "",
-      botId: target.botId,
-      mentionedBot: message.mentions.users.has(target.botId),
-      repliedToBot: message.mentions.repliedUser?.id === target.botId
-    },
-    chatConfig.prefix
-  );
+const buildRequest = (message: Message, trigger: Trigger, target: ChatDeps): MindRequest => ({
+  messageId: message.id,
+  guildId: message.guildId ?? "",
+  channelId: message.channelId,
+  userId: message.author.id,
+  displayName: authorLabel(message),
+  text: trigger.text,
+  trigger: trigger.kind,
+  replyToMessageId: message.reference?.messageId,
+  createdAt: message.createdTimestamp,
+  recent: target.history
+    .recent(message.channelId, { excludeId: message.id })
+    .map((entry) => ({
+      id: entry.id,
+      authorId: entry.authorId,
+      author: entry.author,
+      content: entry.content,
+      fromBot: entry.fromBot,
+      createdAt: entry.createdAt
+    }))
+});
 
-  if (!trigger) return false;
-  if (!message.channel.isSendable()) return false;
+/** 검색은 생성형 LLM 호출 전에 한 번만. 실패도 그대로 프롬프트에 알린다. */
+const maybeSearch = async (
+  needed: boolean,
+  query: string
+): Promise<{ hits: SearchHit[]; failed: boolean } | null> => {
+  if (!needed || !mindConfig.search.enabled) return null;
+  if (!chatConfig.exaApiKey) return { hits: [], failed: true };
+  return searchBeforeReply({
+    query,
+    apiKey: chatConfig.exaApiKey,
+    timeoutMs: mindConfig.search.timeoutMs
+  });
+};
 
-  if (!trigger.text) {
-    await message.reply({
-      content: `불렀으면 하고 싶은 말도 같이 적어줘. 예: \`${chatConfig.prefix} 오늘 점심 뭐 먹지?\``,
-      allowedMentions: { repliedUser: false }
-    });
-    return true;
-  }
-
+/**
+ * 한 턴의 전체 흐름. 판단은 Mind가 하고, 생성형 LLM은 마지막에 한 번만 부른다.
+ */
+const replyToTrigger = async (
+  message: Message,
+  trigger: Trigger,
+  target: ChatDeps
+): Promise<void> => {
+  if (!message.channel.isSendable()) return;
   await message.channel.sendTyping().catch(() => undefined);
 
-  const [memoryText, instructions] = await Promise.all([
-    target.memory.read(),
-    loadInstructions(chatConfig.agentsPath)
-  ]);
-  const conversation = buildConversation(
-    target.history.recent(message.channelId, { excludeId: message.id }),
-    { speaker: authorLabel(message), text: trigger.text }
-  );
+  const request = buildRequest(message, trigger, target);
+  const context = target.mind.prepareContext(request);
+  const decision = await target.mind.decide(context);
+  const memoryResult = target.mind.commitExplicitMemory(context, decision);
+  const web = await maybeSearch(decision.needsWeb, trigger.text);
+  const frame = target.mind.compileFrame(context, decision, memoryResult);
 
+  const instructions = await loadInstructions(chatConfig.agentsPath);
   const messages: ChatMessage[] = [
     {
       role: "system",
-      content: buildSystemPrompt({ instructions: instructions.text, memory: memoryText })
+      content: buildSystemPrompt({
+        instructions: instructions.text,
+        frame,
+        memories: frame.selectedMemories,
+        memoryResult,
+        web,
+        memoryBudget: mindConfig.memory.charBudget
+      })
     },
-    ...conversation
+    ...buildConversation(
+      target.history.recent(message.channelId, { excludeId: message.id }),
+      { speaker: authorLabel(message), text: trigger.text }
+    )
   ];
-  const options = {
+
+  const reply = await target.router.completeOnce(message.id, messages, {
     maxTokens: chatConfig.maxReplyTokens,
     timeoutMs: chatConfig.requestTimeoutMs
-  };
-  const exaKey = chatConfig.exaApiKey;
-  const webSearch = exaKey ? createWebSearchTool(exaKey) : null;
-
-  let raw: string;
-  if (webSearch) {
-    try {
-      raw = await target.router.completeWithTools(
-        messages,
-        options,
-        [webSearch.definition],
-        webSearch.run
-      );
-    } catch (error) {
-      if (!isToolError(error)) throw error;
-      console.error("[search] 툴 호출 실패, 툴 없이 다시 시도합니다.", error);
-      raw = await target.router.complete(messages, options);
-    }
-  } else {
-    raw = await target.router.complete(messages, options);
-  }
-
-  const { reply, memories, edits, removals } = extractMemories(raw);
-  const hasMemoryOps = memories.length > 0 || edits.length > 0 || removals.length > 0;
-  const visible = reply || (hasMemoryOps ? FALLBACK_WITH_MEMORY : FALLBACK_EMPTY);
+  });
 
   const sent = await message.reply({
-    content: clamp(visible),
+    content: clamp(reply),
     allowedMentions: { repliedUser: true, parse: [] }
   });
   recordOwnMessage(target, sent);
 
-  if (hasMemoryOps) {
-    const batch = await target.memory.apply({ add: memories, edits, remove: removals });
-    const notice = formatMemoryNotice(batch);
-    if (notice) {
-      await message.channel.send({ content: clamp(notice), allowedMentions: { parse: [] } });
-    }
+  // 답변은 이미 나갔다. 사후 기록 실패로 답변을 되돌리지 않는다.
+  try {
+    target.mind.afterReply({
+      context,
+      decision,
+      memoryResult,
+      replyText: reply,
+      sentMessageId: sent.id
+    });
+  } catch (error) {
+    console.error("[mind] 사후 상태 기록 실패", error);
   }
-
-  return true;
 };
 
 export const initChat = async (client: Client<true>): Promise<void> => {
-  const memory = new MemoryStore(chatConfig.memoryPath);
-  await memory.init().catch((error) => console.error("[chat] 기억 파일 초기화 실패", error));
+  const db = ensureMindSchema(ALLOWED_GUILD_ID);
+  const root = ensureRootSchema();
+
+  const mind = new MindEngine({
+    guildId: ALLOWED_GUILD_ID,
+    db,
+    rootDb: root,
+    apiKey: chatConfig.apiKey,
+    config: mindConfig
+  });
+
+  if (mindConfig.memory.migration) {
+    const migrated = await migrateLegacyMemory(
+      mind.memories,
+      db,
+      ALLOWED_GUILD_ID,
+      chatConfig.memoryPath
+    ).catch((error) => {
+      console.error("[mind] 기존 기억 이전 실패", error);
+      return 0;
+    });
+    if (migrated > 0) console.log(`[mind] 기존 기억 ${migrated}개를 SQLite로 옮겼습니다.`);
+  }
 
   const router = new OpenRouterClient(
     chatConfig.apiKey,
@@ -157,17 +192,24 @@ export const initChat = async (client: Client<true>): Promise<void> => {
     chatConfig.baseUrl,
     chatConfig.reasoningEffort
   );
+
   deps = {
     botId: client.user.id,
     history: new ChannelHistory(chatConfig.historyLimit),
-    memory,
-    router
+    router,
+    mind,
+    turns: new TurnGuard(mindConfig.turnMemory),
+    queue: new KeyedSerialQueue()
   };
 
-  console.log(`[memory] ${chatConfig.memoryPath}`);
   console.log(`[key] ${chatConfig.keySource}`);
   console.log(`[model] ${router.currentModel} (effort ${router.reasoningEffort})`);
+  console.log(`[mind] ${mindConfig.enabled ? "켜짐" : "꺼짐"} · ${mindConfig.decisionModel}`);
+  console.log(
+    `[mind] 하루 ${mindConfig.dailyBudget}회 / 분당 ${mindConfig.minuteBudget}회 자체 상한`
+  );
   console.log(`[search] ${chatConfig.exaApiKey ? "Exa 켜짐" : "꺼짐 (EXA_API_KEY 없음)"}`);
+
   const instructions = await loadInstructions(chatConfig.agentsPath);
   console.log(
     `[soul] ${chatConfig.agentsPath} (${instructions.source === "file" ? "파일" : "기본 지침"})`
@@ -181,6 +223,8 @@ export const initChat = async (client: Client<true>): Promise<void> => {
 };
 
 export const chatRouter = (): OpenRouterClient | null => deps?.router ?? null;
+
+export const chatMind = (): MindEngine | null => deps?.mind ?? null;
 
 /** 채널 기록을 남기고, 호출이면 답장한다. 답장했으면 true. */
 export const handleChatMessage = async (message: Message): Promise<boolean> => {
@@ -198,8 +242,39 @@ export const handleChatMessage = async (message: Message): Promise<boolean> => {
 
     if (!isChatEnabled()) return false;
 
-    return await replyToTrigger(message, target);
+    const trigger = detectTrigger(
+      {
+        content: message.content ?? "",
+        botId: target.botId,
+        mentionedBot: message.mentions.users.has(target.botId),
+        repliedToBot: message.mentions.repliedUser?.id === target.botId
+      },
+      chatConfig.prefix
+    );
+    if (!trigger) return false;
+    if (!message.channel.isSendable()) return false;
+
+    if (!trigger.text) {
+      await message.reply({
+        content: `불렀으면 하고 싶은 말도 같이 적어줘. 예: \`${chatConfig.prefix} 오늘 점심 뭐 먹지?\``,
+        allowedMentions: { repliedUser: false }
+      });
+      return true;
+    }
+
+    // 같은 메시지를 두 번 처리하지 않는다. 실패하면 완료로 남기지 않는다.
+    if (!target.turns.begin(message.id)) return false;
+    try {
+      await target.queue.run(message.author.id, () => replyToTrigger(message, trigger, target));
+      target.turns.finish(message.id);
+      return true;
+    } catch (error) {
+      target.turns.abort(message.id);
+      throw error;
+    }
   } catch (error) {
+    // 같은 턴의 두 번째 생성 요청은 사용자에게 오류로 보이지 않게 조용히 넘긴다.
+    if (error instanceof DuplicateTurnError) return false;
     console.error("[chat]", error);
     await message
       .reply({

@@ -1,37 +1,9 @@
-import type { ToolCall, ToolDefinition } from "./router.js";
+import type { SearchHit } from "../mind/types.js";
 
 const EXA_ENDPOINT = "https://api.exa.ai/search";
 const MAX_RESULTS = 3;
 const MAX_QUERY_CHARS = 400;
 const MAX_SNIPPET_CHARS = 400;
-const MAX_SEARCHES_PER_TURN = 2;
-const SEARCH_TIMEOUT_MS = 15_000;
-
-export const WEB_SEARCH_TOOL: ToolDefinition = {
-  type: "function",
-  function: {
-    name: "web_search",
-    description:
-      "Search the live web for current information, news, prices, releases, or facts you are unsure about. Returns up to 3 results with title, URL, and a short excerpt.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description: "Search query. Write it in the language of the user's question."
-        }
-      },
-      required: ["query"],
-      additionalProperties: false
-    }
-  }
-};
-
-export type SearchHit = {
-  title: string;
-  url: string;
-  snippet: string;
-};
 
 type ExaResult = {
   title?: unknown;
@@ -52,7 +24,11 @@ const excerpt = (result: ExaResult): string => {
   return (highlights || text).replace(/\s+/g, " ").trim().slice(0, MAX_SNIPPET_CHARS);
 };
 
-export const searchWeb = async (query: string, apiKey: string): Promise<SearchHit[]> => {
+export const searchWeb = async (
+  query: string,
+  apiKey: string,
+  timeoutMs = 15_000
+): Promise<SearchHit[]> => {
   const response = await fetch(EXA_ENDPOINT, {
     method: "POST",
     headers: {
@@ -65,7 +41,7 @@ export const searchWeb = async (query: string, apiKey: string): Promise<SearchHi
       numResults: MAX_RESULTS,
       contents: { highlights: { maxCharacters: MAX_SNIPPET_CHARS } }
     }),
-    signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS)
+    signal: AbortSignal.timeout(timeoutMs)
   });
 
   if (!response.ok) {
@@ -86,34 +62,19 @@ export const searchWeb = async (query: string, apiKey: string): Promise<SearchHi
   });
 };
 
-export const createWebSearchTool = (
-  apiKey: string
-): { definition: ToolDefinition; run: (call: ToolCall) => Promise<string> } => {
-  let remaining = MAX_SEARCHES_PER_TURN;
-
-  return {
-    definition: WEB_SEARCH_TOOL,
-    async run(call) {
-      if (call.function.name !== "web_search") return JSON.stringify({ error: "unknown tool" });
-      if (remaining <= 0) {
-        return JSON.stringify({ error: "search limit reached for this turn" });
-      }
-
-      let query: unknown;
-      try {
-        query = (JSON.parse(call.function.arguments) as { query?: unknown }).query;
-      } catch {
-        return JSON.stringify({ error: "invalid arguments" });
-      }
-      if (typeof query !== "string" || !query.trim()) return JSON.stringify({ error: "empty query" });
-
-      remaining -= 1;
-      try {
-        return JSON.stringify({ results: await searchWeb(query.trim(), apiKey) });
-      } catch (error) {
-        console.error("[search]", error instanceof Error ? error.message : error);
-        return JSON.stringify({ error: "search failed" });
-      }
-    }
-  };
+/**
+ * 생성형 LLM 호출 이전에 한 번만 검색한다.
+ * 실패를 숨기지 않고 그대로 돌려줘서, 프롬프트가 "검색한 척"하지 않게 한다.
+ */
+export const searchBeforeReply = async (input: {
+  query: string;
+  apiKey: string;
+  timeoutMs: number;
+}): Promise<{ hits: SearchHit[]; failed: boolean }> => {
+  try {
+    return { hits: await searchWeb(input.query, input.apiKey, input.timeoutMs), failed: false };
+  } catch (error) {
+    console.error("[search]", error instanceof Error ? error.message : error);
+    return { hits: [], failed: true };
+  }
 };

@@ -3,24 +3,6 @@ export type ChatMessage = {
   content: string;
 };
 
-export type ToolCall = {
-  id: string;
-  type: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
-};
-
-export type ToolDefinition = {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
-};
-
 export type ModelInfo = {
   id: string;
   name: string;
@@ -29,28 +11,20 @@ export type ModelInfo = {
   supportedEfforts: string[] | null;
 };
 
-type CompletionOptions = {
+export type CompletionOptions = {
   maxTokens: number;
   timeoutMs: number;
 };
 
 type WireMessage = {
-  role: "system" | "user" | "assistant" | "tool";
+  role: "system" | "user" | "assistant";
   content: string | null;
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
-};
-
-type AssistantReply = {
-  content: string | null;
-  tool_calls?: ToolCall[];
 };
 
 type CompletionResponse = {
   choices?: Array<{
     message?: {
       content?: unknown;
-      tool_calls?: unknown;
     };
   }>;
 };
@@ -68,20 +42,24 @@ type ModelListResponse = {
 };
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
-const DEFAULT_REASONING_EFFORT = "high";
-const MAX_TOOL_STEPS = 3;
+const DEFAULT_REASONING_EFFORT = "low";
+const TURN_MEMORY = 500;
 
 export class OpenRouterRequestError extends Error {
-  constructor(readonly status: number, readonly detail: string, readonly usedTools: boolean) {
+  constructor(
+    readonly status: number,
+    readonly detail: string
+  ) {
     super(`OpenRouter ${status}: ${detail}`);
     this.name = "OpenRouterRequestError";
   }
 }
 
-export class ToolCallError extends Error {
-  constructor() {
-    super("툴 호출 횟수를 초과했습니다");
-    this.name = "ToolCallError";
+/** 같은 턴에 두 번째 생성 요청이 들어왔을 때. 사용자에게 오류로 알리지 않는다. */
+export class DuplicateTurnError extends Error {
+  constructor(turnId: string) {
+    super(`이미 생성 요청을 보낸 턴입니다: ${turnId}`);
+    this.name = "DuplicateTurnError";
   }
 }
 
@@ -117,34 +95,16 @@ export const isFreeModel = (
   );
 };
 
-const readToolCalls = (value: unknown): ToolCall[] => {
-  if (!Array.isArray(value)) return [];
-
-  const calls: ToolCall[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object") continue;
-    const candidate = item as {
-      id?: unknown;
-      function?: { name?: unknown; arguments?: unknown };
-    };
-    const fn = candidate.function;
-    if (typeof candidate.id !== "string" || !fn || typeof fn.name !== "string") continue;
-    calls.push({
-      id: candidate.id,
-      type: "function",
-      function: {
-        name: fn.name,
-        arguments: typeof fn.arguments === "string" ? fn.arguments : "{}"
-      }
-    });
-  }
-  return calls;
-};
-
+/**
+ * 대화 생성 전용 클라이언트. Decision 모델은 여기로 호출하지 않는다.
+ * 생성 요청은 턴당 한 번만 나가야 하므로 completeOnce만 공개한다.
+ */
 export class OpenRouterClient {
   private model: string;
   private effort: string;
   private models: ModelInfo[] | null = null;
+  private readonly startedTurns = new Set<string>();
+  private readonly turnOrder: string[] = [];
 
   constructor(
     private readonly apiKey: string,
@@ -180,80 +140,52 @@ export class OpenRouterClient {
     };
   }
 
-  private async request(
-    messages: WireMessage[],
-    options: CompletionOptions,
-    tools?: ToolDefinition[]
-  ): Promise<AssistantReply> {
+  /**
+   * 같은 turnId로는 HTTP 요청을 두 번 보내지 않는다.
+   * 실패한 턴도 다시 시도하지 않는다. 재호출은 곧 무료 한도와 지연의 낭비다.
+   */
+  async completeOnce(
+    turnId: string,
+    messages: ChatMessage[],
+    options: CompletionOptions
+  ): Promise<string> {
+    if (!this.claimTurn(turnId)) {
+      throw new DuplicateTurnError(turnId);
+    }
+
     const response = await fetch(endpoint(this.baseUrl, "/chat/completions"), {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({
         model: this.model,
-        messages,
+        messages: messages satisfies WireMessage[],
         max_tokens: options.maxTokens,
-        reasoning: { effort: this.effort },
-        ...(tools && tools.length > 0 ? { tools } : {})
+        reasoning: { effort: this.effort }
       }),
       signal: AbortSignal.timeout(options.timeoutMs)
     });
 
     if (!response.ok) {
       const body = await response.text();
-      throw new OpenRouterRequestError(response.status, errorDetail(body), (tools?.length ?? 0) > 0);
+      throw new OpenRouterRequestError(response.status, errorDetail(body));
     }
 
     const payload = (await response.json()) as CompletionResponse;
-    const message = payload.choices?.[0]?.message;
-    const toolCalls = readToolCalls(message?.tool_calls);
-
-    return {
-      content: typeof message?.content === "string" ? message.content : null,
-      tool_calls: toolCalls.length > 0 ? toolCalls : undefined
-    };
+    const content = payload.choices?.[0]?.message?.content;
+    const text = typeof content === "string" ? content.trim() : "";
+    if (!text) throw new Error(`모델이 빈 응답을 보냈습니다 (${this.model})`);
+    return text;
   }
 
-  private requireText(reply: AssistantReply): string {
-    const content = reply.content?.trim() ?? "";
-    if (!content) throw new Error(`모델이 빈 응답을 보냈습니다 (${this.model})`);
-    return content;
-  }
-
-  async complete(messages: ChatMessage[], options: CompletionOptions): Promise<string> {
-    return this.requireText(await this.request(messages, options));
-  }
-
-  async completeWithTools(
-    messages: ChatMessage[],
-    options: CompletionOptions,
-    tools: ToolDefinition[],
-    runTool: (call: ToolCall) => Promise<string>
-  ): Promise<string> {
-    const working: WireMessage[] = [...messages];
-
-    for (let step = 0; step <= MAX_TOOL_STEPS; step += 1) {
-      const reply = await this.request(working, options, tools);
-      if (!reply.tool_calls) return this.requireText(reply);
-      if (step === MAX_TOOL_STEPS) {
-        // 마지막 호출까지 툴을 부르면 지금까지 받은 답이라도 돌려준다.
-        const content = reply.content?.trim();
-        if (content) return content;
-        break;
-      }
-
-      working.push({ role: "assistant", content: reply.content, tool_calls: reply.tool_calls });
-
-      const results = await Promise.all(
-        reply.tool_calls.map(async (call) => ({
-          role: "tool" as const,
-          tool_call_id: call.id,
-          content: await runTool(call)
-        }))
-      );
-      working.push(...results);
+  private claimTurn(turnId: string): boolean {
+    if (this.startedTurns.has(turnId)) return false;
+    this.startedTurns.add(turnId);
+    this.turnOrder.push(turnId);
+    while (this.turnOrder.length > TURN_MEMORY) {
+      const oldest = this.turnOrder.shift();
+      if (oldest) this.startedTurns.delete(oldest);
     }
-
-    throw new ToolCallError();
+    return true;
   }
 
   async listModels(force = false): Promise<ModelInfo[]> {
@@ -262,7 +194,7 @@ export class OpenRouterClient {
     const response = await fetch(endpoint(this.baseUrl, "/models"), { headers: this.headers() });
     if (!response.ok) {
       const body = await response.text();
-      throw new OpenRouterRequestError(response.status, errorDetail(body), false);
+      throw new OpenRouterRequestError(response.status, errorDetail(body));
     }
 
     const payload = (await response.json()) as ModelListResponse;

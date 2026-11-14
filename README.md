@@ -18,7 +18,7 @@ Bun + TypeScript로만 작성했고, 외부 서버 없이 `bun:sqlite` 하나와
 | 활동 집계 | 메시지 수는 DB에서 미리 계산하고, 음성 체류 시간은 일·주·월·전체 버킷으로 누적합니다. 기준시는 KST입니다. |
 | 음성 통계 | `/친밀도`, `/통화량`, `/통계`, `/친밀도그래프`가 너비 2400px PNG 카드를 만듭니다. |
 | 룰렛 | 관리자 대상 가위바위보. 방어권 역할, 65% 판정, 음성 재생을 지원합니다. |
-| 대화 | `기니봇아` 호출, 멘션, 봇 메시지 답장에 답합니다. 성격은 `SOUL.md`, 기억은 `data/memory.md`에 있습니다. |
+| 대화 | `기니봇아` 호출, 멘션, 봇 메시지 답장에 답합니다. 성격은 `SOUL.md`, 판단은 `src/mind/`, 기억은 서버 SQLite에 있습니다. |
 | 데이터 | `bun:sqlite`, 서버마다 파일 하나(`data/guilds/<서버ID>.sqlite`), WAL 모드. |
 
 ## 요구 사항
@@ -48,8 +48,11 @@ bun run start
 ```text
 Logged in as GiiniiBot#1234
 [chat] '기니봇아' 호출, 멘션, 답장에 답합니다 (전용 서버에서만)
-[memory] ./data/memory.md
-[agents] SOUL.md (파일)
+[model] deepseek/deepseek-v4.1-flash-1017 (effort low)
+[mind] 켜짐 · perplexity/pplx-decider-v1.3:free
+[mind] 하루 900회 / 분당 18회 자체 상한
+[search] Exa 켜짐
+[soul] SOUL.md (파일)
 Backfilling 서버이름 (서버ID): every readable message, 0 channel(s) already saved
 Backfill ready for 서버이름: 128400 fetched, 128400 newly saved, 214 channel(s)
 ```
@@ -95,6 +98,10 @@ docker compose logs -f bot
 | `/관리자머리끄댕이` | 전용 서버 | 룰렛 실행 |
 | `/model` | 전용 서버 | 대화에 쓸 OpenRouter 모델 변경. 비우면 현재 값 |
 | `/reasoning` | 전용 서버 | 추론 정도 변경. `none`부터 `max`까지 |
+| `/mind status` | 관리자 | Decision 호출량·회로 상태·실패율 |
+| `/memory list` | 본인 | 내 기억 목록 |
+| `/memory delete id` | 본인 | 내 기억 하나 삭제 |
+| `/memory clear confirm` | 본인 | 내 기억과 관계 추정값 전체 삭제 |
 
 룰렛과 대화 명령은 전용 서버에서만 실행됩니다. 서버별 on/off는 `!서버별명령어`로 관리하며, 꺼 둔 명령을 누르면 누른 본인에게만 안내가 뜹니다.
 
@@ -135,18 +142,28 @@ docker compose logs -f bot
 - 채널마다 최근 메시지 10개를 메모리에 들고 문맥으로 씁니다. 재시작하면 비워집니다.
 - 성격과 말투는 `SOUL.md`에서 읽습니다. 메시지마다 다시 읽으므로 저장하면 다음 답변부터 반영됩니다.
 - 모델은 `/model`, 추론 정도는 `/reasoning`으로 바꿉니다. 바꾼 값은 프로세스가 살아있는 동안만 유지됩니다.
-- `EXA_API_KEY`가 있으면 모델이 `web_search` 툴로 최신 정보를 확인할 수 있습니다.
+- `EXA_API_KEY`가 있으면 최신 정보가 필요하다고 판단될 때 답변 전에 한 번 검색합니다.
 
-### 기억
+### 판단과 기억
 
-기억은 `data/memory.md` 한 파일에 모입니다. 채널이나 서버별로 나뉘지 않습니다.
+한 번의 호출은 아래 순서로 처리됩니다. 생성형 LLM은 마지막에 한 번만 부릅니다.
 
-- 한 줄이 기억 하나이고, `#`으로 시작하는 줄과 빈 줄은 무시합니다.
-- 한 기억은 120자에서 잘립니다. 저장할 때 멘션과 `@아이디`, 숫자 ID는 지웁니다.
-- 모델이 답변 끝에 `<memory>`, `<memory-edit>`, `<memory-delete>` 태그를 붙이면 봇이 태그를 떼고 파일에 반영합니다. 결과는 `🧠 기억됨`, `✏️ 수정됨`, `🗑️ 삭제됨` 같은 안내로 따로 보냅니다.
-- 수정 구분자는 `=>`, `->`, `→`, `|`를 받습니다. 대상이 없거나 새 내용이 비면 파일을 바꾸지 않고 경고합니다.
-- 기억을 전부 지우는 요청은 거절합니다. 하나씩 지웁니다.
-- 파일을 직접 고쳐도 됩니다. 다음 답변부터 반영됩니다.
+1. 최근 대화·감정·관계·기억 후보를 SQLite에서 읽습니다.
+2. Decision 모델에 한 요청으로 판단을 묻습니다. 의도, 사회적 상황, 감정 영향, 관계 신호, 행동, 검색 필요성, 기억 관련성을 함께 묻습니다.
+3. 첫 판단이 흔들리면 같은 모델에 한 번 더 집중 질문을 보냅니다. 트리거당 최대 2회입니다.
+4. TypeScript가 경계·감정·관계를 확인해 행동을 확정합니다.
+5. 명시적인 기억 작업만 실제로 반영합니다.
+6. 필요하면 Exa로 검색합니다.
+7. 확정된 행동 지침으로 답변을 한 번 생성합니다.
+
+- 감정은 네 값(긍정·활력·불쾌·호기심)으로 서버마다 저장되고, 반감기에 따라 평소 값으로 돌아갑니다.
+- 관계는 사용자별 친숙도·신뢰·장난 선호·명시적 경계로 저장됩니다. "그런 농담 하지 마" 같은 말은 즉시 경계로 남습니다.
+- 기억은 `mind_memories`에 사용자 단위로 저장됩니다. 다른 사람의 기억은 검색 단계에서 빠지고 모델에도 전달되지 않습니다.
+- 모델은 `<memory>` 태그를 만들지 않습니다. 저장·수정·삭제는 Decision의 의도와 TypeScript의 소유권 검증을 함께 통과해야 반영됩니다.
+- 대상이 애매한 수정·삭제는 실행하지 않고 되묻습니다.
+- 기존 `data/memory.md`는 첫 기동에서 서버 공용 기억으로 한 번 옮겨집니다.
+- Decision 호출은 하루 900회, 분당 18회로 스스로 제한합니다. 한도나 장애에 걸리면 규칙 기반 판단으로 답하고, 생성형 LLM은 그래도 한 번만 부릅니다.
+- `perplexity/pplx-decider-v1.3:free`는 OpenRouter의 무료 Decision 모델입니다. 무료 기간이 끝나면 `MIND_DECISION_MODEL`을 유료 모델로 바꾸거나 자체 호스팅으로 옮겨야 합니다.
 
 ## 환경변수
 
@@ -166,10 +183,26 @@ docker compose logs -f bot
 | `OPENROUTER_API_KEY` | X | 위 키가 비었을 때 쓰는 대체 키 |
 | `OPENROUTER_BASE_URL` | X | 기본 `https://openrouter.ai/api/v1` |
 | `OPENROUTER_MODEL` | X | 기본 `deepseek/deepseek-v4.1-flash-1017` |
-| `REASONING_EFFORT` | X | 기본 `high` |
+| `REASONING_EFFORT` | X | 기본 `low` |
 | `EXA_API_KEY` | X | 넣으면 대화에서 웹 검색 |
 | `AGENTS_PATH` | X | 성격 지침 파일. 기본 `SOUL.md` |
-| `MEMORY_PATH` | X | 기억 파일. 기본 `data/memory.md` |
+| `MEMORY_PATH` | X | 기존 기억 파일. 첫 기동 이전에만 씀. 기본 `data/memory.md` |
+| `MIND_ENABLED` | X | 기본 `true`. `false`면 Decision 호출 없이 규칙 기반으로 판단 |
+| `MIND_DECISION_MODEL` | X | 기본 `perplexity/pplx-decider-v1.3:free` |
+| `MIND_DECISION_FLASH_MODEL` | X | 기본 `perplexity/pplx-decider-flash-v1.3:free` |
+| `MIND_DECISION_API_URL` | X | 기본 `https://openrouter.ai/api/alpha/decisions` |
+| `MIND_MAX_DECISIONS_PER_TRIGGER` | X | 1 또는 2. 기본 2 |
+| `MIND_DAILY_BUDGET` | X | 하루 자체 상한. 기본 900 (계정 무료 한도 1000) |
+| `MIND_MINUTE_BUDGET` | X | 분당 자체 상한. 기본 18 (계정 무료 한도 20) |
+| `MIND_DECISION_TIMEOUT_MS` | X | 기본 3000ms. 실측 0.5~1.8초 |
+| `MIND_MEMORY_CANDIDATES` | X | 후보 검색 상한. 기본 8 |
+| `MIND_MEMORY_SELECTED` | X | 답변에 넣을 기억 상한. 기본 5 |
+| `MIND_AUTO_MEMORY` | X | 명시 요청 없는 자동 저장. 기본 `true` |
+| `MIND_MEMORY_MIGRATION` | X | 기존 `memory.md` 이전. 기본 `true` |
+| `MIND_EMOTION_DECAY_ENABLED` | X | 감정 감쇠. 기본 `true` |
+| `MIND_RELATIONSHIP_UPDATE_LIMIT` | X | 상호작용 1회당 관계 변화 상한. 기본 0.03 |
+| `MIND_SEARCH_TIMEOUT_MS` | X | 답변 전 검색 제한. 기본 3000ms |
+| `MIND_DEBUG` | X | 판단 실패 로그. 기본 `false` |
 
 `DISCORD_TOKEN`이 없으면 `config.ts`를 불러오는 순간 프로세스가 죽습니다. 설정 실수를 조용히 넘기지 않기 위한 의도입니다. `.env`는 Bun이 자동으로 읽습니다.
 
@@ -192,7 +225,8 @@ docker compose logs -f bot
 | `src/admin-commands.ts` | `!` 관리 명령 |
 | `src/roulette.ts` | 관리자 러시안 룰렛 |
 | `src/voice-affinity*.ts` | 친밀도 계산과 카드 렌더링 |
-| `src/chat/` | 기니봇아 대화, 기억, 검색, 모델 명령 |
+| `src/chat/` | 기니봇아 대화, 문맥, 생성 호출, 검색 |
+| `src/mind/` | Decision 판단, 감정·관계 상태, 기억, 행동 확정 |
 | `src/text.ts` | 임베드 분할 |
 | `src/embeds.ts` | 안내 임베드 |
 | `src/git-guard.ts` | 30MB 커밋 상한 검사 |
@@ -204,7 +238,7 @@ bun run check
 bun test
 ```
 
-테스트는 트리거 판별, 문맥 예산, 기억 저장·수정·삭제, 프롬프트 예산, 웹 검색, 명령 등록, 저장소 동작을 검사합니다. 테스트 파일은 `src/config.ts`를 직접 불러오지 않습니다. 이 파일은 시작할 때 환경변수를 검사하고, 없으면 프로세스를 끝냅니다.
+테스트는 트리거 판별, 문맥 예산, Decision 응답 파싱, 호출 예산, 회로 차단, 기억 소유권·검색, 감정 감쇠, 관계 경계, 행동 중재, 생성 호출 1회 보장, 명령 등록, 저장소 동작을 검사합니다. 테스트 파일은 `src/config.ts`를 직접 불러오지 않습니다. 이 파일은 시작할 때 환경변수를 검사하고, 없으면 프로세스를 끝냅니다.
 
 ## 백업과 복구
 
@@ -228,19 +262,20 @@ bun test
 
 **기억이 저장되지 않습니다**
 
-- 모델이 `<memory>` 태그를 붙여야 저장됩니다. "기억해줘"라고 분명히 말합니다.
-- `MEMORY_PATH`의 쓰기 권한을 확인합니다. Docker에서는 `./data`가 마운트되어 있어야 합니다.
+- "기억해줘"처럼 분명히 말해야 합니다. 자동 저장이 꺼져 있으면 명시 요청만 저장합니다.
+- `/memory list`로 실제 저장 여부를 확인합니다.
+- `/mind status`에서 Decision 호출이 한도에 걸리지 않았는지 봅니다. 한도를 넘으면 규칙 기반 판단으로 동작합니다.
 
 **대화가 답하지 않습니다**
 
 - 대화는 `1489819911277641952`에서만 동작합니다.
 - `CHAT_OPENROUTER_API_KEY` 또는 `OPENROUTER_API_KEY`가 비어 있으면 기동 로그에 꺼졌다고 나옵니다.
-- 기동 로그의 `[key]`, `[model]`, `[agents]` 줄에서 실제 사용 값을 확인합니다.
+- 기동 로그의 `[key]`, `[model]`, `[mind]`, `[soul]` 줄에서 실제 사용 값을 확인합니다.
 
 **검색을 안 합니다**
 
-- `EXA_API_KEY`가 있는지 확인합니다. 없으면 `web_search` 툴을 넘기지 않습니다.
-- 모델이 툴 호출을 지원해야 합니다. `/model`로 다른 모델을 고릅니다.
+- `EXA_API_KEY`가 있는지 확인합니다. 없으면 검색을 건너뛰고, 프롬프트에 검색 실패로 알립니다.
+- 검색은 Decision이 최신 정보가 필요하다고 판단할 때만 실행됩니다.
 
 **백필이 끝나지 않습니다**
 

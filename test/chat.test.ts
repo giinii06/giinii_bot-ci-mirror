@@ -2,19 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MAX_HISTORY_CHARS, buildConversation } from "../src/chat/context.js";
+import { buildConversation } from "../src/chat/context.js";
 import { ChannelHistory, type HistoryEntry } from "../src/chat/history.js";
 import { loadInstructions } from "../src/chat/instructions.js";
-import {
-  MemoryStore,
-  cleanMemoryText,
-  extractMemories,
-  formatMemoryNotice,
-} from "../src/chat/memory.js";
+import { cleanMemoryText, parseLegacyEntries } from "../src/chat/memory.js";
+import { buildSystemPrompt } from "../src/chat/prompt.js";
 import { OpenRouterClient, isFreeModel, isReasoningEffort } from "../src/chat/router.js";
-import { WEB_SEARCH_TOOL, createWebSearchTool, searchWeb } from "../src/chat/websearch.js";
-import { MAX_MEMORY_CHARS, buildSystemPrompt, formatMemoryForPrompt } from "../src/chat/prompt.js";
 import { detectTrigger } from "../src/chat/triggers.js";
+import { KeyedSerialQueue, TurnGuard } from "../src/chat/turns.js";
+import { searchBeforeReply, searchWeb } from "../src/chat/websearch.js";
+import type { CharacterFrame, MemoryRecord } from "../src/mind/types.js";
 
 const BOT_ID = "123456789012345678";
 const PREFIX = "기니봇아";
@@ -26,25 +23,48 @@ function entry(index: number): HistoryEntry {
     author: "민지",
     content: `메시지 ${index}`,
     fromBot: false,
+    createdAt: 1_000 + index * 1_000
   };
 }
 
-async function readEntries(store: MemoryStore): Promise<string[]> {
-  const text = await store.read();
-  return text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.replace(/^- /, ""));
-}
+const frame = (overrides: Partial<CharacterFrame> = {}): CharacterFrame => ({
+  intent: "friendly_banter",
+  goal: "maintain_rapport",
+  action: "tease_back",
+  mood: { valence: 0.6, arousal: 0.4, irritation: 0.1, curiosity: 0.7 },
+  style: { tone: "playful", humorLevel: 0.5, empathyLevel: 0.2, responseLength: "short" },
+  relationship: { familiarity: "familiar", playfulness: "medium" },
+  selectedMemories: [],
+  constraints: [],
+  memoryStatus: "none",
+  decisionSource: "remote",
+  ...overrides
+});
+
+const memory = (id: number, content: string): MemoryRecord => ({
+  id,
+  guildId: "g1",
+  ownerUserId: "u1",
+  scope: "user",
+  kind: "semantic",
+  content,
+  confidence: 0.8,
+  importance: 0.5,
+  sourceMessageId: null,
+  createdAt: 0,
+  updatedAt: 0,
+  lastAccessedAt: null,
+  expiresAt: null,
+  version: 1
+});
 
 describe("detectTrigger", () => {
   test("접두사 뒤 문장만 남긴다", () => {
     expect(
       detectTrigger(
         { content: "기니봇아 오늘 뭐 먹지?", botId: BOT_ID, mentionedBot: false, repliedToBot: false },
-        PREFIX,
-      ),
+        PREFIX
+      )
     ).toEqual({ kind: "prefix", text: "오늘 뭐 먹지?" });
   });
 
@@ -52,8 +72,8 @@ describe("detectTrigger", () => {
     expect(
       detectTrigger(
         { content: "기니봇아! 안녕", botId: BOT_ID, mentionedBot: false, repliedToBot: false },
-        PREFIX,
-      ),
+        PREFIX
+      )
     ).toEqual({ kind: "prefix", text: "안녕" });
   });
 
@@ -61,8 +81,8 @@ describe("detectTrigger", () => {
     expect(
       detectTrigger(
         { content: "기니봇아", botId: BOT_ID, mentionedBot: false, repliedToBot: false },
-        PREFIX,
-      ),
+        PREFIX
+      )
     ).toEqual({ kind: "prefix", text: "" });
   });
 
@@ -70,8 +90,8 @@ describe("detectTrigger", () => {
     expect(
       detectTrigger(
         { content: "기니봇아님 저쪽이에요", botId: BOT_ID, mentionedBot: false, repliedToBot: false },
-        PREFIX,
-      ),
+        PREFIX
+      )
     ).toBeNull();
   });
 
@@ -79,8 +99,8 @@ describe("detectTrigger", () => {
     expect(
       detectTrigger(
         { content: `<@${BOT_ID}> 안녕`, botId: BOT_ID, mentionedBot: true, repliedToBot: false },
-        PREFIX,
-      ),
+        PREFIX
+      )
     ).toEqual({ kind: "mention", text: "안녕" });
   });
 
@@ -88,8 +108,8 @@ describe("detectTrigger", () => {
     expect(
       detectTrigger(
         { content: `<@${BOT_ID}> 기니봇아 뭐해`, botId: BOT_ID, mentionedBot: true, repliedToBot: false },
-        PREFIX,
-      ),
+        PREFIX
+      )
     ).toEqual({ kind: "mention", text: "뭐해" });
   });
 
@@ -97,8 +117,8 @@ describe("detectTrigger", () => {
     expect(
       detectTrigger(
         { content: "이거 뭐야?", botId: BOT_ID, mentionedBot: false, repliedToBot: true },
-        PREFIX,
-      ),
+        PREFIX
+      )
     ).toEqual({ kind: "reply", text: "이거 뭐야?" });
   });
 
@@ -106,55 +126,9 @@ describe("detectTrigger", () => {
     expect(
       detectTrigger(
         { content: "그냥 잡담", botId: BOT_ID, mentionedBot: false, repliedToBot: false },
-        PREFIX,
-      ),
+        PREFIX
+      )
     ).toBeNull();
-  });
-});
-
-describe("extractMemories", () => {
-  test("태그를 분리하고 답변만 남긴다", () => {
-    const result = extractMemories("좋아, 기억할게!\n<memory>민지는 커피를 좋아함</memory>");
-    expect(result.reply).toBe("좋아, 기억할게!");
-    expect(result.memories).toEqual(["민지는 커피를 좋아함"]);
-  });
-
-  test("태그가 없으면 답변만 둔다", () => {
-    const result = extractMemories("오늘 날씨 좋다!");
-    expect(result.reply).toBe("오늘 날씨 좋다!");
-    expect(result.memories).toEqual([]);
-  });
-
-  test("닫히지 않은 태그도 주워 담는다", () => {
-    const result = extractMemories("알겠어!\n<memory>민지는 고양이 두 마리를 키움");
-    expect(result.reply).toBe("알겠어!");
-    expect(result.memories).toEqual(["민지는 고양이 두 마리를 키움"]);
-  });
-
-  test("중복 태그는 한 번만 저장한다", () => {
-    const result = extractMemories("<memory>같은 내용</memory><memory>같은 내용</memory>");
-    expect(result.memories).toEqual(["같은 내용"]);
-  });
-
-  test("수정·삭제 태그를 분리하고 답변만 남긴다", () => {
-    const result = extractMemories(
-      "알겠어, 그렇게 해둘게.\n<memory-edit>기니는 21살이다. => 기니는 20살이다.</memory-edit>\n<memory-delete>기니는 부산에 산다.</memory-delete>",
-    );
-    expect(result.reply).toBe("알겠어, 그렇게 해둘게.");
-    expect(result.edits).toEqual([{ from: "기니는 21살이다.", to: "기니는 20살이다." }]);
-    expect(result.removals).toEqual(["기니는 부산에 산다."]);
-  });
-
-  test("수정 태그의 화살표 표기를 모두 받는다", () => {
-    expect(extractMemories("<memory-edit>옛 기억 -> 새 기억</memory-edit>").edits).toEqual([
-      { from: "옛 기억", to: "새 기억" },
-    ]);
-    expect(extractMemories("<memory-edit>옛 기억 → 새 기억</memory-edit>").edits).toEqual([
-      { from: "옛 기억", to: "새 기억" },
-    ]);
-    expect(extractMemories("<memory-edit>옛 기억 | 새 기억</memory-edit>").edits).toEqual([
-      { from: "옛 기억", to: "새 기억" },
-    ]);
   });
 });
 
@@ -162,11 +136,16 @@ describe("cleanMemoryText", () => {
   test("기억에서 아이디를 지우고 표시 이름만 남긴다", () => {
     expect(cleanMemoryText("기니(@giinii06)는 21살이다.")).toBe("기니는 21살이다.");
     expect(cleanMemoryText("기니 (@giinii06)는 부산에 산다.")).toBe("기니는 부산에 산다.");
-    expect(cleanMemoryText("<@123456789> 민지는 커피를 좋아한다.")).toBe(
-      "민지는 커피를 좋아한다.",
-    );
+    expect(cleanMemoryText("<@123456789> 민지는 커피를 좋아한다.")).toBe("민지는 커피를 좋아한다.");
     expect(cleanMemoryText("기니 @giinii06")).toBe("기니");
     expect(cleanMemoryText("기니는 21살이다.")).toBe("기니는 21살이다.");
+  });
+});
+
+describe("parseLegacyEntries", () => {
+  test("머리말과 주석을 걷어내고 기억 줄만 남긴다", () => {
+    const raw = "# 기니봇 메모리\n\n대화에서 기억하기로 한 내용이 쌓입니다.\n\n- 민지는 부산에 산다.\n* 민지는 고양이를 키운다.\n";
+    expect(parseLegacyEntries(raw)).toEqual(["민지는 부산에 산다.", "민지는 고양이를 키운다."]);
   });
 });
 
@@ -199,16 +178,29 @@ describe("ChannelHistory", () => {
     expect(history.recent("c1")).toHaveLength(1);
     expect(history.recent("c2").map((item) => item.id)).toEqual(["m2"]);
   });
+
+  test("같은 메시지 ID는 한 번만 기록한다", () => {
+    const history = new ChannelHistory(10);
+    history.record("c1", entry(1));
+    history.record("c1", entry(1));
+    expect(history.recent("c1")).toHaveLength(1);
+  });
+
+  test("메시지 시각을 함께 보관한다", () => {
+    const history = new ChannelHistory(10);
+    history.record("c1", entry(1));
+    expect(history.recent("c1")[0]?.createdAt).toBe(2_000);
+  });
 });
 
 describe("buildConversation", () => {
   test("마지막 질문에 질문자 이름을 명시한다", () => {
     const messages = buildConversation(
       [
-        { id: "m1", authorId: "u1", author: "민지 (@minji)", content: "안녕", fromBot: false },
-        { id: "m2", authorId: "bot", author: "기니봇", content: "안녕!", fromBot: true },
+        { id: "m1", authorId: "u1", author: "민지 (@minji)", content: "안녕", fromBot: false, createdAt: 1 },
+        { id: "m2", authorId: "bot", author: "기니봇", content: "안녕!", fromBot: true, createdAt: 2 }
       ],
-      { speaker: "준호 (@junho)", text: "오늘 뭐 먹지?" },
+      { speaker: "준호 (@junho)", text: "오늘 뭐 먹지?" }
     );
 
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
@@ -218,10 +210,10 @@ describe("buildConversation", () => {
   test("연속된 사용자 메시지는 합치고 질문자 표시는 남긴다", () => {
     const messages = buildConversation(
       [
-        { id: "m1", authorId: "u1", author: "민지 (@minji)", content: "첫 말", fromBot: false },
-        { id: "m2", authorId: "u1", author: "민지 (@minji)", content: "두 번째 말", fromBot: false },
+        { id: "m1", authorId: "u1", author: "민지 (@minji)", content: "첫 말", fromBot: false, createdAt: 1 },
+        { id: "m2", authorId: "u1", author: "민지 (@minji)", content: "두 번째 말", fromBot: false, createdAt: 2 }
       ],
-      { speaker: "민지 (@minji)", text: "세 번째 말" },
+      { speaker: "민지 (@minji)", text: "세 번째 말" }
     );
 
     expect(messages).toHaveLength(1);
@@ -236,229 +228,91 @@ describe("buildConversation", () => {
       author: "민지 (@minji)",
       content: `메시지 ${index} ${"가".repeat(400)}`,
       fromBot: false,
+      createdAt: index
     }));
 
     const messages = buildConversation(entries, { speaker: "준호 (@junho)", text: "질문" });
     const total = messages.reduce((sum, message) => sum + message.content.length, 0);
 
-    expect(total).toBeLessThanOrEqual(MAX_HISTORY_CHARS + 100);
+    expect(total).toBeLessThanOrEqual(1_400);
     expect(messages.at(-1)?.content).toContain("질문");
   });
 });
 
-describe("MemoryStore", () => {
-  test("추가한 기억을 파일에서 다시 읽는다", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "giny-bot-"));
-    const store = new MemoryStore(join(dir, "nested", "memory.md"));
-
-    try {
-      await store.init();
-      const first = await store.add(["민지는 부산에 산다"]);
-      expect(first).toEqual(["민지는 부산에 산다"]);
-
-      const second = await store.add(["민지는 부산에 산다", "민지는 고양이를 키운다"]);
-      expect(second).toEqual(["민지는 고양이를 키운다"]);
-
-      const text = await store.read();
-      expect(text.match(/부산에 산다/g)).toHaveLength(1);
-      expect(text).toContain("고양이를 키운다");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("저장할 때 날짜를 붙이지 않는다", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "giny-bot-date-"));
-    const store = new MemoryStore(join(dir, "memory.md"));
-
-    try {
-      await store.init();
-      await store.add(["기니는 21살이다."]);
-      const text = await store.read();
-      expect(text).toBe("- 기니는 21살이다.");
-      expect(text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("저장할 때 아이디를 지운다", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "giny-bot-id-"));
-    const store = new MemoryStore(join(dir, "memory.md"));
-
-    try {
-      await store.init();
-      const saved = await store.add(["기니(@giinii06)는 21살이다."]);
-      expect(saved).toEqual(["기니는 21살이다."]);
-      expect(await store.read()).not.toContain("@giinii06");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("자연어 기억 반영", () => {
-  test("문장으로 찾아 수정·삭제하고 추가까지 한 번에 반영한다", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "giny-bot-natural-"));
-    const store = new MemoryStore(join(dir, "memory.md"));
-
-    try {
-      await store.init();
-      await store.add(["기니는 21살이다.", "기니는 부산에 산다."]);
-
-      const batch = await store.apply({
-        add: ["기니는 고양이를 키운다."],
-        edits: [{ from: "기니는 21살이다", to: "기니는 20살이다." }],
-        remove: ["기니는 부산에 산다"],
-      });
-
-      expect(batch.updated).toEqual([{ from: "기니는 21살이다.", entry: "기니는 20살이다." }]);
-      expect(batch.removed).toEqual(["기니는 부산에 산다."]);
-      expect(batch.added).toEqual(["기니는 고양이를 키운다."]);
-      expect(await readEntries(store)).toEqual(["기니는 20살이다.", "기니는 고양이를 키운다."]);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("기억을 전부 지우는 요청은 막는다", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "giny-bot-clear-"));
-    const store = new MemoryStore(join(dir, "memory.md"));
-
-    try {
-      await store.init();
-      await store.add(["기니는 21살이다.", "기니는 부산에 산다."]);
-
-      const batch = await store.apply({
-        add: [],
-        edits: [],
-        remove: ["기니는 21살이다.", "기니는 부산에 산다."],
-      });
-
-      expect(batch.blockedClearAll).toBe(true);
-      expect(batch.removed).toEqual([]);
-      expect(await readEntries(store)).toHaveLength(2);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("비슷한 기억이 여러 개여도 묻지 않고 가장 잘 맞는 것을 처리한다", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "giny-bot-closest-"));
-    const store = new MemoryStore(join(dir, "memory.md"));
-
-    try {
-      await store.init();
-      await store.add(["기니는 부산에 산다.", "기니는 부산에 간다."]);
-
-      const batch = await store.apply({
-        add: [],
-        edits: [{ from: "부산에 간다", to: "기니는 대구에 간다." }],
-        remove: ["부산에 산다"],
-      });
-
-      expect(batch.rejected).toEqual([]);
-      expect(batch.updated).toEqual([
-        { from: "기니는 부산에 간다.", entry: "기니는 대구에 간다." },
-      ]);
-      expect(batch.removed).toEqual(["기니는 부산에 산다."]);
-      expect(await readEntries(store)).toEqual(["기니는 대구에 간다."]);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("formatMemoryNotice", () => {
-  test("저장만 있으면 저장 안내만 보낸다", () => {
-    expect(
-      formatMemoryNotice({
-        added: ["기니는 설하에게 적당히 짓궂게 굴기로 했다."],
-        updated: [],
-        removed: [],
-        rejected: [],
-        blockedClearAll: false,
-      }),
-    ).toBe("🧠 기억됨:\n> 기니는 설하에게 적당히 짓궂게 굴기로 했다.");
-  });
-
-  test("수정만 있으면 수정 안내만 보낸다", () => {
-    expect(
-      formatMemoryNotice({
-        added: [],
-        updated: [{ from: "기니는 21살이다.", entry: "기니는 20살이다." }],
-        removed: [],
-        rejected: [],
-        blockedClearAll: false,
-      }),
-    ).toBe("✏️ 수정됨:\n> 기니는 20살이다.");
-  });
-
-  test("삭제만 있으면 삭제 안내만 보낸다", () => {
-    expect(
-      formatMemoryNotice({
-        added: [],
-        updated: [],
-        removed: ["기니는 부산에 산다."],
-        rejected: [],
-        blockedClearAll: false,
-      }),
-    ).toBe("🗑️ 삭제됨:\n> 기니는 부산에 산다.");
-  });
-
-  test("여러 종류가 섞이면 한 번에 정리해 알려준다", () => {
-    expect(
-      formatMemoryNotice({
-        added: ["기니는 고양이를 키운다."],
-        updated: [{ from: "기니는 21살이다.", entry: "기니는 20살이다." }],
-        removed: ["기니는 부산에 산다."],
-        rejected: [],
-        blockedClearAll: false,
-      }),
-    ).toBe(
-      "🧠 기억 정리됨:\n🗑️ 지움: 기니는 부산에 산다.\n✏️ 수정: 기니는 20살이다.\n🧠 저장: 기니는 고양이를 키운다.",
-    );
-  });
-});
-
 describe("buildSystemPrompt", () => {
-  test("AGENTS.md 지침과 기억, 태그 규칙을 함께 넣는다", () => {
+  test("정체성·행동 지침·기억을 한 프롬프트에 담는다", () => {
     const prompt = buildSystemPrompt({
       instructions: "- 이름은 기니봇\n- 반말로 짧게 답한다",
-      memory: "- 민지는 커피를 좋아함",
+      frame: frame(),
+      memories: [memory(1, "민지는 커피를 좋아한다")],
+      memoryResult: { status: "none", added: [], updated: [], removed: [], reason: null },
+      web: null
     });
+
     expect(prompt).toContain("이름은 기니봇");
-    expect(prompt).toContain("반말로 짧게 답한다");
-    expect(prompt).toContain("민지는 커피를 좋아함");
-    expect(prompt).toContain("<memory>한 줄 요약</memory>");
+    expect(prompt).toContain("# CURRENT CHARACTER STATE");
+    expect(prompt).toContain("장난 받아치기");
+    expect(prompt).toContain("민지는 커피를 좋아한다");
   });
 
-  test("기억을 사실형으로 쓰라는 규칙을 넣는다", () => {
-    const prompt = buildSystemPrompt({ instructions: "지침", memory: "" });
-    expect(prompt).toContain("사실 자체로");
-    expect(prompt).toContain("설하는 공주병이 심하다");
-    expect(prompt).toContain("전달 표현을 쓰지 않는다");
+  test("기억 태그를 만들지 말라고 지시한다", () => {
+    const prompt = buildSystemPrompt({
+      instructions: "지침",
+      frame: frame(),
+      memories: [],
+      memoryResult: { status: "none", added: [], updated: [], removed: [], reason: null },
+      web: null
+    });
+
+    expect(prompt).toContain("`<memory>` 같은 태그를 절대 쓰지 않는다");
+    expect(prompt).not.toContain("<memory>한 줄 요약</memory>");
   });
 
-  test("지침이 비면 기본 지침을 쓰고 기억 없음 문구를 넣는다", () => {
-    const prompt = buildSystemPrompt({ instructions: "  ", memory: "" });
-    expect(prompt).toContain("기니봇");
-    expect(prompt).toContain("(아직 없음)");
+  test("확인이 필요한 기억 작업은 되묻게 한다", () => {
+    const prompt = buildSystemPrompt({
+      instructions: "지침",
+      frame: frame({ memoryStatus: "needs_confirmation" }),
+      memories: [],
+      memoryResult: {
+        status: "needs_confirmation",
+        added: [],
+        updated: [],
+        removed: [],
+        reason: "대상이 불분명하다"
+      },
+      web: null
+    });
+
+    expect(prompt).toContain("되물어야 한다");
   });
-});
 
-describe("프롬프트 토큰 예산", () => {
-  test("기억은 예산 안에서 최신 줄만 남기고 번호를 유지한다", () => {
-    const memory = Array.from(
-      { length: 80 },
-      (_, index) => `- 기억 ${index + 1} ${"가".repeat(20)}`,
-    ).join("\n");
+  test("검색 실패를 숨기지 않는다", () => {
+    const prompt = buildSystemPrompt({
+      instructions: "지침",
+      frame: frame(),
+      memories: [],
+      memoryResult: { status: "none", added: [], updated: [], removed: [], reason: null },
+      web: { hits: [], failed: true }
+    });
 
-    const formatted = formatMemoryForPrompt(memory);
+    expect(prompt).toContain("검색을 시도했지만 결과를 얻지 못했다");
+  });
 
-    expect(formatted.length).toBeLessThanOrEqual(MAX_MEMORY_CHARS + 40);
-    expect(formatted).toContain("생략");
-    expect(formatted).toContain("80.");
+  test("기억은 예산 안에서만 넣는다", () => {
+    const memories = Array.from({ length: 40 }, (_, index) =>
+      memory(index + 1, `기억 ${index + 1} ${"가".repeat(40)}`)
+    );
+    const prompt = buildSystemPrompt({
+      instructions: "지침",
+      frame: frame(),
+      memories,
+      memoryResult: { status: "none", added: [], updated: [], removed: [], reason: null },
+      web: null
+    });
+
+    const section = prompt.split("# RELEVANT MEMORIES")[1]?.split("# MEMORY OPERATION RESULT")[0] ?? "";
+    expect(section.length).toBeLessThan(500);
+    expect(section).toContain("1.");
   });
 });
 
@@ -486,10 +340,10 @@ describe("loadInstructions", () => {
 describe("reasoning", () => {
   test("추론 정도를 바꾼다", () => {
     const client = new OpenRouterClient("sk-test", "deepseek/deepseek-v4.1-flash-1017");
-    expect(client.reasoningEffort).toBe("high");
-
-    client.setReasoningEffort("low");
     expect(client.reasoningEffort).toBe("low");
+
+    client.setReasoningEffort("high");
+    expect(client.reasoningEffort).toBe("high");
   });
 
   test("요청 본문에 추론 정도를 넣는다", async () => {
@@ -500,16 +354,16 @@ describe("reasoning", () => {
       body = JSON.parse(String(args[1]?.body));
       return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
         status: 200,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" }
       });
     }) as typeof fetch;
 
     try {
       const client = new OpenRouterClient("sk-test", "deepseek/deepseek-v4.1-flash-1017");
       client.setReasoningEffort("low");
-      const reply = await client.complete([{ role: "user", content: "hi" }], {
+      const reply = await client.completeOnce("turn-1", [{ role: "user", content: "hi" }], {
         maxTokens: 100,
-        timeoutMs: 1000,
+        timeoutMs: 1000
       });
 
       expect(reply).toBe("ok");
@@ -540,10 +394,99 @@ describe("isFreeModel", () => {
     expect(
       isFreeModel("deepseek/deepseek-v4.1-flash-1017", {
         prompt: "0.0000003",
-        completion: "0.0000012",
-      }),
+        completion: "0.0000012"
+      })
     ).toBe(false);
     expect(isFreeModel("deepseek/deepseek-v4.1-flash-1017")).toBe(false);
+  });
+});
+
+describe("생성형 LLM 단일 호출", () => {
+  test("같은 턴에서는 두 번째 요청을 보내지 않는다", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200
+      });
+    }) as unknown as typeof fetch;
+
+    try {
+      const client = new OpenRouterClient("sk-test", "test/model");
+      const options = { maxTokens: 100, timeoutMs: 1000 };
+      await client.completeOnce("turn-1", [{ role: "user", content: "hi" }], options);
+
+      await expect(
+        client.completeOnce("turn-1", [{ role: "user", content: "hi" }], options)
+      ).rejects.toThrow("이미 생성 요청을 보낸 턴");
+      expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("다른 턴은 각각 한 번씩 호출한다", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200
+      });
+    }) as unknown as typeof fetch;
+
+    try {
+      const client = new OpenRouterClient("sk-test", "test/model");
+      const options = { maxTokens: 100, timeoutMs: 1000 };
+      await client.completeOnce("turn-1", [{ role: "user", content: "a" }], options);
+      await client.completeOnce("turn-2", [{ role: "user", content: "b" }], options);
+      expect(calls).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("TurnGuard", () => {
+  test("같은 메시지는 동시에 두 번 처리하지 않는다", () => {
+    const guard = new TurnGuard(10);
+    expect(guard.begin("m1")).toBe(true);
+    expect(guard.begin("m1")).toBe(false);
+  });
+
+  test("끝난 메시지는 다시 처리하지 않는다", () => {
+    const guard = new TurnGuard(10);
+    guard.begin("m1");
+    guard.finish("m1");
+    expect(guard.begin("m1")).toBe(false);
+  });
+
+  test("실패한 메시지는 다시 시도할 수 있다", () => {
+    const guard = new TurnGuard(10);
+    guard.begin("m1");
+    guard.abort("m1");
+    expect(guard.begin("m1")).toBe(true);
+  });
+});
+
+describe("KeyedSerialQueue", () => {
+  test("같은 키의 작업은 순서대로 실행한다", async () => {
+    const queue = new KeyedSerialQueue();
+    const order: string[] = [];
+
+    const slow = queue.run("u1", async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      order.push("first");
+    });
+    const fast = queue.run("u1", async () => {
+      order.push("second");
+    });
+
+    await Promise.all([slow, fast]);
+    expect(order).toEqual(["first", "second"]);
   });
 });
 
@@ -557,16 +500,16 @@ describe("웹 검색", () => {
       request = {
         url: String(input),
         headers: new Headers(init?.headers),
-        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>
       };
       return new Response(
         JSON.stringify({
           results: [
             { title: "첫 결과", url: "https://example.com/a", highlights: ["가".repeat(500)] },
-            { url: "https://example.com/b", text: "본문 요약" },
-          ],
+            { url: "https://example.com/b", text: "본문 요약" }
+          ]
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
+        { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }) as typeof fetch;
 
@@ -584,88 +527,19 @@ describe("웹 검색", () => {
     }
   });
 
-  test("툴 호출을 실행하고 결과를 넣어 다시 묻는다", async () => {
-    const originalFetch = globalThis.fetch;
-    const requests: Array<Record<string, unknown>> = [];
-    let calls = 0;
-    let toolArguments = "";
-
-    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
-      const [, init] = args;
-      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      calls += 1;
-
-      if (calls === 1) {
-        return new Response(
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  content: null,
-                  tool_calls: [
-                    {
-                      id: "call_1",
-                      type: "function",
-                      function: { name: "web_search", arguments: "{\"query\":\"오늘 날씨\"}" },
-                    },
-                  ],
-                },
-              },
-            ],
-          }),
-          { status: 200 },
-        );
-      }
-
-      return new Response(
-        JSON.stringify({ choices: [{ message: { content: "맑음" } }] }),
-        { status: 200 },
-      );
-    }) as typeof fetch;
-
-    try {
-      const client = new OpenRouterClient("sk-test", "test/model");
-      const answer = await client.completeWithTools(
-        [{ role: "user", content: "날씨 알려줘" }],
-        { maxTokens: 100, timeoutMs: 1000 },
-        [WEB_SEARCH_TOOL],
-        async (call) => {
-          toolArguments = call.function.arguments;
-          return JSON.stringify({ results: [] });
-        },
-      );
-
-      expect(answer).toBe("맑음");
-      expect(toolArguments).toBe("{\"query\":\"오늘 날씨\"}");
-      expect((requests[0]?.tools as Array<{ function: { name: string } }>)[0]?.function.name).toBe(
-        "web_search",
-      );
-      expect((requests[1]?.messages as Array<Record<string, unknown>>).at(-1)).toEqual({
-        role: "tool",
-        tool_call_id: "call_1",
-        content: "{\"results\":[]}",
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  test("한 턴에 검색은 두 번까지 실행한다", async () => {
+  test("검색 실패를 failed로 돌려준다", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ results: [] }), { status: 200 })) as unknown as typeof fetch;
+      new Response("boom", { status: 500 })) as unknown as typeof fetch;
 
     try {
-      const tool = createWebSearchTool("exa-key");
-      const call = {
-        id: "call_1",
-        type: "function" as const,
-        function: { name: "web_search", arguments: "{\"query\":\"테스트\"}" },
-      };
-
-      expect(await tool.run(call)).toContain("results");
-      expect(await tool.run(call)).toContain("results");
-      expect(await tool.run(call)).toContain("limit");
+      const result = await searchBeforeReply({
+        query: "오늘 날씨",
+        apiKey: "exa-key",
+        timeoutMs: 500
+      });
+      expect(result.failed).toBe(true);
+      expect(result.hits).toEqual([]);
     } finally {
       globalThis.fetch = originalFetch;
     }

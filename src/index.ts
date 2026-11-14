@@ -16,10 +16,11 @@ import { handleRouletteCommand } from "./roulette.js";
 import { initDatabase } from "./storage.js";
 import { handleStatisticsCommand, handleVoiceAffinityCommand, handleVoiceAffinityComponent, handleVoiceVolumeCommand } from "./voice-affinity-command.js";
 import { handleVoiceAffinityGraphCommand } from "./voice-affinity-graph-command.js";
-import { initChat, handleChatMessage, chatRouter } from "./chat/index.js";
+import { initChat, handleChatMessage, chatRouter, chatMind } from "./chat/index.js";
 import {
   handleModelAutocomplete, handleModelCommand, handleReasoningAutocomplete, handleReasoningCommand
 } from "./chat/commands.js";
+import { handleMemoryCommand, handleMindCommand } from "./mind/commands.js";
 
 const client = new Client({
   intents: [
@@ -130,6 +131,22 @@ client.on(Events.InteractionCreate, (interaction) => {
       const run = interaction.commandName === "model"
         ? handleModelCommand(interaction, router)
         : handleReasoningCommand(interaction, router);
+      void run.catch((error) => replyInteractionError(interaction, error));
+      return;
+    }
+    if (interaction.commandName === "mind" || interaction.commandName === "memory") {
+      if (!interaction.inCachedGuild() || !isAllowedGuild(interaction.guildId)) {
+        void interaction.reply({ ephemeral: true, content: "기억과 판단 엔진은 지정된 서버에서만 쓸 수 있습니다." }).catch(() => undefined);
+        return;
+      }
+      const mind = chatMind();
+      if (!mind) {
+        void interaction.reply({ ephemeral: true, content: "기니봇아 대화 기능이 아직 초기화되지 않았습니다." }).catch(() => undefined);
+        return;
+      }
+      const run = interaction.commandName === "mind"
+        ? handleMindCommand(interaction, mind)
+        : handleMemoryCommand(interaction, mind);
       void run.catch((error) => replyInteractionError(interaction, error));
       return;
     }

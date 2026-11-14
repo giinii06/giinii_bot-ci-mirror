@@ -108,6 +108,19 @@ const SCHEMA = `
 `;
 
 const openDatabases = new Map<string, Database>();
+let root: Database | null = null;
+
+/**
+ * 서버에 속하지 않는 계정 단위 데이터용 DB. 무료 Decision 호출량처럼
+ * 모든 서버가 공유하는 값만 담는다.
+ */
+export const rootDb = (): Database => {
+  if (root) return root;
+  mkdirSync(dirname(databasePath), { recursive: true });
+  root = new Database(databasePath, { create: true });
+  root.exec("PRAGMA journal_mode = WAL;");
+  return root;
+};
 
 /** 이 파일이 아는 모든 서버 DB를 닫는다. 테스트가 임시 디렉터리를 지우기 전에 쓴다. */
 export const closeAllDatabases = () => {
@@ -115,6 +128,8 @@ export const closeAllDatabases = () => {
     try { database.close(); } catch { /* 이미 닫혔으면 무시 */ }
   }
   openDatabases.clear();
+  try { root?.close(); } catch { /* 이미 닫혔으면 무시 */ }
+  root = null;
 };
 
 /** 서버 DB를 연다. 처음 여는 순간에만 스키마를 만들므로 어디서 불러도 준비돼 있다. */

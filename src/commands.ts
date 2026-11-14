@@ -1,5 +1,6 @@
 import { ApplicationIntegrationType, InteractionContextType, PermissionFlagsBits, SlashCommandBuilder, type APIApplicationCommand, type ApplicationCommandManager, type Client, type Guild } from "discord.js";
 import { chatCommandBuilders } from "./chat/commands.js";
+import { mindCommandBuilders } from "./mind/commands.js";
 import { ALLOWED_GUILD_ID } from "./command-rules.js";
 
 const rouletteCommandBuilders = [
@@ -39,14 +40,15 @@ const globalCommands = voiceCommandBuilders.map((command) => command
   .setContexts(InteractionContextType.Guild).setIntegrationTypes(ApplicationIntegrationType.GuildInstall).toJSON());
 const rouletteCommands = rouletteCommandBuilders.map((command) => command.toJSON());
 const chatCommands = chatCommandBuilders.map((command) => command.toJSON());
-/** 전용 서버(ALLOWED_GUILD_ID)에만 등록하는 명령. 룰렛 3종과 기니봇아 대화 2종. */
-const dedicatedGuildCommands = [...rouletteCommands, ...chatCommands];
+const mindCommands = mindCommandBuilders.map((command) => command.toJSON());
+/** 전용 서버(ALLOWED_GUILD_ID)에만 등록하는 명령. 룰렛 3종과 기니봇아 대화·기억 명령. */
+const dedicatedGuildCommands = [...rouletteCommands, ...chatCommands, ...mindCommands];
 export const commands = [...dedicatedGuildCommands, ...globalCommands];
 export const commandScopeCounts = { global: globalCommands.length, dedicated: dedicatedGuildCommands.length };
 
 /** 서버별 on/off 설정과 대조할 슬래시 명령어 이름 목록. 순서는 등록 순서와 같다. */
 export const slashCommandNames = [
-  ...rouletteCommandBuilders, ...voiceCommandBuilders, ...chatCommandBuilders
+  ...rouletteCommandBuilders, ...voiceCommandBuilders, ...chatCommandBuilders, ...mindCommandBuilders
 ].map((command) => command.name);
 
 const syncCommandSet = async (manager: Pick<ApplicationCommandManager, "fetch" | "set">, wanted: typeof commands, scope: string) => {
