@@ -32,7 +32,12 @@ export const MEMORY_OPERATIONS = ["none", "add", "update", "delete", "unclear"] 
 export type MemoryOperation = (typeof MEMORY_OPERATIONS)[number];
 
 export type DecisionSource = "remote" | "remote_refined" | "local_fallback";
-export type MemoryOperationStatus = "none" | "success" | "failed" | "needs_confirmation";
+export type MemoryOperationStatus =
+  | "none"
+  | "success"
+  | "failed"
+  | "needs_confirmation"
+  | "blocked";
 
 /** 서버별로 저장되는 기니봇의 가상 감정. 실제 감정 경험이 아니라 행동 조절용 변수다. */
 export type CharacterState = {

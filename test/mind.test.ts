@@ -9,8 +9,9 @@ import { parseDecision } from "../src/mind/decision/parser.js";
 import { DecisionQuota } from "../src/mind/decision/quota.js";
 import { buildQuestions, renderState } from "../src/mind/decision/questions.js";
 import { MindEngine } from "../src/mind/engine.js";
+import { handleMemoryCommand } from "../src/mind/commands.js";
 import { compileFrame } from "../src/mind/frame.js";
-import { commitMemoryOperation } from "../src/mind/memory/operations.js";
+import { commitMemoryOperation, describeMemoryResult } from "../src/mind/memory/operations.js";
 import { migrateLegacyMemory } from "../src/mind/memory/migration.js";
 import { MindMemoryStore, selectMemories } from "../src/mind/memory/store.js";
 import { MIND_SCHEMA, ROOT_SCHEMA } from "../src/mind/schema.js";
@@ -413,14 +414,28 @@ describe("명시적 기억 작업", () => {
     expect(result.updated).toEqual([]);
   });
 
-  test("다른 사람 기억 삭제 요청은 실패로 끝난다", () => {
+  test("자연어 삭제 요청은 본인 기억도 지우지 않는다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    const saved = store.add({ ownerUserId: "other", content: "다른 사람 기억" });
+    const saved = store.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
     if (!saved) throw new Error("저장 실패");
 
     const result = commit(store, { operation: "delete", targetId: saved.id, text: "그 기억 지워" });
-    expect(result.status).toBe("failed");
-    expect(store.byId(saved.id)?.content).toBe("다른 사람 기억");
+    expect(result.status).toBe("blocked");
+    expect(result.removed).toEqual([]);
+    expect(store.byId(saved.id)?.content).toBe("민지는 커피를 좋아한다");
+  });
+
+  test("차단된 삭제는 슬래시 명령을 안내하게 만든다", () => {
+    const text = describeMemoryResult({
+      status: "blocked",
+      added: [],
+      updated: [],
+      removed: [],
+      reason: "자연어로는 기억을 삭제할 수 없습니다. /memory delete 슬래시 명령을 써야 합니다"
+    });
+
+    expect(text).toContain("지우지 않았다");
+    expect(text).toContain("/memory delete");
   });
 });
 
@@ -634,6 +649,29 @@ describe("MindEngine", () => {
     expect(decision.memoryOperation).toBe("add");
     expect(result.status).toBe("success");
     expect(mind.listMemories(USER)).toHaveLength(1);
+  });
+
+  test("슬래시 기억 삭제는 그대로 동작한다", async () => {
+    const mind = engine();
+    const saved = mind.memories.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
+    if (!saved) throw new Error("저장 실패");
+
+    let content = "";
+    const interaction = {
+      options: {
+        getSubcommand: () => "delete",
+        getInteger: () => saved.id
+      },
+      user: { id: USER },
+      reply: async (payload: { content?: string }) => {
+        content = payload.content ?? "";
+      }
+    } as unknown as Parameters<typeof handleMemoryCommand>[0];
+
+    await handleMemoryCommand(interaction, mind);
+
+    expect(mind.memories.byId(saved.id)).toBeNull();
+    expect(content).toContain("지웠어");
   });
 
   test("답변 후 감정과 사건을 기록한다", async () => {

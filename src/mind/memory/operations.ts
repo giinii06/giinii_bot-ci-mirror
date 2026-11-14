@@ -79,15 +79,12 @@ export const commitMemoryOperation = (
       return { status: "success", added: [], updated: [updated.content], removed: [], reason: null };
     }
 
-    case "delete": {
-      if (input.targetId === null) {
-        return empty("needs_confirmation", "삭제할 기억을 하나로 특정하지 못했습니다");
-      }
-      if (!store.remove(input.targetId, input.userId)) {
-        return empty("failed", "삭제할 기억을 찾지 못했거나 소유자가 다릅니다");
-      }
-      return { status: "success", added: [], updated: [], removed: ["기억 1개"], reason: null };
-    }
+    case "delete":
+      // 삭제는 대화 밖의 명시적 조작으로만 허용한다. 모델이 delete를 골라도 실행하지 않는다.
+      return empty(
+        "blocked",
+        "자연어로는 기억을 삭제할 수 없습니다. /memory delete 슬래시 명령을 써야 합니다"
+      );
 
     default:
       return empty("none");
@@ -101,6 +98,9 @@ export const describeMemoryResult = (result: MemoryOperationResult): string => {
   }
   if (result.status === "failed") {
     return `기억 변경에 실패했다. ${result.reason ?? ""}. 성공했다고 말하지 않는다.`;
+  }
+  if (result.status === "blocked") {
+    return `기억을 지우지 않았다. ${result.reason ?? "자연어로는 삭제할 수 없다"}. 삭제는 슬래시 명령으로만 가능하다고 안내한다.`;
   }
 
   const parts: string[] = [];

@@ -286,6 +286,25 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("되물어야 한다");
   });
 
+  test("차단된 삭제는 슬래시 명령을 안내하게 한다", () => {
+    const prompt = buildSystemPrompt({
+      instructions: "지침",
+      frame: frame({ memoryStatus: "blocked" }),
+      memories: [],
+      memoryResult: {
+        status: "blocked",
+        added: [],
+        updated: [],
+        removed: [],
+        reason: "자연어로는 기억을 삭제할 수 없습니다. /memory delete 슬래시 명령을 써야 합니다"
+      },
+      web: null
+    });
+
+    expect(prompt).toContain("/memory delete");
+    expect(prompt).toContain("지우지 않았다");
+  });
+
   test("검색 실패를 숨기지 않는다", () => {
     const prompt = buildSystemPrompt({
       instructions: "지침",
