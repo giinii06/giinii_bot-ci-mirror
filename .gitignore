@@ -1,2 +1,8 @@
 node_modules/
 .DS_Store
+
+# 런타임 데이터. 미디어 캐시, 서버별 sqlite, DB 시드 조각은 저장소에 두지 않는다.
+data/
+
+# 비밀값. .env.example 만 커밋한다.
+.env
