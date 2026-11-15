@@ -1,8 +1,9 @@
-import type { Client, Message } from "discord.js";
+import { PermissionFlagsBits, type Client, type Message } from "discord.js";
 import { ALLOWED_GUILD_ID, isAllowedGuild } from "../command-rules.js";
 import { mindConfig } from "../mind/config.js";
 import { ensureMindSchema, ensureRootSchema } from "../mind/db.js";
 import { MindEngine } from "../mind/engine.js";
+import { resolveReferencedUsers, type RosterEntry } from "../mind/identity-resolver.js";
 import type { MindRequest, SearchHit } from "../mind/types.js";
 import { buildConversation } from "./context.js";
 import { chatConfig, isChatEnabled } from "./config.js";
@@ -62,19 +63,93 @@ const recordOwnMessage = (target: ChatDeps, sent: Message | null): void => {
   if (entry) target.history.record(sent.channelId, entry);
 };
 
-const buildRequest = (message: Message, trigger: Trigger, target: ChatDeps): MindRequest => ({
-  messageId: message.id,
-  guildId: message.guildId ?? "",
-  channelId: message.channelId,
-  userId: message.author.id,
-  displayName: authorLabel(message),
-  text: trigger.text,
-  trigger: trigger.kind,
-  replyToMessageId: message.reference?.messageId,
-  createdAt: message.createdTimestamp,
-  recent: target.history
-    .recent(message.channelId, { excludeId: message.id })
-    .map((entry) => ({
+const splitAuthorLabel = (
+  label: string
+): { display: string; username: string | null } => {
+  const match = label.match(/^(.*?)\s*\(@([\w.]+)\)$/);
+  return match
+    ? { display: match[1] ?? label, username: match[2] ?? null }
+    : { display: label, username: null };
+};
+
+/** 이름으로 사람을 찾을 후보. 봇과 발화자는 resolver가 스스로 제외한다. */
+const rosterOf = (message: Message, recent: HistoryEntry[]): RosterEntry[] => {
+  const roster = new Map<string, RosterEntry>();
+  const add = (entry: RosterEntry) => {
+    if (!roster.has(entry.userId)) roster.set(entry.userId, entry);
+  };
+
+  for (const member of message.guild?.members.cache.values() ?? []) {
+    add({
+      userId: member.id,
+      displayName: member.displayName,
+      aliases: [member.user.username]
+    });
+  }
+  for (const user of message.mentions.users.values()) {
+    add({
+      userId: user.id,
+      displayName: user.displayName,
+      aliases: [user.username]
+    });
+  }
+  for (const entry of recent) {
+    if (entry.fromBot) continue;
+    const { display, username } = splitAuthorLabel(entry.author);
+    add({
+      userId: entry.authorId,
+      displayName: display,
+      aliases: username ? [username] : []
+    });
+  }
+
+  return [...roster.values()];
+};
+
+const buildRequest = (
+  message: Message,
+  trigger: Trigger,
+  target: ChatDeps
+): MindRequest => {
+  const recent = target.history.recent(message.channelId, { excludeId: message.id });
+  const repliedUser = message.mentions.repliedUser;
+  const replyTo: RosterEntry | null = repliedUser
+    ? {
+        userId: repliedUser.id,
+        displayName: repliedUser.displayName,
+        aliases: [repliedUser.username]
+      }
+    : null;
+
+  const mentions = [...message.mentions.users.values()].map((user) => ({
+    userId: user.id,
+    displayName: user.displayName,
+    aliases: [user.username]
+  }));
+
+  return {
+    messageId: message.id,
+    guildId: message.guildId ?? "",
+    channelId: message.channelId,
+    userId: message.author.id,
+    displayName: authorLabel(message),
+    isAdministrator:
+      message.member?.permissions.has(PermissionFlagsBits.Administrator) ?? false,
+    text: trigger.text,
+    trigger: trigger.kind,
+    replyToMessageId: message.reference?.messageId,
+    replyToAuthorId: repliedUser?.id ?? null,
+    botWasReplyTarget: repliedUser?.id === target.botId,
+    referencedUsers: resolveReferencedUsers({
+      authorId: message.author.id,
+      botId: target.botId,
+      text: trigger.text,
+      mentions,
+      replyTo,
+      roster: rosterOf(message, recent)
+    }),
+    createdAt: message.createdTimestamp,
+    recent: recent.map((entry) => ({
       id: entry.id,
       authorId: entry.authorId,
       author: entry.author,
@@ -82,7 +157,8 @@ const buildRequest = (message: Message, trigger: Trigger, target: ChatDeps): Min
       fromBot: entry.fromBot,
       createdAt: entry.createdAt
     }))
-});
+  };
+};
 
 /** 검색은 생성형 LLM 호출 전에 한 번만. 실패도 그대로 프롬프트에 알린다. */
 const maybeSearch = async (
@@ -112,21 +188,29 @@ const replyToTrigger = async (
   const request = buildRequest(message, trigger, target);
   const context = target.mind.prepareContext(request);
   const decision = await target.mind.decide(context);
-  const memoryResult = target.mind.commitExplicitMemory(context, decision);
+  const memoryResult = target.mind.commitMemoryOperation(context, decision);
   const web = await maybeSearch(decision.needsWeb, trigger.text);
   const frame = target.mind.compileFrame(context, decision, memoryResult);
 
   const instructions = await loadInstructions(chatConfig.agentsPath);
+  const displayNames: Record<string, string> = {
+    [message.author.id]: authorLabel(message)
+  };
+  for (const user of request.referencedUsers) {
+    displayNames[user.userId] = user.displayName;
+  }
+
   const messages: ChatMessage[] = [
     {
       role: "system",
       content: buildSystemPrompt({
         instructions: instructions.text,
         frame,
-        memories: frame.selectedMemories,
+        memories: [...frame.selectedMemories, ...context.conventions],
         memoryResult,
         web,
-        memoryBudget: mindConfig.memory.charBudget
+        memoryBudget: mindConfig.memory.charBudget,
+        displayNames
       })
     },
     ...buildConversation(
@@ -251,7 +335,9 @@ export const handleChatMessage = async (message: Message): Promise<boolean> => {
     // 같은 메시지를 두 번 처리하지 않는다. 실패하면 완료로 남기지 않는다.
     if (!target.turns.begin(message.id)) return false;
     try {
-      await target.queue.run(message.author.id, () => replyToTrigger(message, trigger, target));
+      await target.queue.run(message.author.id, () =>
+        replyToTrigger(message, trigger, target)
+      );
       target.turns.finish(message.id);
       return true;
     } catch (error) {

@@ -44,24 +44,18 @@ export const mindConfig = {
 
   memory: {
     enabled: toBool("MIND_MEMORY_ENABLED", true),
-    candidates: Math.round(toNumber("MIND_MEMORY_CANDIDATES", 8, 1, 12)),
+    candidates: Math.round(toNumber("MIND_MEMORY_CANDIDATES", 12, 1, 12)),
     selected: Math.round(toNumber("MIND_MEMORY_SELECTED", 5, 0, 5)),
     charBudget: Math.round(toNumber("MIND_MEMORY_TOKEN_BUDGET", 400, 100, 2000)),
-    autoMemory: toBool("MIND_AUTO_MEMORY", true)
-  },
-
-  emotion: {
-    enabled: toBool("MIND_EMOTION_ENABLED", true),
-    decay: toBool("MIND_EMOTION_DECAY_ENABLED", true),
-    /** 분 단위 반감기. 값이 작을수록 빨리 평소 기분으로 돌아온다. */
-    halfLifeMinutes: {
-      valence: toNumber("MIND_HALF_LIFE_VALENCE", 30, 1, 1440),
-      arousal: toNumber("MIND_HALF_LIFE_AROUSAL", 10, 1, 1440),
-      irritation: toNumber("MIND_HALF_LIFE_IRRITATION", 20, 1, 1440),
-      curiosity: toNumber("MIND_HALF_LIFE_CURIOSITY", 60, 1, 1440)
-    },
-    /** 한 사건이 한 번에 움직일 수 있는 최대 폭. */
-    maxDelta: toNumber("MIND_EMOTION_MAX_DELTA", 0.25, 0.01, 1)
+    autoMemory: toBool("MIND_AUTO_MEMORY", true),
+    /** 다른 사용자가 공유를 허용한 개인 기억 검색. */
+    otherUserEnabled: toBool("MIND_OTHER_USER_MEMORY_ENABLED", true),
+    /** 서버 공용 기억 검색과 적용. */
+    guildEnabled: toBool("MIND_GUILD_MEMORY_ENABLED", true),
+    /** 일반 사용자의 안전한 별명 요청을 바로 활성화한다. */
+    guildAutoNickname: toBool("MIND_GUILD_AUTO_NICKNAME", true),
+    /** 별명이 아닌 공용 기억은 관리자 승인을 받는다. */
+    guildApprovalRequired: toBool("MIND_GUILD_APPROVAL_REQUIRED", true)
   },
 
   relationship: {

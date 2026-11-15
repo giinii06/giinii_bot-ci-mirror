@@ -1,5 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { DecisionClient, isTimeoutError } from "./decision/client.js";
+import {
+  DecisionClient,
+  isTimeoutError,
+  type DecisionTransport
+} from "./decision/client.js";
 import { CircuitBreaker } from "./decision/circuit-breaker.js";
 import { parseDecision, type DecisionDraft, type DecisionSignals } from "./decision/parser.js";
 import { buildQuestions, renderState } from "./decision/questions.js";
@@ -16,11 +20,17 @@ import { compileFrame as buildFrame } from "./frame.js";
 import type { MindConfig } from "./config.js";
 import { MindMemoryStore, selectMemories } from "./memory/store.js";
 import { commitMemoryOperation } from "./memory/operations.js";
-import { MindStateStore } from "./state.js";
+import { validateNickname } from "./memory/policy.js";
+import { BotUserRelationshipStore } from "./relationship/store.js";
 import type {
   CharacterFrame,
   CompletedTurn,
+  MemoryActor,
+  MemoryApproval,
+  MemoryCategory,
   MemoryOperationResult,
+  MemoryRecord,
+  MemoryVisibility,
   MindContext,
   MindDecision,
   MindRequest,
@@ -34,6 +44,8 @@ export type MindEngineDeps = {
   apiKey: string;
   config: MindConfig;
   now?: () => number;
+  /** 테스트에서 Decision 호출을 대체한다. 없으면 apiKey로 실제 클라이언트를 만든다. */
+  transport?: DecisionTransport;
 };
 
 export type MindStatus = {
@@ -44,58 +56,85 @@ export type MindStatus = {
   failureRate: number;
 };
 
+export type GuildMemoryInput = {
+  actor: MemoryActor;
+  category: MemoryCategory;
+  subjectUserId: string | null;
+  content: string;
+  structuredValue?: string | null;
+  approval?: MemoryApproval;
+};
+
+export type NicknameResult =
+  | { ok: true; memory: MemoryRecord }
+  | { ok: false; reason: string };
+
 /**
  * 캐릭터 판단의 조율자. 바깥에서는 이 다섯 메서드만 알면 된다.
  * 실제 상태 변경은 모두 TypeScript가 검증한 뒤에만 일어난다.
  */
 export class MindEngine {
-  readonly state: MindStateStore;
+  readonly relationship: BotUserRelationshipStore;
   readonly memories: MindMemoryStore;
   private readonly quota: DecisionQuota;
   private readonly breaker: CircuitBreaker;
-  private readonly client: DecisionClient | null;
+  private readonly client: DecisionTransport | null;
   private readonly now: () => number;
 
   constructor(private readonly deps: MindEngineDeps) {
     this.now = deps.now ?? Date.now;
-    this.state = new MindStateStore(deps.db, deps.guildId, {
-      emotionEnabled: deps.config.emotion.enabled,
-      decayEnabled: deps.config.emotion.decay,
-      halfLifeMinutes: deps.config.emotion.halfLifeMinutes,
-      maxDelta: deps.config.emotion.maxDelta,
-      relationshipEnabled: deps.config.relationship.enabled,
+    this.relationship = new BotUserRelationshipStore(deps.db, deps.guildId, {
+      enabled: deps.config.relationship.enabled,
       updateLimit: deps.config.relationship.updateLimit
     });
     this.memories = new MindMemoryStore(deps.db, deps.guildId);
-    this.quota = new DecisionQuota(deps.rootDb, {
-      dailyBudget: deps.config.dailyBudget,
-      minuteBudget: deps.config.minuteBudget
-    }, this.now);
+    this.quota = new DecisionQuota(
+      deps.rootDb,
+      {
+        dailyBudget: deps.config.dailyBudget,
+        minuteBudget: deps.config.minuteBudget
+      },
+      this.now
+    );
     this.breaker = new CircuitBreaker(3, 60_000, this.now);
-    this.client = deps.apiKey
-      ? new DecisionClient(deps.apiKey, deps.config.decisionApiUrl, deps.config.decisionModel)
-      : null;
+    this.client =
+      deps.transport ??
+      (deps.apiKey
+        ? new DecisionClient(
+            deps.apiKey,
+            deps.config.decisionApiUrl,
+            deps.config.decisionModel
+          )
+        : null);
   }
 
   prepareContext(request: MindRequest): MindContext {
     const now = this.now();
-    // "나 누군지 기억해?"처럼 본문에 이름이 없어도 발화자 이름으로 기억을 찾는다.
-    const query = `${request.displayName} ${request.text}`;
-    const candidates = this.deps.config.memory.enabled
-      ? this.memories.candidates(request.userId, query, this.deps.config.memory.candidates)
-      : [];
+    const retrieved = this.deps.config.memory.enabled
+      ? this.memories.retrieve({
+          actorUserId: request.userId,
+          referencedUserIds: request.referencedUsers.map((user) => user.userId),
+          // "나 누군지 기억해?"처럼 본문에 이름이 없어도 발화자 이름으로 기억을 찾는다.
+          query: `${request.displayName} ${request.text}`,
+          candidateLimit: this.deps.config.memory.candidates,
+          includeOwn: true,
+          includeOther: this.deps.config.memory.otherUserEnabled,
+          includeGuild: this.deps.config.memory.guildEnabled
+        })
+      : { candidates: [], conventions: [] };
 
     return {
       request,
-      state: this.state.loadEmotion(now),
-      relationship: this.state.loadRelationship(request.userId, now),
-      candidates,
+      relationship: this.relationship.load(request.userId, now),
+      candidates: retrieved.candidates,
+      conventions: retrieved.conventions,
       recent: toRecentMessages(request, now)
     };
   }
 
   async decide(context: MindContext): Promise<MindDecision> {
-    const fallback = (): MindDecision => this.buildDecision(context, localDecision(context), "local_fallback", false);
+    const fallback = (): MindDecision =>
+      this.buildDecision(context, localDecision(context), "local_fallback", false);
 
     if (!this.deps.config.enabled || !this.client) return fallback();
     if (!this.breaker.allow()) return fallback();
@@ -117,11 +156,11 @@ export class MindEngine {
         turnId: context.request.messageId,
         kind: "primary",
         state: renderState(context),
-        questions: buildQuestions(context.candidates),
+        questions: buildQuestions(context),
         timeoutMs: this.deps.config.decisionTimeoutMs
       });
 
-      const parsed = parseDecision(response.answers ?? {}, context.candidates, {
+      const parsed = parseDecision(response.answers ?? {}, context, {
         maxSelected: this.deps.config.memory.selected
       });
       // 정밀 판단 시간이 1차 호출 지연으로 기록되지 않도록 먼저 확정한다.
@@ -162,7 +201,11 @@ export class MindEngine {
     signals: DecisionSignals
   ): Promise<DecisionDraft | null> {
     if (!this.client) return null;
-    const reservation = this.quota.reserve(context.request.messageId, this.deps.config.decisionModel, "refine");
+    const reservation = this.quota.reserve(
+      context.request.messageId,
+      this.deps.config.decisionModel,
+      "refine"
+    );
     if (!reservation) return null;
 
     const started = this.now();
@@ -187,7 +230,9 @@ export class MindEngine {
       return applyRefinement(draft, response.answers ?? {}, options);
     } catch (error) {
       settle(isTimeoutError(error) ? "timeout" : "error");
-      if (this.deps.config.debug) console.error("[mind] 정밀 판단 실패, 기본 판단을 쓴다", error);
+      if (this.deps.config.debug) {
+        console.error("[mind] 정밀 판단 실패, 기본 판단을 쓴다", error);
+      }
       return null;
     }
   }
@@ -199,21 +244,20 @@ export class MindEngine {
     refined: boolean
   ): MindDecision {
     const selected = selectMemories(context.candidates, draft.selectedMemoryIds);
-    if (selected.length > 0) this.memories.markAccessed(selected.map((memory) => memory.id));
+    if (selected.length > 0) {
+      this.memories.markAccessed(selected.map((memory) => memory.id));
+    }
 
     return {
       intent: draft.intent,
       socialContext: draft.socialContext,
-      emotionImpact: draft.emotionImpact,
-      emotionIntensity: draft.emotionIntensity,
       relationshipSignal: draft.relationshipSignal,
       userNeeds: draft.userNeeds,
       goal: draft.goal,
       action: draft.action,
       humorStrategy: draft.humorStrategy,
       needsWeb: draft.needsWeb,
-      memoryOperation: draft.memoryOperation,
-      memoryTargetId: draft.memoryTargetId,
+      memory: draft.memory,
       selectedMemories: selected,
       confidence: draft.confidence,
       refined,
@@ -221,22 +265,31 @@ export class MindEngine {
     };
   }
 
-  commitExplicitMemory(context: MindContext, decision: MindDecision): MemoryOperationResult {
+  commitMemoryOperation(
+    context: MindContext,
+    decision: MindDecision
+  ): MemoryOperationResult {
     if (!this.deps.config.memory.enabled) {
       return { status: "none", added: [], updated: [], removed: [], reason: null };
     }
 
-    return commitMemoryOperation(
-      this.memories,
-      {
-        operation: decision.memoryOperation,
-        targetId: decision.memoryTargetId,
+    return commitMemoryOperation(this.memories, this.relationship, {
+      actor: {
         userId: context.request.userId,
-        messageId: context.request.messageId,
-        text: context.request.text
+        guildId: context.request.guildId,
+        isAdministrator: context.request.isAdministrator,
+        source: "discord_message"
       },
-      { autoMemory: this.deps.config.memory.autoMemory }
-    );
+      messageId: context.request.messageId,
+      channelId: context.request.channelId,
+      text: context.request.text,
+      decision: decision.memory,
+      referencedUsers: context.request.referencedUsers,
+      authorDisplayName: context.request.displayName,
+      autoMemory: this.deps.config.memory.autoMemory,
+      guildAutoNickname: this.deps.config.memory.guildAutoNickname,
+      guildApprovalRequired: this.deps.config.memory.guildApprovalRequired
+    });
   }
 
   compileFrame(
@@ -254,33 +307,14 @@ export class MindEngine {
     const { context, decision, memoryResult } = turn;
     const now = this.now();
 
-    // prepareContext 시점의 스냅샷이 아니라 저장된 최신 값을 다시 읽는다.
-    // 서로 다른 사용자의 턴이 겹쳐도 감정 변화가 덮어써지지 않는다.
-    const nextState = this.state.applyEmotion(
-      this.state.loadEmotion(now),
-      decision.emotionImpact,
-      decision.emotionIntensity,
-      decision.goal,
-      now
-    );
-    this.state.saveEmotion(nextState, now);
-
-    const boundaryText =
-      decision.relationshipSignal === "boundary_set" ? context.request.text : null;
-    const nextRelationship = this.state.applyInteraction(
-      this.state.loadRelationship(context.request.userId, now),
-      decision.relationshipSignal,
-      boundaryText,
-      now
-    );
-    this.state.saveRelationship(context.request.userId, nextRelationship, now);
-
-    try {
-      this.deps.db
+    // 같은 메시지의 사후 처리가 두 번 실행되면 관계 점수도 두 번 움직인다.
+    // 사건 기록과 관계 갱신을 한 트랜잭션에 묶고, 처음 기록일 때만 관계를 바꾼다.
+    const apply = this.deps.db.transaction(() => {
+      const inserted = this.deps.db
         .query(
           `INSERT OR IGNORE INTO mind_events
              (guild_id, user_id, message_id, intent, action, goal, emotion_delta, decision_source, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?)`
         )
         .run(
           this.deps.guildId,
@@ -289,12 +323,27 @@ export class MindEngine {
           decision.intent,
           decision.action,
           decision.goal,
-          JSON.stringify({ impact: decision.emotionImpact, intensity: decision.emotionIntensity }),
           decision.source,
           now
         );
+      if (inserted.changes === 0) return false;
+
+      const boundaryText =
+        decision.relationshipSignal === "boundary_set" ? context.request.text : null;
+      const next = this.relationship.applyInteraction(
+        this.relationship.load(context.request.userId, now),
+        decision.relationshipSignal,
+        boundaryText,
+        now
+      );
+      this.relationship.save(next, now);
+      return true;
+    });
+
+    try {
+      apply();
     } catch (error) {
-      console.error("[mind] 사건 기록 실패", error);
+      console.error("[mind] 사후 상태 기록 실패", error);
     }
 
     if (this.deps.config.feedback && turn.sentMessageId) {
@@ -321,12 +370,18 @@ export class MindEngine {
   }
 
   /** 이전 기니봇 답변에 답장했다면 그 답변의 평가를 갱신한다. */
-  private recordFeedback(context: MindContext, decision: MindDecision, now: number): void {
+  private recordFeedback(
+    context: MindContext,
+    decision: MindDecision,
+    now: number
+  ): void {
     if (!this.deps.config.feedback || !context.request.replyToMessageId) return;
     const score =
-      decision.relationshipSignal === "rejection" || decision.relationshipSignal === "boundary_set"
+      decision.relationshipSignal === "rejection" ||
+      decision.relationshipSignal === "boundary_set"
         ? -1
-        : decision.relationshipSignal === "warm" || decision.relationshipSignal === "playful"
+        : decision.relationshipSignal === "warm" ||
+            decision.relationshipSignal === "playful"
           ? 1
           : 0;
 
@@ -335,16 +390,114 @@ export class MindEngine {
         `UPDATE mind_feedback SET response_type = ?, feedback_score = ?, evaluated_at = ?
          WHERE guild_id = ? AND bot_message_id = ?`
       )
-      .run(decision.relationshipSignal, score, now, this.deps.guildId, context.request.replyToMessageId);
+      .run(
+        decision.relationshipSignal,
+        score,
+        now,
+        this.deps.guildId,
+        context.request.replyToMessageId
+      );
   }
 
   listMemories(userId: string, limit = 25) {
-    return this.memories.list(userId, limit);
+    return this.memories.listOwn(userId, limit);
+  }
+
+  listGuildMemories(limit = 50) {
+    return this.memories.listGuild(limit);
+  }
+
+  listPendingGuildMemories(limit = 25) {
+    return this.memories.listPendingGuild(limit);
+  }
+
+  addGuildMemory(input: GuildMemoryInput): MemoryRecord | null {
+    if (!input.actor.isAdministrator) return null;
+    return this.memories.addGuild({
+      createdByUserId: input.actor.userId,
+      category: input.category,
+      subjectUserId: input.subjectUserId,
+      content: input.content,
+      structuredValue: input.structuredValue ?? null,
+      approval: input.approval ?? "active",
+      confidence: 0.9,
+      importance: 0.7,
+      source: "slash_command"
+    });
+  }
+
+  updateGuildMemory(
+    id: number,
+    actor: MemoryActor,
+    patch: { content?: string; category?: MemoryCategory; subjectUserId?: string | null }
+  ): MemoryRecord | null {
+    return this.memories.updateGuild(id, actor, patch);
+  }
+
+  deleteGuildMemory(id: number, actor: MemoryActor): boolean {
+    return this.memories.deleteGuild(id, actor);
+  }
+
+  approveGuildMemory(id: number, actor: MemoryActor): MemoryRecord | null {
+    return this.memories.approveGuild(id, actor);
+  }
+
+  rejectGuildMemory(id: number, actor: MemoryActor): MemoryRecord | null {
+    return this.memories.rejectGuild(id, actor);
+  }
+
+  setGuildNickname(input: {
+    actor: MemoryActor;
+    subjectUserId: string;
+    subjectDisplayName: string;
+    nickname: string;
+  }): NicknameResult {
+    if (!input.actor.isAdministrator) {
+      return { ok: false, reason: "관리자만 공용 별명을 설정할 수 있습니다" };
+    }
+    const validation = validateNickname(input.nickname);
+    if (!validation.ok) return { ok: false, reason: validation.reason };
+
+    const content = `${input.subjectDisplayName}의 별명은 "${validation.value}"이다.`;
+    const existing = this.memories.findGuildNickname(input.subjectUserId);
+    if (existing) {
+      const updated = this.memories.updateGuild(existing.id, input.actor, {
+        content,
+        structuredValue: validation.value,
+        subjectUserId: input.subjectUserId
+      });
+      return updated
+        ? { ok: true, memory: updated }
+        : { ok: false, reason: "별명을 바꾸지 못했습니다" };
+    }
+
+    const saved = this.memories.addGuild({
+      createdByUserId: input.actor.userId,
+      category: "nickname",
+      subjectUserId: input.subjectUserId,
+      content,
+      structuredValue: validation.value,
+      approval: "active",
+      confidence: 0.9,
+      importance: 0.7,
+      source: "slash_command"
+    });
+    return saved
+      ? { ok: true, memory: saved }
+      : { ok: false, reason: "별명을 저장하지 못했습니다" };
+  }
+
+  setMemoryVisibility(
+    userId: string,
+    id: number,
+    visibility: MemoryVisibility
+  ): boolean {
+    return this.memories.setPersonalVisibility(id, userId, visibility);
   }
 
   clearMemories(userId: string): number {
-    const removed = this.memories.clear(userId);
-    this.state.resetRelationship(userId);
+    const removed = this.memories.clearPersonal(userId);
+    this.relationship.reset(userId);
     return removed;
   }
 
@@ -361,7 +514,11 @@ export class MindEngine {
 
 const toRecentMessages = (request: MindRequest, now: number): RecentMessage[] =>
   request.recent.map((entry) => ({
-    authorRole: entry.fromBot ? "bot" : entry.authorId === request.userId ? "current_user" : "other_user",
+    authorRole: entry.fromBot
+      ? "bot"
+      : entry.authorId === request.userId
+        ? "current_user"
+        : "other_user",
     text: entry.content,
     secondsAgo: Math.max(0, Math.round((now - entry.createdAt) / 1000)),
     fromBot: entry.fromBot

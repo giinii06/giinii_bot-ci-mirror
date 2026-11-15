@@ -1,4 +1,4 @@
-import { MIND_ACTIONS, type MindAction, type MindContext } from "../types.js";
+import { MIND_ACTIONS, type MindAction, type MindContext, type MemoryScope } from "../types.js";
 import { actionLabel, type DecisionDraft, type DecisionSignals } from "./parser.js";
 import {
   ACTION_CRITERIA,
@@ -27,6 +27,7 @@ export const needsRefinement = (
 ): boolean => {
   if (!limits.adaptiveRefinement) return false;
   if (signals.memoryAmbiguous) return false;
+  if (signals.memoryScopeUncertain) return true;
   if (signals.conflicting) return true;
 
   const risky = TEASING.includes(draft.action) || draft.action === "set_boundary";
@@ -41,6 +42,7 @@ export const needsRefinement = (
 export type RefineOptions = {
   actions: MindAction[];
   askTease: boolean;
+  askScope: boolean;
 };
 
 export const refineOptions = (
@@ -55,7 +57,8 @@ export const refineOptions = (
 
   return {
     actions,
-    askTease: actions.some((action) => TEASING.includes(action))
+    askTease: actions.some((action) => TEASING.includes(action)),
+    askScope: signals.memoryScopeUncertain
   };
 };
 
@@ -73,6 +76,17 @@ export const buildRefineQuestions = (
       criteria: {
         true: "친근한 장난이 분명하고 상대의 경계를 침해하지 않음",
         false: "실제 불만이나 적대성일 수 있어 신중한 반응이 적합함"
+      }
+    };
+  }
+
+  if (options.askScope) {
+    questions.memory_scope_final = {
+      type: "choice",
+      instructions: "이 기억을 개인 기억으로 둘지, 서버 공용 기억으로 둘지 다시 고른다.",
+      criteria: {
+        user: "특정 사용자만 알아야 하는 개인 사실이나 취향",
+        guild: "서버 공용 정보이거나 여러 사람에게 적용할 별명·관습"
       }
     };
   }
@@ -97,9 +111,10 @@ export const renderRefineState = (context: MindContext, draft: DecisionDraft): s
   return [
     `[메시지] ${context.request.text}`,
     `[호출] ${context.request.trigger}`,
-    `[관계] 친숙도 ${context.relationship.familiarity.toFixed(2)}, 장난 선호 ${context.relationship.playfulness.toFixed(2)}`,
+    `[관계] 친숙도 ${context.relationship.familiarity.toFixed(2)}, 라포 ${context.relationship.rapport.toFixed(2)}, 장난 ${context.relationship.playfulness.toFixed(2)}`,
     boundary,
-    `[1차 판단] 의도 ${draft.intent}, 상황 ${draft.socialContext}, 감정 ${draft.emotionImpact}(${draft.emotionIntensity.toFixed(2)}), 행동 ${draft.action}, 확신 ${draft.confidence.toFixed(2)}`,
+    `[1차 판단] 의도 ${draft.intent}, 상황 ${draft.socialContext}, 행동 ${draft.action}, ` +
+      `기억 ${draft.memory.operation}/${draft.memory.scope}, 확신 ${draft.confidence.toFixed(2)}`,
     "[최근 대화]",
     ...context.recent.map(
       (message) =>
@@ -117,13 +132,27 @@ export const applyRefinement = (
   answers: Record<string, DecisionAnswer>,
   options: RefineOptions
 ): DecisionDraft => {
-  const next: DecisionDraft = { ...draft };
+  const next: DecisionDraft = { ...draft, memory: { ...draft.memory } };
 
   const tease = answers.safe_to_tease;
   if (tease && tease.type === "noul" && tease.noul < 0.5 && TEASING.includes(next.action)) {
     next.action = "acknowledge";
     next.humorStrategy = "none";
     next.confidence = Math.max(next.confidence, tease.confidence ?? 0);
+  }
+
+  const scope = answers.memory_scope_final;
+  if (
+    options.askScope &&
+    scope &&
+    scope.type === "choice" &&
+    (scope.choice === "user" || scope.choice === "guild")
+  ) {
+    next.memory.scope = scope.choice as MemoryScope;
+    next.memory.confidence = Math.min(
+      1,
+      Math.max(0, scope.confidence ?? next.memory.confidence)
+    );
   }
 
   const final = answers.action_final;

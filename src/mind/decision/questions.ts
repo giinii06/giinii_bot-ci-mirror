@@ -1,4 +1,11 @@
-import type { MemoryCandidate, MindContext } from "../types.js";
+import {
+  MEMORY_CATEGORIES,
+  MEMORY_SCOPES,
+  MEMORY_VISIBILITIES,
+  type MemoryCandidate,
+  type MemoryCategory,
+  type MindContext
+} from "../types.js";
 
 export type ChoiceQuestion = {
   type: "choice";
@@ -42,14 +49,6 @@ export type DecisionResponse = {
   answers?: Record<string, DecisionAnswer>;
 };
 
-export const EMOTION_INTENSITY_LEVELS = [
-  "거의 없음: 스쳐 지나가는 잡담",
-  "약함: 가볍게 기분이 움직이는 수준",
-  "보통: 또렷하게 반응할 만한 수준",
-  "강함: 대화 분위기를 바꿀 만한 수준",
-  "아주 강함: 이 대화의 주제가 될 만큼 큰 사건"
-];
-
 export const INTENT_CRITERIA: Record<string, string> = {
   friendly_banter: "친근한 장난, 놀리기, 가벼운 도발",
   hostile_insult: "실제로 기분이 상했거나 공격하려는 욕설",
@@ -83,17 +82,44 @@ const GOAL_CRITERIA: Record<string, string> = {
   explore_topic: "흥미로운 주제로 대화를 넓힌다"
 };
 
-const pick = (source: Record<string, string>, keys: readonly string[]) =>
-  Object.fromEntries(keys.map((key) => [key, source[key] ?? key]));
+const MEMORY_SCOPE_CRITERIA: Record<string, string> = {
+  none: "저장할 기억이 없다",
+  user: "특정 사용자의 개인 사실이나 취향",
+  guild: "서버 공용 정보 또는 서버에서 쓰는 별명"
+};
+
+const MEMORY_CATEGORY_CRITERIA: Record<MemoryCategory, string> = {
+  fact: "사용자에 대한 사실",
+  preference: "사용자 개인의 취향",
+  nickname: "서버에서 사용하는 별명이나 호칭",
+  server_convention: "서버에서 공통으로 사용하는 관습"
+};
+
+const MEMORY_VISIBILITY_CRITERIA: Record<string, string> = {
+  private: "기억 소유자만 쓰는 기억",
+  shareable: "다른 사용자의 대화에서도 활용해도 되는 기억"
+};
 
 const clip = (text: string, max: number) =>
   text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 
+export const subjectKeyOf = (context: MindContext): Record<string, string | null> => {
+  const keys: Record<string, string | null> = {
+    none: null,
+    self: context.request.userId,
+    server: null
+  };
+  context.request.referencedUsers.forEach((user, index) => {
+    keys[`u${index + 1}`] = user.userId;
+  });
+  return keys;
+};
+
 /**
  * Decision 모델은 자유 생성을 하지 않는다. 판단에 필요한 질문만 한 요청에 묶는다.
- * state는 문자열이어야 하므로 구조화된 값은 아래 renderState가 라벨 텍스트로 만든다.
+ * 사용자 ID는 코드가 확인한 후보 키(u1, u2…)로만 고르게 한다.
  */
-export const buildQuestions = (candidates: MemoryCandidate[]): QuestionMap => {
+export const buildQuestions = (context: MindContext): QuestionMap => {
   const questions: QuestionMap = {
     intent: {
       type: "choice",
@@ -110,20 +136,6 @@ export const buildQuestions = (candidates: MemoryCandidate[]): QuestionMap => {
         supportive: "위로가 필요한 상황",
         neutral: "평범한 잡담"
       }
-    },
-    emotion_impact: {
-      type: "choice",
-      instructions: "이 메시지가 기니봇의 가상 기분에 주는 방향을 고른다.",
-      criteria: {
-        positive: "기분이 좋아지는 사건",
-        negative: "기분이 상하거나 불쾌한 사건",
-        neutral: "기분에 거의 영향이 없는 사건"
-      }
-    },
-    emotion_intensity: {
-      type: "score",
-      instructions: "이 사건의 감정적 강도를 고른다.",
-      criteria: EMOTION_INTENSITY_LEVELS
     },
     relationship_signal: {
       type: "choice",
@@ -182,19 +194,64 @@ export const buildQuestions = (candidates: MemoryCandidate[]): QuestionMap => {
       instructions: "이번 메시지가 장기 기억의 저장·수정·삭제를 요구하는가?",
       criteria: {
         none: "기억을 건드릴 필요가 없음",
-        add: "새로운 사실을 기억해 둬야 함",
+        add: "새로운 사실이나 호칭을 기억해 둬야 함",
         update: "기존 기억의 내용이 바뀌어야 함",
-        delete: "기존 기억을 지워야 함",
+        delete: "기존 기억이나 호칭을 그만 써야 함",
         unclear: "기억을 건드려야 하는 것 같지만 대상이 분명하지 않음"
+      }
+    },
+    memory_scope: {
+      type: "choice",
+      instructions: "이 기억은 개인 기억인가, 서버 공용 기억인가?",
+      criteria: MEMORY_SCOPE_CRITERIA
+    },
+    memory_category: {
+      type: "choice",
+      instructions: "저장할 정보의 성격을 분류한다.",
+      criteria: MEMORY_CATEGORY_CRITERIA
+    },
+    memory_visibility: {
+      type: "choice",
+      instructions: "이 기억을 다른 사용자의 대화에서도 써도 되는가?",
+      criteria: MEMORY_VISIBILITY_CRITERIA
+    },
+    memory_requires_approval: {
+      type: "noul",
+      instructions: "관리자 확인을 거쳐야 하는 공용 기억 변경인가?",
+      criteria: {
+        true: "서버 규칙이나 여러 사람에게 영향을 주는 변경",
+        false: "가벼운 별명이나 이미 허용된 범위의 변경"
+      }
+    },
+    memory_write_intent: {
+      type: "noul",
+      instructions: "사용자가 기억이나 호칭을 명시적으로 요청했는가?",
+      criteria: {
+        true: "기억해 달라거나 이렇게 불러 달라는 분명한 요청",
+        false: "대화 중 추론했을 뿐 저장 요청은 아님"
       }
     }
   };
 
-  if (candidates.length > 0) {
+  const subjectCriteria: Record<string, string> = {
+    none: "대상 없음",
+    self: `${clip(context.request.displayName, 40)} (지금 말한 사람)`,
+    server: "서버 전체"
+  };
+  context.request.referencedUsers.forEach((user, index) => {
+    subjectCriteria[`u${index + 1}`] = clip(user.displayName, 40);
+  });
+  questions.memory_subject = {
+    type: "choice",
+    instructions: "이 기억이 누구 또는 무엇에 관한 것인지 고른다.",
+    criteria: subjectCriteria
+  };
+
+  if (context.candidates.length > 0) {
     const targetCriteria: Record<string, string> = {
       none: "특정 기억을 수정하거나 삭제하지 않는다"
     };
-    for (const candidate of candidates) {
+    for (const candidate of context.candidates) {
       targetCriteria[`m${candidate.memory.id}`] = clip(candidate.memory.content, 80);
     }
     questions.memory_target = {
@@ -203,7 +260,7 @@ export const buildQuestions = (candidates: MemoryCandidate[]): QuestionMap => {
       criteria: targetCriteria
     };
 
-    for (const candidate of candidates) {
+    for (const candidate of context.candidates) {
       questions[`memory_rel_${candidate.memory.id}`] = {
         type: "noul",
         instructions: `기억 "${clip(candidate.memory.content, 100)}"이 지금 답변에 필요한가?`,
@@ -218,20 +275,57 @@ export const buildQuestions = (candidates: MemoryCandidate[]): QuestionMap => {
   return questions;
 };
 
-const moodLabel = (value: number, low: string, mid: string, high: string) =>
-  value < 0.34 ? low : value < 0.67 ? mid : high;
+const nameMapOf = (context: MindContext): Map<string, string> => {
+  const names = new Map<string, string>();
+  names.set(context.request.userId, context.request.displayName);
+  for (const user of context.request.referencedUsers) {
+    names.set(user.userId, user.displayName);
+  }
+  return names;
+};
 
-/** Decision 입력. Discord ID는 넣지 않고 표시 이름만 쓴다. */
+const candidateLabel = (
+  candidate: MemoryCandidate,
+  names: Map<string, string>
+): string => {
+  const { memory } = candidate;
+  if (memory.scope === "guild") {
+    const subject = memory.subjectUserId
+      ? names.get(memory.subjectUserId) ?? "사용자"
+      : "서버";
+    return `m${memory.id} (공용/${memory.category}, 대상 ${subject})`;
+  }
+  const owner = memory.ownerUserId
+    ? names.get(memory.ownerUserId) ?? "다른 사용자"
+    : "사용자";
+  return `m${memory.id} (개인/${memory.category}, 소유자 ${owner})`;
+};
+
+/** Decision 입력. Discord ID는 넣지 않고 표시 이름과 후보 키만 쓴다. */
 export const renderState = (context: MindContext): string => {
-  const { request, state, relationship, recent, candidates } = context;
+  const { request, relationship, recent, candidates, conventions } = context;
+  const names = nameMapOf(context);
   const lines: string[] = [];
 
   lines.push("[현재 메시지]");
   lines.push(`보낸 사람: ${request.displayName}`);
   lines.push(`호출 방식: ${request.trigger}`);
-  if (request.replyToMessageId) lines.push("기니봇의 이전 발언에 답장한 메시지다.");
+  if (request.botWasReplyTarget) {
+    lines.push("기니봇의 이전 발언에 답장한 메시지다.");
+  } else if (request.replyToAuthorId) {
+    const name = names.get(request.replyToAuthorId) ?? "다른 사용자";
+    lines.push(`${name}의 메시지에 답장한 메시지다.`);
+  }
   lines.push(`내용: ${clip(request.text, 600)}`);
   lines.push("");
+
+  if (request.referencedUsers.length > 0) {
+    lines.push("[언급된 사용자]");
+    request.referencedUsers.forEach((user, index) => {
+      lines.push(`u${index + 1}: ${clip(user.displayName, 60)} (${user.referenceType})`);
+    });
+    lines.push("");
+  }
 
   lines.push("[최근 대화]");
   if (recent.length === 0) {
@@ -249,23 +343,29 @@ export const renderState = (context: MindContext): string => {
   }
   lines.push("");
 
-  lines.push("[기니봇 가상 상태]");
-  lines.push(
-    `기분: ${moodLabel(state.valence, "가라앉음", "평범", "좋음")} (${state.valence.toFixed(2)}), ` +
-      `활력 ${state.arousal.toFixed(2)}, 불쾌 ${state.irritation.toFixed(2)}, 호기심 ${state.curiosity.toFixed(2)}`
-  );
-  if (state.currentGoal) lines.push(`최근 목표: ${state.currentGoal}`);
-  lines.push("");
-
   lines.push("[관계]");
   lines.push(
-    `친숙도 ${relationship.familiarity.toFixed(2)}, 신뢰 ${relationship.trust.toFixed(2)}, ` +
-      `장난 선호 ${relationship.playfulness.toFixed(2)}, 상호작용 ${relationship.interactionCount}회`
+    `친숙도 ${relationship.familiarity.toFixed(2)}, 라포 ${relationship.rapport.toFixed(2)}, ` +
+      `장난 ${relationship.playfulness.toFixed(2)}, 참여 ${relationship.engagement.toFixed(2)}, ` +
+      `대화 스타일 ${relationship.communicationStyle}, 상호작용 ${relationship.interactionCount}회`
   );
   if (relationship.boundaries.length > 0) {
-    lines.push(`명시적 경계: ${relationship.boundaries.map((item) => `"${clip(item, 60)}"`).join(", ")}`);
+    lines.push(
+      `명시적 경계: ${relationship.boundaries.map((item) => `"${clip(item, 60)}"`).join(", ")}`
+    );
   }
   lines.push("");
+
+  if (conventions.length > 0) {
+    lines.push("[적용 호칭]");
+    for (const memory of conventions) {
+      const name = memory.subjectUserId
+        ? names.get(memory.subjectUserId) ?? "사용자"
+        : "사용자";
+      lines.push(`${name} → "${memory.structuredValue ?? memory.content}"`);
+    }
+    lines.push("");
+  }
 
   lines.push("[기억 후보]");
   if (candidates.length === 0) {
@@ -274,10 +374,26 @@ export const renderState = (context: MindContext): string => {
     for (const candidate of candidates) {
       const { memory } = candidate;
       lines.push(
-        `m${memory.id} (${memory.kind}, 신뢰 ${memory.confidence.toFixed(2)}, 중요도 ${memory.importance.toFixed(2)}): ${clip(memory.content, 160)}`
+        `${candidateLabel(candidate, names)} (신뢰 ${memory.confidence.toFixed(2)}, ` +
+          `중요도 ${memory.importance.toFixed(2)}): ${clip(memory.content, 160)}`
       );
     }
   }
 
   return lines.join("\n");
 };
+
+export const MEMORY_QUESTION_KEYS = [
+  "memory_scope",
+  "memory_category",
+  "memory_visibility",
+  "memory_subject",
+  "memory_requires_approval",
+  "memory_write_intent"
+] as const;
+
+export const MEMORY_KEYS = {
+  scopes: MEMORY_SCOPES,
+  categories: MEMORY_CATEGORIES,
+  visibilities: MEMORY_VISIBILITIES
+} as const;

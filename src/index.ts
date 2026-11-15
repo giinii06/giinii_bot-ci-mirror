@@ -20,7 +20,7 @@ import { initChat, handleChatMessage, chatRouter, chatMind } from "./chat/index.
 import {
   handleModelAutocomplete, handleModelCommand, handleReasoningAutocomplete, handleReasoningCommand
 } from "./chat/commands.js";
-import { handleMemoryCommand, handleMindCommand } from "./mind/commands.js";
+import { handleMemoryCommand, handleMindCommand, handleSharedMemoryCommand } from "./mind/commands.js";
 
 const client = new Client({
   intents: [
@@ -134,7 +134,11 @@ client.on(Events.InteractionCreate, (interaction) => {
       void run.catch((error) => replyInteractionError(interaction, error));
       return;
     }
-    if (interaction.commandName === "mind" || interaction.commandName === "memory") {
+    if (
+      interaction.commandName === "mind" ||
+      interaction.commandName === "memory" ||
+      interaction.commandName === "shared-memory"
+    ) {
       if (!interaction.inCachedGuild() || !isAllowedGuild(interaction.guildId)) {
         void interaction.reply({ ephemeral: true, content: "기억과 판단 엔진은 지정된 서버에서만 쓸 수 있습니다." }).catch(() => undefined);
         return;
@@ -146,7 +150,9 @@ client.on(Events.InteractionCreate, (interaction) => {
       }
       const run = interaction.commandName === "mind"
         ? handleMindCommand(interaction, mind)
-        : handleMemoryCommand(interaction, mind);
+        : interaction.commandName === "memory"
+          ? handleMemoryCommand(interaction, mind)
+          : handleSharedMemoryCommand(interaction, mind);
       void run.catch((error) => replyInteractionError(interaction, error));
       return;
     }

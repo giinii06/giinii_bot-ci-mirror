@@ -1,17 +1,22 @@
 import {
-  EMOTION_IMPACTS,
+  MEMORY_CATEGORIES,
   MEMORY_OPERATIONS,
+  MEMORY_SCOPES,
+  MEMORY_VISIBILITIES,
   MIND_ACTIONS,
   MIND_GOALS,
-  type EmotionImpact,
-  type MemoryCandidate,
+  type MemoryCategory,
+  type MemoryDecision,
   type MemoryOperation,
+  type MemoryScope,
+  type MemoryVisibility,
   type MindAction,
+  type MindContext,
   type MindGoal
 } from "../types.js";
 import {
-  EMOTION_INTENSITY_LEVELS,
   INTENT_CRITERIA,
+  subjectKeyOf,
   type ChoiceAnswer,
   type DecisionAnswer
 } from "./questions.js";
@@ -19,16 +24,13 @@ import {
 export type DecisionDraft = {
   intent: string;
   socialContext: string;
-  emotionImpact: EmotionImpact;
-  emotionIntensity: number;
   relationshipSignal: string;
   userNeeds: string;
   goal: MindGoal;
   action: MindAction;
   humorStrategy: string;
   needsWeb: boolean;
-  memoryOperation: MemoryOperation;
-  memoryTargetId: number | null;
+  memory: MemoryDecision;
   selectedMemoryIds: number[];
   confidence: number;
 };
@@ -40,7 +42,9 @@ export type DecisionSignals = {
   actionAlternatives: MindAction[];
   /** 수정·삭제 의도는 있는데 대상이 특정되지 않았다. */
   memoryAmbiguous: boolean;
-  /** 감정·상황 판단과 행동 선택이 서로 어긋난다. */
+  /** 개인·공용 분류 확률이 비슷하다. */
+  memoryScopeUncertain: boolean;
+  /** 상황 판단과 행동 선택이 서로 어긋난다. */
   conflicting: boolean;
 };
 
@@ -48,6 +52,7 @@ const SOCIAL_CONTEXTS = ["friendly_banter", "conflict", "serious", "supportive",
 const RELATIONSHIP_SIGNALS = ["warm", "neutral", "playful", "boundary_set", "rejection"];
 const USER_NEEDS = ["humor", "comfort", "information", "acknowledgment", "clarification", "action"];
 const HUMOR_STRATEGIES = ["none", "light_tease", "wordplay", "absurd_comparison", "dry_deadpan"];
+const SCOPE_CHOICES = ["none", ...MEMORY_SCOPES] as const;
 
 const answerOf = (
   answers: Record<string, DecisionAnswer>,
@@ -65,7 +70,9 @@ const choiceKey = <T extends string>(
 ): T => {
   const answer = answerOf(answers, key);
   if (!answer) return fallback;
-  return (allowed as readonly string[]).includes(answer.choice) ? (answer.choice as T) : fallback;
+  return (allowed as readonly string[]).includes(answer.choice)
+    ? (answer.choice as T)
+    : fallback;
 };
 
 const noul = (answers: Record<string, DecisionAnswer>, key: string, fallback = 0): number => {
@@ -83,13 +90,83 @@ const marginOf = (answer: ChoiceAnswer | null): number => {
   return Math.max(0, (values[0] ?? 0) - (values[1] ?? 0));
 };
 
+const memoryDecisionOf = (  answers: Record<string, DecisionAnswer>,
+  context: MindContext
+): MemoryDecision => {
+  const operationAnswer = answerOf(answers, "memory_operation");
+  const operation: MemoryOperation = choiceKey(
+    answers,
+    "memory_operation",
+    MEMORY_OPERATIONS,
+    "none"
+  );
+
+  const scopeDefault: (typeof SCOPE_CHOICES)[number] =
+    operation === "none" || operation === "unclear" ? "none" : "user";
+  const scope = choiceKey(answers, "memory_scope", SCOPE_CHOICES, scopeDefault);
+
+  const category: MemoryCategory = choiceKey(
+    answers,
+    "memory_category",
+    MEMORY_CATEGORIES,
+    "fact"
+  );
+  const visibility: MemoryVisibility = choiceKey(
+    answers,
+    "memory_visibility",
+    MEMORY_VISIBILITIES,
+    "private"
+  );
+
+  const subjects = subjectKeyOf(context);
+  const subjectDefault = scope === "guild" ? "server" : "self";
+  const subjectKey = choiceKey(
+    answers,
+    "memory_subject",
+    Object.keys(subjects),
+    subjectDefault
+  );
+  const subjectUserId = subjects[subjectKey] ?? null;
+
+  const targetKey = choiceKey(
+    answers,
+    "memory_target",
+    ["none", ...context.candidates.map((candidate) => `m${candidate.memory.id}`)],
+    "none"
+  );
+  const parsedTarget = targetKey === "none" ? null : Number.parseInt(targetKey.slice(1), 10);
+  const targetMemoryId =
+    parsedTarget !== null &&
+    context.candidates.some((candidate) => candidate.memory.id === parsedTarget)
+      ? parsedTarget
+      : null;
+
+  const scopeAnswer = answerOf(answers, "memory_scope");
+  const confidence = Math.min(
+    1,
+    Math.max(0, scopeAnswer?.confidence ?? operationAnswer?.confidence ?? 0)
+  );
+
+  return {
+    operation,
+    scope: operation === "none" || operation === "unclear" ? "none" : (scope as MemoryScope | "none"),
+    visibility,
+    category,
+    subjectUserId,
+    targetMemoryId,
+    confidence,
+    needsApproval: noul(answers, "memory_requires_approval") >= 0.5,
+    explicit: noul(answers, "memory_write_intent") >= 0.5
+  };
+};
+
 /**
  * Decision 응답은 확률과 선택 키의 모음이다. 여기서 타입을 좁히고,
  * 해석이 애매하면 보수적인 기본값으로 떨어뜨린다. 자유 생성은 하지 않는다.
  */
 export const parseDecision = (
   answers: Record<string, DecisionAnswer>,
-  candidates: MemoryCandidate[],
+  context: MindContext,
   limits: { maxSelected: number }
 ): { draft: DecisionDraft; signals: DecisionSignals } => {
   const actionAnswer = answerOf(answers, "action");
@@ -97,29 +174,9 @@ export const parseDecision = (
 
   const action = choiceKey(answers, "action", MIND_ACTIONS, "acknowledge");
   const socialContext = choiceKey(answers, "social_context", SOCIAL_CONTEXTS, "neutral");
+  const userNeeds = choiceKey(answers, "user_needs", USER_NEEDS, "acknowledgment");
 
-  const scoreAnswer = answers.emotion_intensity;
-  const rawScore = scoreAnswer && scoreAnswer.type === "score" ? scoreAnswer.score : 2;
-  const intensity = Math.min(
-    1,
-    Math.max(0, rawScore / Math.max(1, EMOTION_INTENSITY_LEVELS.length - 1))
-  );
-
-  const operation = choiceKey(answers, "memory_operation", MEMORY_OPERATIONS, "none");
-
-  const targetKey = choiceKey(
-    answers,
-    "memory_target",
-    ["none", ...candidates.map((c) => `m${c.memory.id}`)],
-    "none"
-  );
-  const targetId = targetKey === "none" ? null : Number.parseInt(targetKey.slice(1), 10);
-  const ownedTarget =
-    targetId !== null && candidates.some((candidate) => candidate.memory.id === targetId)
-      ? targetId
-      : null;
-
-  const scored = candidates
+  const scored = context.candidates
     .map((candidate) => ({
       id: candidate.memory.id,
       relevance: noul(answers, `memory_rel_${candidate.memory.id}`)
@@ -128,21 +185,24 @@ export const parseDecision = (
     .sort((a, b) => b.relevance - a.relevance)
     .slice(0, Math.max(0, limits.maxSelected));
 
-  const emotionImpact = choiceKey(answers, "emotion_impact", EMOTION_IMPACTS, "neutral");
+  const memory = memoryDecisionOf(answers, context);
+  const scopeAnswer = answerOf(answers, "memory_scope");
 
   const draft: DecisionDraft = {
     intent: choiceKey(answers, "intent", Object.keys(INTENT_CRITERIA), "smalltalk"),
     socialContext,
-    emotionImpact,
-    emotionIntensity: intensity,
-    relationshipSignal: choiceKey(answers, "relationship_signal", RELATIONSHIP_SIGNALS, "neutral"),
-    userNeeds: choiceKey(answers, "user_needs", USER_NEEDS, "acknowledgment"),
+    relationshipSignal: choiceKey(
+      answers,
+      "relationship_signal",
+      RELATIONSHIP_SIGNALS,
+      "neutral"
+    ),
+    userNeeds,
     goal: choiceKey(answers, "goal", MIND_GOALS, "maintain_rapport"),
     action,
     humorStrategy: choiceKey(answers, "humor_strategy", HUMOR_STRATEGIES, "none"),
     needsWeb: noul(answers, "needs_web") >= 0.5,
-    memoryOperation: operation,
-    memoryTargetId: ownedTarget,
+    memory,
     selectedMemoryIds: scored.map((item) => item.id),
     confidence: actionAnswer ? Math.min(1, Math.max(0, actionAnswer.confidence ?? 0)) : 0
   };
@@ -158,11 +218,15 @@ export const parseDecision = (
           .filter((key): key is MindAction => (MIND_ACTIONS as readonly string[]).includes(key))
       : [],
     memoryAmbiguous:
-      (operation === "update" || operation === "delete") && ownedTarget === null,
+      (memory.operation === "update" || memory.operation === "delete") &&
+      memory.targetMemoryId === null,
+    memoryScopeUncertain:
+      memory.operation === "add" &&
+      scopeAnswer !== null &&
+      marginOf(scopeAnswer) < 0.15,
     conflicting:
-      (emotionImpact === "negative" && intensity >= 0.5 && action === "tease_back") ||
       (socialContext === "conflict" && action === "tease_back") ||
-      (draft.userNeeds === "comfort" && action === "tease_back")
+      (userNeeds === "comfort" && action === "tease_back")
   };
 
   return { draft, signals };

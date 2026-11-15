@@ -1,4 +1,3 @@
-import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mindConfig } from "../src/mind/config.js";
 import { CircuitBreaker } from "../src/mind/decision/circuit-breaker.js";
@@ -8,171 +7,170 @@ import { buildQuestions, renderState } from "../src/mind/decision/questions.js";
 import { MindEngine } from "../src/mind/engine.js";
 import { handleMemoryCommand } from "../src/mind/commands.js";
 import { compileFrame } from "../src/mind/frame.js";
-import { commitMemoryOperation, describeMemoryResult } from "../src/mind/memory/operations.js";
+import {
+  commitMemoryOperation,
+  describeMemoryResult
+} from "../src/mind/memory/operations.js";
 import { MindMemoryStore, selectMemories } from "../src/mind/memory/store.js";
-import { MIND_SCHEMA, ROOT_SCHEMA } from "../src/mind/schema.js";
-import { DEFAULT_EMOTION, MindStateStore } from "../src/mind/state.js";
-import type {
-  CharacterFrame,
-  MemoryCandidate,
-  MindContext,
-  MindDecision,
-  MindRequest
-} from "../src/mind/types.js";
+import { BotUserRelationshipStore } from "../src/mind/relationship/store.js";
+import {
+  ADMIN,
+  GUILD,
+  OTHER,
+  USER,
+  actorOf,
+  candidateOf,
+  choice,
+  contextOf,
+  decisionOf,
+  fakeCommandInteraction,
+  memoryRecordOf,
+  mindDb,
+  relationshipOf,
+  requestOf,
+  rootDb
+} from "./mind-fixtures.js";
 
-const GUILD = "1111111111111111111";
-const USER = "u1";
+const relationshipStore = (db = mindDb()) =>
+  new BotUserRelationshipStore(db, GUILD, { enabled: true, updateLimit: 0.03 });
 
-const mindDb = (): Database => {
-  const db = new Database(":memory:");
-  db.exec(MIND_SCHEMA);
-  return db;
+const noResult = {
+  status: "none" as const,
+  added: [],
+  updated: [],
+  removed: [],
+  reason: null
 };
-
-const rootDb = (): Database => {
-  const db = new Database(":memory:");
-  db.exec(ROOT_SCHEMA);
-  return db;
-};
-
-const candidate = (id: number, content: string): MemoryCandidate => ({
-  memory: {
-    id,
-    guildId: GUILD,
-    ownerUserId: USER,
-    scope: "user",
-    kind: "semantic",
-    content,
-    confidence: 0.8,
-    importance: 0.5,
-    sourceMessageId: null,
-    createdAt: 0,
-    updatedAt: 0,
-    lastAccessedAt: null,
-    expiresAt: null,
-    version: 1
-  },
-  score: 0.8,
-  matched: true
-});
-
-const choice = (key: string, confidence = 0.8, probabilities?: Record<string, number>) => ({
-  type: "choice" as const,
-  choice: key,
-  confidence,
-  probabilities: probabilities ?? { [key]: confidence }
-});
-
-const contextOf = (overrides: Partial<MindContext> = {}): MindContext => {
-  const request: MindRequest = {
-    messageId: "m1",
-    guildId: GUILD,
-    channelId: "c1",
-    userId: USER,
-    displayName: "민지",
-    text: "기니봇아 야이 멍청아",
-    trigger: "prefix",
-    createdAt: 10_000,
-    recent: []
-  };
-
-  return {
-    request,
-    state: { ...DEFAULT_EMOTION, currentGoal: null, updatedAt: 0 },
-    relationship: {
-      familiarity: 0.5,
-      trust: 0.6,
-      playfulness: 0.6,
-      interactionCount: 10,
-      boundaries: [],
-      lastInteractionAt: 0
-    },
-    candidates: [],
-    recent: [],
-    ...overrides
-  };
-};
-
-const decisionOf = (overrides: Partial<MindDecision> = {}): MindDecision => ({
-  intent: "friendly_banter",
-  socialContext: "friendly_banter",
-  emotionImpact: "positive",
-  emotionIntensity: 0.5,
-  relationshipSignal: "playful",
-  userNeeds: "humor",
-  goal: "maintain_rapport",
-  action: "tease_back",
-  humorStrategy: "light_tease",
-  needsWeb: false,
-  memoryOperation: "none",
-  memoryTargetId: null,
-  selectedMemories: [],
-  confidence: 0.8,
-  refined: false,
-  source: "remote",
-  ...overrides
-});
 
 describe("Decision 질문과 state", () => {
-  test("기억 후보가 있으면 후보별 관련성 질문과 대상 선택을 넣는다", () => {
-    const questions = buildQuestions([candidate(101, "민지는 커피를 좋아한다")]);
-    expect(questions.memory_rel_101?.type).toBe("noul");
-    expect(questions.memory_target?.type).toBe("choice");
-    expect(Object.keys(questions.memory_target?.criteria ?? {})).toEqual(["none", "m101"]);
+  test("기억 범위·대상·유형 질문을 넣고 감정 질문은 넣지 않는다", () => {
+    const questions = buildQuestions(contextOf());
+
+    expect(questions.memory_scope?.type).toBe("choice");
+    expect(questions.memory_category?.type).toBe("choice");
+    expect(questions.memory_visibility?.type).toBe("choice");
+    expect(questions.memory_subject?.type).toBe("choice");
+    expect(questions.memory_requires_approval?.type).toBe("noul");
+    expect(questions.memory_write_intent?.type).toBe("noul");
+    expect(questions.emotion_impact).toBeUndefined();
+    expect(questions.emotion_intensity).toBeUndefined();
   });
 
-  test("기억 후보가 없으면 대상 선택 질문을 만들지 않는다", () => {
-    const questions = buildQuestions([]);
-    expect(questions.memory_target).toBeUndefined();
+  test("기억 후보가 있으면 후보별 관련성 질문과 대상 선택을 넣는다", () => {
+    const context = contextOf({
+      candidates: [candidateOf(101, "민지는 커피를 좋아한다")]
+    });
+    const questions = buildQuestions(context);
+
+    expect(questions.memory_rel_101?.type).toBe("noul");
+    expect(questions.memory_target?.type).toBe("choice");
+    expect(Object.keys(questions.memory_target?.criteria ?? {})).toEqual([
+      "none",
+      "m101"
+    ]);
+  });
+
+  test("언급된 사용자는 u1 같은 후보 키로만 질문에 넣는다", () => {
+    const context = contextOf({
+      request: requestOf({
+        referencedUsers: [
+          { userId: OTHER, displayName: "영희", referenceType: "mention", confidence: 1 }
+        ]
+      })
+    });
+    const questions = buildQuestions(context);
+
+    expect(Object.keys(questions.memory_subject?.criteria ?? {})).toEqual([
+      "none",
+      "self",
+      "server",
+      "u1"
+    ]);
   });
 
   test("state는 문자열이고 Discord ID를 담지 않는다", () => {
-    const context = contextOf({ candidates: [candidate(101, "민지는 커피를 좋아한다")] });
+    const context = contextOf({
+      candidates: [candidateOf(101, "민지는 커피를 좋아한다")],
+      conventions: [
+        memoryRecordOf({
+          id: 5,
+          scope: "guild",
+          ownerUserId: null,
+          subjectUserId: USER,
+          category: "nickname",
+          structuredValue: "천재",
+          content: '민지의 별명은 "천재"이다.'
+        })
+      ]
+    });
     const state = renderState(context);
 
     expect(typeof state).toBe("string");
     expect(state).toContain("[현재 메시지]");
     expect(state).toContain("민지는 커피를 좋아한다");
+    expect(state).toContain("[적용 호칭]");
+    expect(state).toContain("천재");
     expect(state).not.toContain(USER);
+  });
+
+  test("답장 대상이 봇인지 다른 사용자인지 구분한다", () => {
+    const toBot = renderState(
+      contextOf({ request: requestOf({ botWasReplyTarget: true }) })
+    );
+    const toOther = renderState(
+      contextOf({
+        request: requestOf({
+          replyToAuthorId: OTHER,
+          referencedUsers: [
+            { userId: OTHER, displayName: "영희", referenceType: "reply", confidence: 0.9 }
+          ]
+        })
+      })
+    );
+
+    expect(toBot).toContain("기니봇의 이전 발언에 답장");
+    expect(toOther).toContain("영희의 메시지에 답장");
   });
 });
 
 describe("Decision 파싱", () => {
-  test("choice·noul·score를 읽어 판단으로 바꾼다", () => {
-    const { draft, signals } = parseDecision(
+  test("범위·유형·공개 범위·대상·명시 여부를 읽는다", () => {
+    const context = contextOf({
+      request: requestOf({
+        referencedUsers: [
+          { userId: OTHER, displayName: "영희", referenceType: "mention", confidence: 1 }
+        ]
+      })
+    });
+    const { draft } = parseDecision(
       {
-        intent: choice("friendly_banter"),
-        social_context: choice("friendly_banter", 0.6, { friendly_banter: 0.6, conflict: 0.3 }),
-        emotion_impact: choice("positive"),
-        emotion_intensity: { type: "score", score: 4, probabilities: {}, confidence: 0.9 },
-        relationship_signal: choice("playful"),
-        user_needs: choice("humor"),
-        goal: choice("entertain"),
-        action: choice("tease_back", 0.9),
-        humor_strategy: choice("light_tease"),
-        needs_web: { type: "noul", noul: 0.9, confidence: 0.9 },
-        memory_operation: choice("none"),
-        memory_rel_101: { type: "noul", noul: 0.9, confidence: 0.9 },
-        memory_rel_102: { type: "noul", noul: 0.2, confidence: 0.9 }
+        memory_operation: choice("add"),
+        memory_scope: choice("guild", 0.9, { guild: 0.9, user: 0.05 }),
+        memory_category: choice("nickname"),
+        memory_visibility: choice("shareable"),
+        memory_subject: choice("u1"),
+        memory_requires_approval: { type: "noul", noul: 0.2, confidence: 0.8 },
+        memory_write_intent: { type: "noul", noul: 0.9, confidence: 0.9 }
       },
-      [candidate(101, "민지는 커피를 좋아한다"), candidate(102, "민지는 부산에 산다")],
+      context,
       { maxSelected: 5 }
     );
 
-    expect(draft.action).toBe("tease_back");
-    expect(draft.goal).toBe("entertain");
-    expect(draft.emotionIntensity).toBe(1);
-    expect(draft.needsWeb).toBe(true);
-    expect(draft.selectedMemoryIds).toEqual([101]);
-    expect(draft.confidence).toBe(0.9);
-    expect(signals.actionMargin).toBe(1);
+    expect(draft.memory.operation).toBe("add");
+    expect(draft.memory.scope).toBe("guild");
+    expect(draft.memory.category).toBe("nickname");
+    expect(draft.memory.visibility).toBe("shareable");
+    expect(draft.memory.subjectUserId).toBe(OTHER);
+    expect(draft.memory.explicit).toBe(true);
+    expect(draft.memory.needsApproval).toBe(false);
   });
 
   test("답이 없으면 보수적인 기본값을 쓴다", () => {
-    const { draft } = parseDecision({}, [], { maxSelected: 5 });
+    const { draft } = parseDecision({}, contextOf(), { maxSelected: 5 });
     expect(draft.action).toBe("acknowledge");
     expect(draft.goal).toBe("maintain_rapport");
-    expect(draft.memoryOperation).toBe("none");
+    expect(draft.memory.operation).toBe("none");
+    expect(draft.memory.scope).toBe("none");
     expect(draft.confidence).toBe(0);
   });
 
@@ -182,54 +180,76 @@ describe("Decision 파싱", () => {
         memory_operation: choice("update"),
         memory_target: choice("m999")
       },
-      [candidate(101, "민지는 커피를 좋아한다")],
+      contextOf({ candidates: [candidateOf(101, "민지는 커피를 좋아한다")] }),
       { maxSelected: 5 }
     );
 
-    expect(draft.memoryTargetId).toBeNull();
+    expect(draft.memory.targetMemoryId).toBeNull();
     expect(signals.memoryAmbiguous).toBe(true);
   });
 
   test("refusal 응답은 없는 답으로 취급한다", () => {
     const { draft } = parseDecision(
       { action: { type: "refusal" }, goal: { type: "refusal" } },
-      [],
+      contextOf(),
       { maxSelected: 5 }
     );
     expect(draft.action).toBe("acknowledge");
   });
 
-  test("감정 판단과 행동이 충돌하면 신호를 세운다", () => {
+  test("상황과 행동이 충돌하면 신호를 세운다", () => {
     const { signals } = parseDecision(
       {
-        emotion_impact: choice("negative"),
-        emotion_intensity: { type: "score", score: 4, probabilities: {}, confidence: 1 },
         social_context: choice("conflict"),
         action: choice("tease_back")
       },
-      [],
+      contextOf(),
       { maxSelected: 5 }
     );
     expect(signals.conflicting).toBe(true);
+  });
+
+  test("범위 확률 차이가 작으면 정밀 판단 신호를 세운다", () => {
+    const { signals } = parseDecision(
+      {
+        memory_operation: choice("add"),
+        memory_scope: choice("user", 0.5, { user: 0.5, guild: 0.45 })
+      },
+      contextOf(),
+      { maxSelected: 5 }
+    );
+    expect(signals.memoryScopeUncertain).toBe(true);
   });
 });
 
 describe("호출 예산", () => {
   test("분당 상한을 넘으면 예약하지 않는다", () => {
-    const quota = new DecisionQuota(rootDb(), { dailyBudget: 100, minuteBudget: 1 }, () => 1_000_000);
+    const quota = new DecisionQuota(
+      rootDb(),
+      { dailyBudget: 100, minuteBudget: 1 },
+      () => 1_000_000
+    );
     expect(quota.reserve("t1", "m", "primary")).not.toBeNull();
     expect(quota.reserve("t2", "m", "primary")).toBeNull();
   });
 
   test("하루 상한을 넘으면 예약하지 않는다", () => {
-    const quota = new DecisionQuota(rootDb(), { dailyBudget: 2, minuteBudget: 100 }, () => 1_000_000);
+    const quota = new DecisionQuota(
+      rootDb(),
+      { dailyBudget: 2, minuteBudget: 100 },
+      () => 1_000_000
+    );
     expect(quota.reserve("t1", "m", "primary")).not.toBeNull();
     expect(quota.reserve("t2", "m", "primary")).not.toBeNull();
     expect(quota.reserve("t3", "m", "primary")).toBeNull();
   });
 
   test("실패한 호출도 사용량에 남는다", () => {
-    const quota = new DecisionQuota(rootDb(), { dailyBudget: 10, minuteBudget: 10 }, () => 1_000_000);
+    const quota = new DecisionQuota(
+      rootDb(),
+      { dailyBudget: 10, minuteBudget: 10 },
+      () => 1_000_000
+    );
     const reservation = quota.reserve("t1", "m", "primary");
     reservation?.settle("error", 120);
     expect(quota.stats().last24h).toBe(1);
@@ -264,112 +284,86 @@ describe("CircuitBreaker", () => {
 });
 
 describe("기억 저장소", () => {
-  test("저장하고 목록으로 다시 읽는다", () => {
+  test("개인 기억을 저장하고 목록으로 다시 읽는다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    const saved = store.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
+    const saved = store.addPersonal({
+      ownerUserId: USER,
+      createdByUserId: USER,
+      content: "민지는 커피를 좋아한다"
+    });
+
     expect(saved?.content).toBe("민지는 커피를 좋아한다");
-    expect(store.list(USER).map((memory) => memory.content)).toEqual(["민지는 커피를 좋아한다"]);
+    expect(saved?.scope).toBe("user");
+    expect(saved?.subjectUserId).toBe(USER);
+    expect(saved?.createdByUserId).toBe(USER);
+    expect(store.listOwn(USER).map((memory) => memory.content)).toEqual([
+      "민지는 커피를 좋아한다"
+    ]);
   });
 
   test("같은 출처 메시지의 같은 내용은 한 번만 저장한다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    const input = { ownerUserId: USER, content: "민지는 커피를 좋아한다", sourceMessageId: "m1" };
-    expect(store.add(input)).not.toBeNull();
-    expect(store.add(input)).toBeNull();
-  });
-
-  test("다른 사람의 기억은 후보에 넣지 않는다", () => {
-    const store = new MindMemoryStore(mindDb(), GUILD);
-    store.add({ ownerUserId: "other", content: "다른 사람의 비밀" });
-    store.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
-
-    const candidates = store.candidates(USER, "커피", 10);
-    expect(candidates.map((item) => item.memory.content)).toEqual(["민지는 커피를 좋아한다"]);
-  });
-
-  test("기존 공용 기억은 검색·목록·직접 조회에서 제외한다", () => {
-    const db = mindDb();
-    const store = new MindMemoryStore(db, GUILD);
-    for (const owner of [null, USER]) {
-      db.query(`INSERT INTO mind_memories
-        (guild_id, owner_user_id, scope, kind, content, created_at, updated_at)
-        VALUES (?, ?, 'guild', 'semantic', '서버 공용 기억', 1, 1)`)
-        .run(GUILD, owner);
-    }
-    expect(store.candidates(USER, "서버 공용", 10)).toEqual([]);
-    expect(store.list(USER)).toEqual([]);
-    expect(store.count(USER)).toBe(0);
-    expect(store.byId(1)).toBeNull();
-    expect(store.byId(2)).toBeNull();
-  });
-
-  test("소유자 없는 기억을 저장하지 않는다", () => {
-    const store = new MindMemoryStore(mindDb(), GUILD);
-    expect(() => store.add({ ownerUserId: "", content: "공용 기억" })).toThrow();
-    expect(() => store.add({ ownerUserId: "  ", content: "공용 기억" })).toThrow();
-    expect(() => Reflect.apply(store.add, store, [{ ownerUserId: USER, scope: "guild", content: "공용 기억" }])).toThrow();
-  });
-
-  test("발화자 이름으로 기억을 찾는다", () => {
-    const store = new MindMemoryStore(mindDb(), GUILD);
-    store.add({ ownerUserId: USER, content: "기니는 21살이다." });
-    store.add({ ownerUserId: "other", content: "설하는 17살이다." });
-
-    const candidates = store.candidates(USER, "기니 나 누군지 기억해?", 8);
-    expect(candidates.map((item) => item.memory.content)).toContain("기니는 21살이다.");
-    expect(store.candidates(USER, "나 누군지 기억해?", 8)).toHaveLength(0);
-  });
-
-  test("두 글자 한국어 단어로도 후보를 찾는다", () => {
-    const store = new MindMemoryStore(mindDb(), GUILD);
-    store.add({ ownerUserId: USER, content: "민지는 시험 때문에 요즘 속상해한다" });
-
-    const candidates = store.candidates(USER, "나 이번 시험 또 망한 것 같아", 8);
-    expect(candidates).toHaveLength(1);
-    expect(candidates[0]?.matched).toBe(true);
-  });
-
-  test("관련 없는 기억은 후보로 보내지 않는다", () => {
-    const store = new MindMemoryStore(mindDb(), GUILD);
-    store.add({ ownerUserId: USER, content: "민지는 시험 때문에 요즘 속상해한다" });
-
-    expect(store.candidates(USER, "오늘 점심 뭐 먹지", 8)).toHaveLength(0);
+    const input = {
+      ownerUserId: USER,
+      createdByUserId: USER,
+      content: "민지는 커피를 좋아한다",
+      sourceMessageId: "m1"
+    };
+    expect(store.addPersonal(input)).not.toBeNull();
+    expect(store.addPersonal(input)).toBeNull();
   });
 
   test("소유자가 아니면 수정·삭제할 수 없다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    const saved = store.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
+    const saved = store.addPersonal({
+      ownerUserId: USER,
+      createdByUserId: USER,
+      content: "민지는 커피를 좋아한다"
+    });
     if (!saved) throw new Error("저장 실패");
 
-    expect(store.update(saved.id, "other", "다른 내용")).toBeNull();
-    expect(store.remove(saved.id, "other")).toBe(false);
+    expect(store.updatePersonal(saved.id, OTHER, "다른 내용")).toBeNull();
+    expect(store.deletePersonal(saved.id, OTHER)).toBe(false);
     expect(store.byId(saved.id)?.content).toBe("민지는 커피를 좋아한다");
   });
 
   test("삭제한 기억은 검색에서도 사라진다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    const saved = store.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
+    const saved = store.addPersonal({
+      ownerUserId: USER,
+      createdByUserId: USER,
+      content: "민지는 커피를 좋아한다"
+    });
     if (!saved) throw new Error("저장 실패");
 
-    expect(store.remove(saved.id, USER)).toBe(true);
+    expect(store.deletePersonal(saved.id, USER)).toBe(true);
     expect(store.byId(saved.id)).toBeNull();
-    expect(store.candidates(USER, "커피", 10)).toHaveLength(0);
-    expect(store.list(USER)).toHaveLength(0);
+    expect(store.searchOwn(USER, "커피", 10)).toHaveLength(0);
+    expect(store.listOwn(USER)).toHaveLength(0);
   });
 
-  test("전체 삭제는 본인 기억만 지운다", () => {
+  test("전체 삭제는 1,000개 상한 없이 본인 기억만 지운다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    store.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
-    store.add({ ownerUserId: USER, content: "민지는 부산에 산다" });
-    store.add({ ownerUserId: "other", content: "다른 사람 기억" });
+    for (let index = 0; index < 1_005; index += 1) {
+      store.addPersonal({
+        ownerUserId: USER,
+        createdByUserId: USER,
+        content: `기억 ${index}`
+      });
+    }
+    store.addPersonal({
+      ownerUserId: OTHER,
+      createdByUserId: OTHER,
+      content: "다른 사람 기억"
+    });
 
-    expect(store.clear(USER)).toBe(2);
-    expect(store.list(USER)).toHaveLength(0);
-    expect(store.list("other")).toHaveLength(1);
+    expect(store.clearPersonal(USER)).toBe(1_005);
+    expect(store.countOwn(USER)).toBe(0);
+    expect(store.countOwn(OTHER)).toBe(1);
   });
 
   test("후보 선택은 고른 기억만 돌려준다", () => {
-    const candidates = [candidate(1, "a"), candidate(2, "b"), candidate(3, "c")];
+    const candidates = [candidateOf(1, "a"), candidateOf(2, "b"), candidateOf(3, "c")];
     expect(selectMemories(candidates, [3, 1]).map((memory) => memory.id)).toEqual([1, 3]);
     expect(selectMemories(candidates, [99])).toEqual([]);
   });
@@ -378,24 +372,40 @@ describe("기억 저장소", () => {
 describe("명시적 기억 작업", () => {
   const commit = (
     store: MindMemoryStore,
-    input: { operation: Parameters<typeof commitMemoryOperation>[1]["operation"]; targetId: number | null; text: string; userId?: string },
-    autoMemory = true
+    decision: Parameters<typeof commitMemoryOperation>[2]["decision"],
+    text: string,
+    options: { autoMemory?: boolean; actor?: Parameters<typeof actorOf>[0] } = {}
   ) =>
-    commitMemoryOperation(
+    commitMemoryOperation(store, relationshipStore(), {
+      actor: actorOf(options.actor),
+      messageId: "m1",
+      channelId: "c1",
+      text,
+      decision,
+      referencedUsers: [],
+      authorDisplayName: "민지",
+      autoMemory: options.autoMemory ?? true,
+      guildAutoNickname: true,
+      guildApprovalRequired: true
+    });
+
+  test("명시적으로 기억해 달라고 하면 개인 기억으로 저장한다", () => {
+    const store = new MindMemoryStore(mindDb(), GUILD);
+    const result = commit(
       store,
       {
-        operation: input.operation,
-        targetId: input.targetId,
-        userId: input.userId ?? USER,
-        messageId: "m1",
-        text: input.text
+        operation: "add",
+        scope: "user",
+        visibility: "private",
+        category: "fact",
+        subjectUserId: USER,
+        targetMemoryId: null,
+        confidence: 0.9,
+        needsApproval: false,
+        explicit: true
       },
-      { autoMemory }
+      "나 커피 안 마셔. 기억해"
     );
-
-  test("명시적으로 기억해 달라고 하면 저장한다", () => {
-    const store = new MindMemoryStore(mindDb(), GUILD);
-    const result = commit(store, { operation: "add", targetId: null, text: "나 커피 안 마셔. 기억해" });
 
     expect(result.status).toBe("success");
     expect(result.added).toEqual(["나 커피 안 마셔"]);
@@ -403,27 +413,72 @@ describe("명시적 기억 작업", () => {
 
   test("자동 저장이 꺼져 있으면 명시 요청만 저장한다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
+    const auto = {
+      operation: "add" as const,
+      scope: "user" as const,
+      visibility: "private" as const,
+      category: "fact" as const,
+      subjectUserId: USER,
+      targetMemoryId: null,
+      confidence: 0.7,
+      needsApproval: false,
+      explicit: false
+    };
+    expect(commit(store, auto, "오늘 날씨 좋다", { autoMemory: false }).status).toBe(
+      "none"
+    );
     expect(
-      commit(store, { operation: "add", targetId: null, text: "오늘 날씨 좋다" }, false).status
-    ).toBe("none");
-    expect(
-      commit(store, { operation: "add", targetId: null, text: "내 생일은 3월이야. 기억해" }, false).status
+      commit(store, { ...auto, explicit: true }, "내 생일은 3월이야. 기억해", {
+        autoMemory: false
+      }).status
     ).toBe("success");
   });
 
   test("대상이 불분명한 수정은 아무것도 바꾸지 않는다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    const result = commit(store, { operation: "update", targetId: null, text: "고양이가 아니라 강아지야" });
+    const result = commit(
+      store,
+      {
+        operation: "update",
+        scope: "user",
+        visibility: "private",
+        category: "fact",
+        subjectUserId: USER,
+        targetMemoryId: null,
+        confidence: 0.5,
+        needsApproval: false,
+        explicit: true
+      },
+      "고양이가 아니라 강아지야"
+    );
     expect(result.status).toBe("needs_confirmation");
     expect(result.updated).toEqual([]);
   });
 
   test("자연어 삭제 요청은 본인 기억도 지우지 않는다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    const saved = store.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
+    const saved = store.addPersonal({
+      ownerUserId: USER,
+      createdByUserId: USER,
+      content: "민지는 커피를 좋아한다"
+    });
     if (!saved) throw new Error("저장 실패");
 
-    const result = commit(store, { operation: "delete", targetId: saved.id, text: "그 기억 지워" });
+    const result = commit(
+      store,
+      {
+        operation: "delete",
+        scope: "user",
+        visibility: "private",
+        category: "fact",
+        subjectUserId: USER,
+        targetMemoryId: saved.id,
+        confidence: 0.9,
+        needsApproval: false,
+        explicit: true
+      },
+      "그 기억 지워"
+    );
     expect(result.status).toBe("blocked");
     expect(result.removed).toEqual([]);
     expect(store.byId(saved.id)?.content).toBe("민지는 커피를 좋아한다");
@@ -435,94 +490,76 @@ describe("명시적 기억 작업", () => {
       added: [],
       updated: [],
       removed: [],
-      reason: "자연어로는 기억을 삭제할 수 없습니다. /memory delete 슬래시 명령을 써야 합니다"
+      reason:
+        "자연어로는 기억을 삭제할 수 없습니다. /memory delete 슬래시 명령을 써야 합니다"
     });
 
-    expect(text).toContain("지우지 않았다");
+    expect(text).toContain("바꾸지 않았다");
     expect(text).toContain("/memory delete");
   });
 });
 
-describe("감정과 관계", () => {
-  const stateConfig = {
-    emotionEnabled: true,
-    decayEnabled: true,
-    halfLifeMinutes: { valence: 30, arousal: 10, irritation: 20, curiosity: 60 },
-    maxDelta: 0.25,
-    relationshipEnabled: true,
-    updateLimit: 0.03
-  };
+describe("관계 엔진", () => {
+  test("관계 값은 저장하고 다시 읽을 수 있다", () => {
+    const store = relationshipStore();
+    store.save(
+      relationshipOf({
+        familiarity: 0.4,
+        rapport: 0.7,
+        playfulness: 0.5,
+        interactionCount: 12,
+        boundaries: ["욕설 금지"],
+        lastInteractionAt: 5
+      })
+    );
 
-  test("시간이 지나면 기본 기분으로 돌아간다", () => {
-    const db = mindDb();
-    const store = new MindStateStore(db, GUILD, stateConfig);
-    const start = 1_000_000;
-    store.saveEmotion({ ...DEFAULT_EMOTION, valence: 1, currentGoal: null, updatedAt: start }, start);
-
-    const halfLifeLater = store.loadEmotion(start + 30 * 60_000);
-    expect(halfLifeLater.valence).toBeCloseTo(0.775, 3);
-
-    const muchLater = store.loadEmotion(start + 30 * 60_000 * 10);
-    expect(muchLater.valence).toBeCloseTo(DEFAULT_EMOTION.valence, 2);
+    const loaded = store.load(USER);
+    expect(loaded.boundaries).toEqual(["욕설 금지"]);
+    expect(loaded.rapport).toBeCloseTo(0.7, 3);
+    expect(loaded.interactionCount).toBe(12);
   });
 
-  test("한 사건의 감정 변화는 상한을 넘지 않는다", () => {
-    const store = new MindStateStore(mindDb(), GUILD, stateConfig);
-    const current = { ...DEFAULT_EMOTION, currentGoal: null, updatedAt: 0 };
-    const next = store.applyEmotion(current, "negative", 1, "respect_boundary", 0);
+  test("장난을 주고받으면 장난 선호와 라포가 오른다", () => {
+    const store = relationshipStore();
+    const next = store.applyInteraction(relationshipOf(), "playful", null, 0);
 
-    expect(next.valence).toBeCloseTo(DEFAULT_EMOTION.valence - 0.12, 3);
-    expect(next.irritation).toBeCloseTo(DEFAULT_EMOTION.irritation + 0.14, 3);
+    expect(next.playfulness).toBeCloseTo(0.63, 3);
+    expect(next.rapport).toBeCloseTo(0.609, 3);
+    expect(next.interactionCount).toBe(11);
+    expect(next.positiveInteractionCount).toBe(7);
   });
 
   test("명시적 경계는 즉시 저장하고 장난 선호를 낮춘다", () => {
-    const store = new MindStateStore(mindDb(), GUILD, stateConfig);
-    const before = {
-      familiarity: 0.5,
-      trust: 0.6,
-      playfulness: 0.6,
-      interactionCount: 10,
-      boundaries: [],
-      lastInteractionAt: 0
-    };
+    const store = relationshipStore();
+    const next = store.applyInteraction(
+      relationshipOf(),
+      "boundary_set",
+      "그런 농담 하지 마",
+      0
+    );
 
-    const after = store.applyInteraction(before, "boundary_set", "그런 농담 하지 마", 0);
-    expect(after.playfulness).toBeCloseTo(0.54, 3);
-    expect(after.boundaries).toEqual(["그런 농담 하지 마"]);
-    expect(after.interactionCount).toBe(11);
+    expect(next.playfulness).toBeCloseTo(0.54, 3);
+    expect(next.boundaries).toEqual(["그런 농담 하지 마"]);
+    expect(next.negativeFeedbackCount).toBe(2);
   });
 
-  test("관계 값은 저장하고 다시 읽을 수 있다", () => {
-    const store = new MindStateStore(mindDb(), GUILD, stateConfig);
-    store.saveRelationship(USER, {
-      familiarity: 0.4,
-      trust: 0.7,
-      playfulness: 0.5,
-      interactionCount: 12,
-      boundaries: ["욕설 금지"],
-      lastInteractionAt: 5
+  test("관계 기능이 꺼져 있어도 상호작용 횟수는 센다", () => {
+    const store = new BotUserRelationshipStore(mindDb(), GUILD, {
+      enabled: false,
+      updateLimit: 0.03
     });
-
-    const loaded = store.loadRelationship(USER);
-    expect(loaded.boundaries).toEqual(["욕설 금지"]);
-    expect(loaded.trust).toBeCloseTo(0.7, 3);
+    const next = store.applyInteraction(relationshipOf(), "playful", null, 0);
+    expect(next.interactionCount).toBe(11);
+    expect(next.playfulness).toBe(0.6);
   });
 });
 
 describe("CharacterFrame 중재", () => {
-  const memoryResult = {
-    status: "none" as const,
-    added: [],
-    updated: [],
-    removed: [],
-    reason: null
-  };
-
   test("위로가 필요한 상황에서는 장난을 버린다", () => {
     const frame = compileFrame(
       contextOf(),
       decisionOf({ userNeeds: "comfort", action: "tease_back" }),
-      memoryResult
+      noResult
     );
 
     expect(frame.action).toBe("comfort");
@@ -534,39 +571,50 @@ describe("CharacterFrame 중재", () => {
     const frame = compileFrame(
       contextOf(),
       decisionOf({ socialContext: "conflict", action: "tease_back" }),
-      memoryResult
+      noResult
     );
 
     expect(frame.action).toBe("acknowledge");
   });
 
   test("장난 선호가 낮은 사용자에게는 장난치지 않는다", () => {
-    const context = contextOf({
-      relationship: {
-        familiarity: 0.1,
-        trust: 0.5,
-        playfulness: 0.1,
-        interactionCount: 1,
-        boundaries: [],
-        lastInteractionAt: 0
-      }
-    });
-
-    const frame = compileFrame(context, decisionOf({ action: "light_banter" }), memoryResult);
+    const context = contextOf({ relationship: relationshipOf({ playfulness: 0.1 }) });
+    const frame = compileFrame(context, decisionOf({ action: "light_banter" }), noResult);
     expect(frame.action).toBe("acknowledge");
   });
 
-  test("확인이 필요한 기억 작업은 되묻도록 제약을 건다", () => {
+  test("승인 대기 기억은 저장됐다고 말하지 않게 한다", () => {
     const frame = compileFrame(contextOf(), decisionOf(), {
-      status: "needs_confirmation",
-      added: [],
+      status: "pending",
+      added: ["서버 규칙"],
       updated: [],
       removed: [],
-      reason: "대상이 불분명하다"
+      reason: "관리자 승인을 기다립니다"
     });
 
-    expect(frame.memoryStatus).toBe("needs_confirmation");
-    expect(frame.constraints.join(" ")).toContain("되묻는다");
+    expect(frame.memoryStatus).toBe("pending");
+    expect(frame.constraints.join(" ")).toContain("승인 대기");
+  });
+
+  test("활성 공용 별명을 Frame에 따로 싣는다", () => {
+    const context = contextOf({
+      conventions: [
+        memoryRecordOf({
+          id: 7,
+          scope: "guild",
+          ownerUserId: null,
+          subjectUserId: USER,
+          category: "nickname",
+          approval: "active",
+          structuredValue: "천재",
+          content: '민지의 별명은 "천재"이다.'
+        })
+      ]
+    });
+
+    const frame = compileFrame(context, decisionOf(), noResult);
+    expect(frame.applicableNicknames).toEqual([{ userId: USER, nickname: "천재" }]);
+    expect(frame.relationship.rapport).toBeCloseTo(0.6, 3);
   });
 });
 
@@ -582,26 +630,22 @@ describe("MindEngine", () => {
 
   test("본문에 이름이 없어도 발화자 이름으로 기억 후보를 찾는다", () => {
     const mind = engine();
-    mind.memories.add({
+    mind.memories.addPersonal({
       ownerUserId: USER,
-      scope: "user",
-      kind: "semantic",
-      content: "기니는 21살이다."
+      createdByUserId: USER,
+      content: "민지는 커피를 좋아한다"
     });
 
-    const context = mind.prepareContext({
-      ...contextOf().request,
-      displayName: "기니 (@giinii06)",
-      text: "나 누군지 기억해?"
-    });
+    const context = mind.prepareContext(requestOf({ text: "나 누군지 기억해?" }));
 
-    expect(context.candidates.map((item) => item.memory.content)).toContain("기니는 21살이다.");
-    expect(mind.prepareContext({ ...context.request, userId: "other" }).candidates).toEqual([]);
+    expect(context.candidates.map((item) => item.memory.content)).toContain(
+      "민지는 커피를 좋아한다"
+    );
   });
 
   test("API 키가 없으면 규칙 기반 폴백으로 판단한다", async () => {
     const mind = engine();
-    const context = mind.prepareContext(contextOf().request);
+    const context = mind.prepareContext(requestOf());
     const decision = await mind.decide(context);
 
     expect(decision.source).toBe("local_fallback");
@@ -610,8 +654,9 @@ describe("MindEngine", () => {
 
   test("폴백에서도 힘든 이야기에는 위로를 고른다", async () => {
     const mind = engine();
-    const request = { ...contextOf().request, text: "나 이번 시험 또 망한 것 같아" };
-    const context = mind.prepareContext(request);
+    const context = mind.prepareContext(
+      requestOf({ text: "나 이번 시험 또 망한 것 같아" })
+    );
     const decision = await mind.decide(context);
 
     expect(decision.action).toBe("comfort");
@@ -620,70 +665,71 @@ describe("MindEngine", () => {
 
   test("폴백에서도 명시적 기억 요청은 저장한다", async () => {
     const mind = engine();
-    const request = { ...contextOf().request, text: "나 커피 안 마셔. 기억해" };
-    const context = mind.prepareContext(request);
+    const context = mind.prepareContext(
+      requestOf({ text: "나 커피 안 마셔. 기억해" })
+    );
     const decision = await mind.decide(context);
-    const result = mind.commitExplicitMemory(context, decision);
+    const result = mind.commitMemoryOperation(context, decision);
 
-    expect(decision.memoryOperation).toBe("add");
+    expect(decision.memory.operation).toBe("add");
     expect(result.status).toBe("success");
     expect(mind.listMemories(USER)).toHaveLength(1);
   });
 
   test("슬래시 기억 삭제는 그대로 동작한다", async () => {
     const mind = engine();
-    const saved = mind.memories.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
+    const saved = mind.memories.addPersonal({
+      ownerUserId: USER,
+      createdByUserId: USER,
+      content: "민지는 커피를 좋아한다"
+    });
     if (!saved) throw new Error("저장 실패");
 
-    let content = "";
-    const interaction = {
-      options: {
-        getSubcommand: () => "delete",
-        getInteger: () => saved.id
-      },
-      user: { id: USER },
-      reply: async (payload: { content?: string }) => {
-        content = payload.content ?? "";
-      }
-    } as unknown as Parameters<typeof handleMemoryCommand>[0];
+    const { interaction, replies } = fakeCommandInteraction({
+      subcommand: "delete",
+      integer: () => saved.id
+    });
 
     await handleMemoryCommand(interaction, mind);
 
     expect(mind.memories.byId(saved.id)).toBeNull();
-    expect(content).toContain("지웠어");
+    expect(replies[0]).toContain("지웠어");
   });
 
-  test("답변 후 감정과 사건을 기록한다", async () => {
+  test("같은 메시지는 관계를 두 번 갱신하지 않는다", async () => {
     const db = mindDb();
     const mind = engine(db);
-    const context = mind.prepareContext(contextOf().request);
-    const decision = await mind.decide(context);
+    const context = mind.prepareContext(requestOf());
+    const decision = decisionOf({ relationshipSignal: "playful" });
 
     mind.afterReply({
       context,
       decision,
-      memoryResult: { status: "none", added: [], updated: [], removed: [], reason: null },
+      memoryResult: noResult,
       replyText: "그래요?",
       sentMessageId: "bot1"
     });
+    mind.afterReply({
+      context,
+      decision,
+      memoryResult: noResult,
+      replyText: "그래요?",
+      sentMessageId: "bot2"
+    });
 
-    const events = db.query("SELECT * FROM mind_events").all();
-    expect(events).toHaveLength(1);
-
-    const state = mind.state.loadEmotion();
-    expect(state.currentGoal).toBe(decision.goal);
+    const relationship = mind.relationship.load(USER);
+    expect(relationship.playfulness).toBeCloseTo(0.33, 3);
+    expect(relationship.interactionCount).toBe(1);
+    expect(db.query("SELECT * FROM mind_events").all()).toHaveLength(1);
   });
 
-  test("같은 메시지는 사건으로 두 번 남지 않는다", async () => {
-    const db = mindDb();
-    const mind = engine(db);
-    const context = mind.prepareContext(contextOf().request);
-    const decision = await mind.decide(context);
-    const memoryResult = { status: "none" as const, added: [], updated: [], removed: [], reason: null };
+  test("관리자 여부는 요청을 만든 쪽이 정하고 엔진은 그대로 쓴다", () => {
+    const mind = engine();
+    const context = mind.prepareContext(
+      requestOf({ userId: ADMIN, displayName: "관리자", isAdministrator: true })
+    );
 
-    mind.afterReply({ context, decision, memoryResult, replyText: "a", sentMessageId: "b1" });
-    mind.afterReply({ context, decision, memoryResult, replyText: "a", sentMessageId: "b2" });
-
-    expect(db.query("SELECT * FROM mind_events").all()).toHaveLength(1);
+    expect(context.request.isAdministrator).toBe(true);
+    expect(actorOf({ userId: ADMIN, isAdministrator: true }).isAdministrator).toBe(true);
   });
 });

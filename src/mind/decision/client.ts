@@ -19,6 +19,11 @@ export type DecisionRequest = {
   timeoutMs?: number;
 };
 
+/** 테스트와 교체 가능한 Decision 호출 경계. */
+export type DecisionTransport = {
+  ask(request: DecisionRequest): Promise<DecisionResponse>;
+};
+
 const errorDetail = (body: string) => {
   try {
     const parsed = JSON.parse(body) as { error?: { message?: unknown } };

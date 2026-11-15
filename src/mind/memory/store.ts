@@ -1,44 +1,95 @@
 import type { Database } from "bun:sqlite";
 import type { Snowflake } from "discord.js";
 import { cleanMemoryText } from "../../chat/memory.js";
-import type {
-  MemoryCandidate,
-  MemoryKind,
-  MemoryRecord,
-  MemoryScope
+import {
+  MEMORY_APPROVALS,
+  MEMORY_CATEGORIES,
+  MEMORY_VISIBILITIES,
+  type MemoryActor,
+  type MemoryApproval,
+  type MemoryCandidate,
+  type MemoryCategory,
+  type MemoryRecord,
+  type MemoryVisibility
 } from "../types.js";
 
 const MAX_MEMORY_LENGTH = 120;
 const RECENCY_HALF_LIFE_DAYS = 30;
+export const SYSTEM_ACTOR = "system";
 
 type MemoryRow = {
   id: number;
   guild_id: string;
   owner_user_id: string | null;
+  subject_user_id: string | null;
+  created_by_user_id: string | null;
   scope: string;
   kind: string;
+  category: string;
+  visibility: string;
+  approval_status: string;
   content: string;
+  structured_value: string | null;
   normalized_content: string;
   confidence: number;
   importance: number;
   source_message_id: string | null;
+  source_channel_id: string | null;
   created_at: number;
   updated_at: number;
   last_accessed_at: number | null;
   expires_at: number | null;
+  deleted_at: number | null;
   version: number;
 };
 
-export type MemoryInput = {
+export type PersonalMemoryInput = {
   ownerUserId: string;
-  scope?: MemoryScope;
-  kind?: MemoryKind;
+  createdByUserId: string;
   content: string;
+  category?: MemoryCategory;
+  visibility?: MemoryVisibility;
   confidence?: number;
   importance?: number;
   sourceMessageId?: string | null;
-  sourceAuthorId?: string | null;
-  expiresAt?: number | null;
+  sourceChannelId?: string | null;
+};
+
+export type GuildMemoryInput = {
+  createdByUserId: string;
+  category: MemoryCategory;
+  subjectUserId: string | null;
+  content: string;
+  structuredValue?: string | null;
+  approval?: MemoryApproval;
+  confidence?: number;
+  importance?: number;
+  sourceMessageId?: string | null;
+  sourceChannelId?: string | null;
+  source?: "natural_language" | "slash_command";
+};
+
+export type GuildMemoryPatch = {
+  content?: string;
+  category?: MemoryCategory;
+  subjectUserId?: string | null;
+  structuredValue?: string | null;
+  approval?: MemoryApproval;
+};
+
+export type MemoryRetrievalRequest = {
+  actorUserId: string;
+  referencedUserIds: string[];
+  query: string;
+  candidateLimit: number;
+  includeOwn?: boolean;
+  includeOther?: boolean;
+  includeGuild?: boolean;
+};
+
+export type MemoryRetrievalResult = {
+  candidates: MemoryCandidate[];
+  conventions: MemoryRecord[];
 };
 
 const oneLine = (value: string) => value.trim().replace(/\s+/g, " ");
@@ -81,25 +132,45 @@ const similarity = (left: string, right: string): number => {
   return (2 * shared) / total;
 };
 
-const toRecord = (row: MemoryRow): MemoryRecord => {
-  if (!row.owner_user_id || row.scope !== "user") throw new Error("사용자 기억이 아닙니다");
-  return {
-    id: row.id,
-    guildId: row.guild_id,
-    ownerUserId: row.owner_user_id,
-    scope: "user",
-    kind: row.kind as MemoryKind,
-    content: row.content,
-    confidence: row.confidence,
-    importance: row.importance,
-    sourceMessageId: row.source_message_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    lastAccessedAt: row.last_accessed_at,
-    expiresAt: row.expires_at,
-    version: row.version
-  };
-};
+const categoryOf = (value: string): MemoryCategory =>
+  (MEMORY_CATEGORIES as readonly string[]).includes(value)
+    ? (value as MemoryCategory)
+    : "fact";
+
+const visibilityOf = (value: string): MemoryVisibility =>
+  (MEMORY_VISIBILITIES as readonly string[]).includes(value)
+    ? (value as MemoryVisibility)
+    : "private";
+
+const approvalOf = (value: string): MemoryApproval =>
+  (MEMORY_APPROVALS as readonly string[]).includes(value)
+    ? (value as MemoryApproval)
+    : "active";
+
+const toRecord = (row: MemoryRow): MemoryRecord => ({
+  id: row.id,
+  guildId: row.guild_id,
+  scope: row.scope === "guild" ? "guild" : "user",
+  kind: "semantic",
+  category: categoryOf(row.category),
+  ownerUserId: row.owner_user_id,
+  subjectUserId: row.subject_user_id,
+  createdByUserId: row.created_by_user_id ?? row.owner_user_id ?? SYSTEM_ACTOR,
+  visibility: visibilityOf(row.visibility),
+  approval: approvalOf(row.approval_status),
+  content: row.content,
+  structuredValue: row.structured_value,
+  confidence: row.confidence,
+  importance: row.importance,
+  sourceMessageId: row.source_message_id,
+  sourceChannelId: row.source_channel_id,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+  lastAccessedAt: row.last_accessed_at,
+  expiresAt: row.expires_at,
+  deletedAt: row.deleted_at,
+  version: row.version
+});
 
 /**
  * FTS 질의는 사용자 입력을 그대로 쓰지 않는다.
@@ -126,6 +197,25 @@ export const selectMemories = (
     .map((candidate) => candidate.memory);
 };
 
+/** 범위별 후보를 번갈아 합친다. 한 범위가 비면 남은 범위에서 채운다. */
+const interleave = (lists: MemoryCandidate[][], limit: number): MemoryCandidate[] => {
+  const queues = lists.map((list) => [...list]);
+  const seen = new Set<number>();
+  const merged: MemoryCandidate[] = [];
+
+  while (merged.length < limit && queues.some((queue) => queue.length > 0)) {
+    for (const queue of queues) {
+      if (merged.length >= limit) break;
+      const next = queue.shift();
+      if (!next || seen.has(next.memory.id)) continue;
+      seen.add(next.memory.id);
+      merged.push(next);
+    }
+  }
+
+  return merged;
+};
+
 export class MindMemoryStore {
   constructor(
     private readonly db: Database,
@@ -136,33 +226,33 @@ export class MindMemoryStore {
     return String(this.guildId);
   }
 
-  list(userId: string, limit = 50): MemoryRecord[] {
+  listOwn(userId: string, limit = 50): MemoryRecord[] {
     const rows = this.db
       .query<MemoryRow, [string, string, number, number]>(
         `SELECT * FROM mind_memories
-         WHERE guild_id = ? AND owner_user_id = ? AND scope = 'user' AND deleted_at IS NULL
-           AND (expires_at IS NULL OR expires_at > ?)
+         WHERE guild_id = ? AND owner_user_id = ? AND scope = 'user' AND kind = 'semantic'
+           AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
          ORDER BY updated_at DESC LIMIT ?`
       )
       .all(this.guild, userId, Date.now(), limit);
     return rows.map(toRecord);
   }
 
-  count(userId: string): number {
+  countOwn(userId: string): number {
     const row = this.db
       .query<{ n: number }, [string, string, number]>(
         `SELECT COUNT(*) AS n FROM mind_memories
-         WHERE guild_id = ? AND owner_user_id = ? AND scope = 'user' AND deleted_at IS NULL
-           AND (expires_at IS NULL OR expires_at > ?)`
+         WHERE guild_id = ? AND owner_user_id = ? AND scope = 'user' AND kind = 'semantic'
+           AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`
       )
       .get(this.guild, userId, Date.now());
     return row?.n ?? 0;
   }
 
   /** 같은 출처 메시지에서 같은 내용이 두 번 들어가지 않도록 정규화 값으로 한 번 더 막는다. */
-  add(input: MemoryInput): MemoryRecord | null {
-    if (!input.ownerUserId?.trim()) throw new Error("기억 소유자가 필요합니다");
-    if (input.scope !== undefined && input.scope !== "user") throw new Error("사용자 기억만 저장할 수 있습니다");
+  addPersonal(input: PersonalMemoryInput): MemoryRecord | null {
+    const owner = input.ownerUserId.trim();
+    if (!owner) throw new Error("기억 소유자가 필요합니다");
     const content = cleanMemoryText(input.content).slice(0, MAX_MEMORY_LENGTH);
     if (!content) return null;
     const normalized = normalizeMemory(content);
@@ -173,21 +263,24 @@ export class MindMemoryStore {
       const result = this.db
         .query(
           `INSERT INTO mind_memories
-             (guild_id, owner_user_id, scope, kind, content, normalized_content, confidence, importance,
-              source_message_id, source_author_id, created_at, updated_at, version)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+             (guild_id, owner_user_id, subject_user_id, created_by_user_id, scope, kind, category,
+              visibility, approval_status, content, normalized_content, confidence, importance,
+              source_message_id, source_channel_id, created_at, updated_at, version)
+           VALUES (?, ?, ?, ?, 'user', 'semantic', ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, 1)`
         )
         .run(
           this.guild,
-          input.ownerUserId,
-          input.scope ?? "user",
-          input.kind ?? "semantic",
+          owner,
+          owner,
+          input.createdByUserId,
+          input.category ?? "fact",
+          input.visibility ?? "private",
           content,
           normalized,
           input.confidence ?? 0.8,
           input.importance ?? 0.5,
           input.sourceMessageId ?? null,
-          input.sourceAuthorId ?? null,
+          input.sourceChannelId ?? null,
           now,
           now
         );
@@ -201,19 +294,73 @@ export class MindMemoryStore {
     }
   }
 
+  addGuild(input: GuildMemoryInput): MemoryRecord | null {
+    const content = cleanMemoryText(input.content).slice(0, MAX_MEMORY_LENGTH);
+    if (!content) return null;
+    const normalized = normalizeMemory(content);
+    if (!normalized) return null;
+
+    const now = Date.now();
+    try {
+      const result = this.db
+        .query(
+          `INSERT INTO mind_memories
+             (guild_id, owner_user_id, subject_user_id, created_by_user_id, scope, kind, category,
+              visibility, approval_status, content, structured_value, normalized_content, confidence,
+              importance, source_message_id, source_channel_id, created_at, updated_at, version)
+           VALUES (?, NULL, ?, ?, 'guild', 'semantic', ?, 'shareable', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+        )
+        .run(
+          this.guild,
+          input.subjectUserId,
+          input.createdByUserId,
+          input.category,
+          input.approval ?? "active",
+          content,
+          input.structuredValue ?? null,
+          normalized,
+          input.confidence ?? 0.8,
+          input.importance ?? 0.5,
+          input.sourceMessageId ?? null,
+          input.sourceChannelId ?? null,
+          now,
+          now
+        );
+
+      const id = Number(result.lastInsertRowid);
+      this.index(id, content);
+      const saved = this.byId(id);
+      if (saved) {
+        this.audit({
+          memoryId: id,
+          actorUserId: input.createdByUserId,
+          action: "ADD",
+          source: input.source ?? "natural_language",
+          previousValue: null,
+          newValue: content
+        });
+      }
+      return saved;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("UNIQUE")) return null;
+      throw error;
+    }
+  }
+
   byId(id: number): MemoryRecord | null {
     const row = this.db
       .query<MemoryRow, [number, string]>(
-        "SELECT * FROM mind_memories WHERE id = ? AND guild_id = ? AND scope = 'user' AND owner_user_id IS NOT NULL AND deleted_at IS NULL"
+        `SELECT * FROM mind_memories
+         WHERE id = ? AND guild_id = ? AND kind = 'semantic' AND deleted_at IS NULL`
       )
       .get(id, this.guild);
     return row ? toRecord(row) : null;
   }
 
   /** 소유자가 아니면 null. 호출자가 실패로 처리한다. */
-  update(id: number, userId: string, content: string): MemoryRecord | null {
+  updatePersonal(id: number, userId: string, content: string): MemoryRecord | null {
     const current = this.byId(id);
-    if (!current || current.ownerUserId !== userId) return null;
+    if (!current || current.scope !== "user" || current.ownerUserId !== userId) return null;
 
     const text = cleanMemoryText(content).slice(0, MAX_MEMORY_LENGTH);
     if (!text) return null;
@@ -226,53 +373,412 @@ export class MindMemoryStore {
       )
       .run(text, normalizeMemory(text), Date.now(), id, this.guild);
 
-    this.db.query("DELETE FROM mind_memory_fts WHERE rowid = ?").run(id);
-    this.index(id, text);
+    this.reindex(id, text);
     return this.byId(id);
   }
 
-  /** 삭제는 표시만 남긴다. 이후 검색·마이그레이션·Reflection에서 되살아나지 않는다. */
-  remove(id: number, userId: string): boolean {
+  /** 개인 기억의 공유 여부. 다른 사람 대화에서 쓸 수 있는지는 이 값으로만 결정된다. */
+  setPersonalVisibility(
+    id: number,
+    userId: string,
+    visibility: MemoryVisibility
+  ): boolean {
     const current = this.byId(id);
-    if (!current || current.ownerUserId !== userId) return false;
+    if (!current || current.scope !== "user" || current.ownerUserId !== userId) return false;
 
     this.db
       .query(
-        "UPDATE mind_memories SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE id = ? AND guild_id = ?"
+        `UPDATE mind_memories
+         SET visibility = ?, updated_at = ?, version = version + 1
+         WHERE id = ? AND guild_id = ? AND deleted_at IS NULL`
       )
-      .run(Date.now(), Date.now(), id, this.guild);
+      .run(visibility, Date.now(), id, this.guild);
+    return true;
+  }
+
+  /** 삭제는 표시만 남긴다. 이후 검색에서 되살아나지 않는다. */
+  deletePersonal(id: number, userId: string): boolean {
+    const current = this.byId(id);
+    if (!current || current.scope !== "user" || current.ownerUserId !== userId) return false;
+
+    const now = Date.now();
+    this.db
+      .query(
+        `UPDATE mind_memories
+         SET deleted_at = ?, updated_at = ?, version = version + 1
+         WHERE id = ? AND guild_id = ?`
+      )
+      .run(now, now, id, this.guild);
     this.db.query("DELETE FROM mind_memory_fts WHERE rowid = ?").run(id);
     return true;
   }
 
-  clear(userId: string): number {
-    const ids = this.list(userId, 1000).map((memory) => memory.id);
+  /**
+   * 본인 개인 기억 전체 삭제. 목록 상한 없이 SQL 한 번으로 처리한다.
+   * 공용 기억은 이 경로로 지우지 않는다.
+   */
+  clearPersonal(userId: string): number {
+    const ids = this.db
+      .query<{ id: number }, [string, string]>(
+        `SELECT id FROM mind_memories
+         WHERE guild_id = ? AND owner_user_id = ? AND scope = 'user' AND deleted_at IS NULL`
+      )
+      .all(this.guild, userId)
+      .map((row) => row.id);
+    if (ids.length === 0) return 0;
+
     const now = Date.now();
-    const remove = this.db.query(
-      "UPDATE mind_memories SET deleted_at = ?, updated_at = ? WHERE id = ? AND guild_id = ?"
-    );
-    for (const id of ids) {
-      remove.run(now, now, id, this.guild);
-      this.db.query("DELETE FROM mind_memory_fts WHERE rowid = ?").run(id);
-    }
+    const remove = this.db.transaction(() => {
+      this.db
+        .query(
+          `UPDATE mind_memories
+           SET deleted_at = ?, updated_at = ?, version = version + 1
+           WHERE guild_id = ? AND owner_user_id = ? AND scope = 'user' AND deleted_at IS NULL`
+        )
+        .run(now, now, this.guild, userId);
+      const drop = this.db.query("DELETE FROM mind_memory_fts WHERE rowid = ?");
+      for (const id of ids) drop.run(id);
+    });
+    remove();
     return ids.length;
   }
 
-  /**
-   * 후보 검색. 권한·삭제·만료를 먼저 거르고, 관련성·중요도·최근성·신뢰도로 정렬한다.
-   * 다른 사람의 비공개 기억은 이 단계에서 이미 빠진다.
-   */
-  candidates(userId: string, query: string, limit: number): MemoryCandidate[] {
+  listGuild(limit = 50): MemoryRecord[] {
     const rows = this.db
-      .query<MemoryRow, [string, number, string]>(
+      .query<MemoryRow, [string, number, number]>(
         `SELECT * FROM mind_memories
-         WHERE guild_id = ? AND deleted_at IS NULL
+         WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
+           AND approval_status = 'active' AND deleted_at IS NULL
            AND (expires_at IS NULL OR expires_at > ?)
-           AND owner_user_id = ? AND scope = 'user'
-         ORDER BY updated_at DESC LIMIT 200`
+         ORDER BY id ASC LIMIT ?`
       )
-      .all(this.guild, Date.now(), userId);
+      .all(this.guild, Date.now(), limit);
+    return rows.map(toRecord);
+  }
 
+  listPendingGuild(limit = 50): MemoryRecord[] {
+    const rows = this.db
+      .query<MemoryRow, [string, number]>(
+        `SELECT * FROM mind_memories
+         WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
+           AND approval_status = 'pending' AND deleted_at IS NULL
+         ORDER BY created_at ASC LIMIT ?`
+      )
+      .all(this.guild, limit);
+    return rows.map(toRecord);
+  }
+
+  updateGuild(id: number, actor: MemoryActor, patch: GuildMemoryPatch): MemoryRecord | null {
+    if (!actor.isAdministrator) return null;
+    const current = this.byId(id);
+    if (!current || current.scope !== "guild") return null;
+
+    const text =
+      patch.content === undefined
+        ? current.content
+        : cleanMemoryText(patch.content).slice(0, MAX_MEMORY_LENGTH);
+    if (!text) return null;
+
+    const category = patch.category ?? current.category;
+    const subject =
+      patch.subjectUserId === undefined ? current.subjectUserId : patch.subjectUserId;
+    const structured =
+      patch.structuredValue === undefined ? current.structuredValue : patch.structuredValue;
+    const approval = patch.approval ?? current.approval;
+
+    try {
+      this.db
+        .query(
+          `UPDATE mind_memories
+           SET content = ?, normalized_content = ?, category = ?, subject_user_id = ?,
+               structured_value = ?, approval_status = ?, updated_at = ?, version = version + 1
+           WHERE id = ? AND guild_id = ? AND deleted_at IS NULL`
+        )
+        .run(
+          text,
+          normalizeMemory(text),
+          category,
+          subject,
+          structured,
+          approval,
+          Date.now(),
+          id,
+          this.guild
+        );
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("UNIQUE")) return null;
+      throw error;
+    }
+
+    this.reindex(id, text);
+    this.audit({
+      memoryId: id,
+      actorUserId: actor.userId,
+      action: "UPDATE",
+      source: actor.source,
+      previousValue: current.content,
+      newValue: text
+    });
+    return this.byId(id);
+  }
+
+  deleteGuild(id: number, actor: MemoryActor): boolean {
+    if (!actor.isAdministrator) return false;
+    const current = this.byId(id);
+    if (!current || current.scope !== "guild") return false;
+
+    const now = Date.now();
+    this.db
+      .query(
+        `UPDATE mind_memories
+         SET deleted_at = ?, updated_at = ?, version = version + 1
+         WHERE id = ? AND guild_id = ?`
+      )
+      .run(now, now, id, this.guild);
+    this.db.query("DELETE FROM mind_memory_fts WHERE rowid = ?").run(id);
+    this.audit({
+      memoryId: id,
+      actorUserId: actor.userId,
+      action: "DELETE",
+      source: actor.source,
+      previousValue: current.content,
+      newValue: null
+    });
+    return true;
+  }
+
+  approveGuild(id: number, actor: MemoryActor): MemoryRecord | null {
+    if (!actor.isAdministrator) return null;
+    const current = this.byId(id);
+    if (!current || current.scope !== "guild" || current.approval !== "pending") return null;
+
+    const now = Date.now();
+    const approve = this.db.transaction(() => {
+      if (current.category === "nickname" && current.subjectUserId) {
+        this.db
+          .query(
+            `UPDATE mind_memories
+             SET approval_status = 'rejected', reviewed_by_user_id = ?, reviewed_at = ?,
+                 updated_at = ?, version = version + 1
+             WHERE guild_id = ? AND scope = 'guild' AND category = 'nickname'
+               AND subject_user_id = ? AND approval_status = 'active'
+               AND deleted_at IS NULL AND id <> ?`
+          )
+          .run(actor.userId, now, now, this.guild, current.subjectUserId, id);
+      }
+      this.db
+        .query(
+          `UPDATE mind_memories
+           SET approval_status = 'active', reviewed_by_user_id = ?, reviewed_at = ?,
+               updated_at = ?, version = version + 1
+           WHERE id = ? AND guild_id = ?`
+        )
+        .run(actor.userId, now, now, id, this.guild);
+    });
+
+    try {
+      approve();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("UNIQUE")) return null;
+      throw error;
+    }
+
+    this.audit({
+      memoryId: id,
+      actorUserId: actor.userId,
+      action: "APPROVE",
+      source: actor.source,
+      previousValue: "pending",
+      newValue: current.content
+    });
+    return this.byId(id);
+  }
+
+  rejectGuild(id: number, actor: MemoryActor): MemoryRecord | null {
+    if (!actor.isAdministrator) return null;
+    const current = this.byId(id);
+    if (!current || current.scope !== "guild" || current.approval !== "pending") return null;
+
+    const now = Date.now();
+    this.db
+      .query(
+        `UPDATE mind_memories
+         SET approval_status = 'rejected', reviewed_by_user_id = ?, reviewed_at = ?,
+             updated_at = ?, version = version + 1
+         WHERE id = ? AND guild_id = ?`
+      )
+      .run(actor.userId, now, now, id, this.guild);
+    this.audit({
+      memoryId: id,
+      actorUserId: actor.userId,
+      action: "REJECT",
+      source: actor.source,
+      previousValue: "pending",
+      newValue: current.content
+    });
+    return this.byId(id);
+  }
+
+  findGuildNickname(userId: string): MemoryRecord | null {
+    const row = this.db
+      .query<MemoryRow, [string, string]>(
+        `SELECT * FROM mind_memories
+         WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
+           AND category = 'nickname' AND approval_status = 'active' AND deleted_at IS NULL
+           AND subject_user_id = ?
+         ORDER BY updated_at DESC LIMIT 1`
+      )
+      .get(this.guild, userId);
+    return row ? toRecord(row) : null;
+  }
+
+  /** 대상 사용자가 거부한 호칭은 다시 자동 저장하지 않는다. */
+  findNicknameRejection(userId: string, nickname: string): MemoryRecord | null {
+    const row = this.db
+      .query<MemoryRow, [string, string, string]>(
+        `SELECT * FROM mind_memories
+         WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
+           AND category = 'nickname' AND approval_status = 'rejected'
+           AND subject_user_id = ? AND lower(trim(structured_value)) = lower(trim(?))
+         ORDER BY updated_at DESC LIMIT 1`
+      )
+      .get(this.guild, userId, nickname);
+    return row ? toRecord(row) : null;
+  }
+
+  /**
+   * 본인이 자기에게 붙은 공용 별명을 거부한다. 관리자 권한 없이 실행되지만
+   * 대상은 반드시 본인이어야 하고, 활성 별명만 내린다.
+   */
+  releaseGuildNickname(userId: string, actorUserId: string): MemoryRecord | null {
+    const active = this.findGuildNickname(userId);
+    if (!active) return null;
+
+    const now = Date.now();
+    this.db
+      .query(
+        `UPDATE mind_memories
+         SET approval_status = 'rejected', reviewed_by_user_id = ?, reviewed_at = ?,
+             updated_at = ?, version = version + 1
+         WHERE id = ? AND guild_id = ?`
+      )
+      .run(actorUserId, now, now, active.id, this.guild);
+    this.audit({
+      memoryId: active.id,
+      actorUserId,
+      action: "REJECT",
+      source: "discord_message",
+      previousValue: "active",
+      newValue: active.content
+    });
+    return active;
+  }
+
+  findApplicableConventions(userIds: string[]): MemoryRecord[] {
+    const ids = [...new Set(userIds)].filter((id) => id.length > 0);
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = this.db
+      .query<MemoryRow, [string, ...string[]]>(
+        `SELECT * FROM mind_memories
+         WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
+           AND category = 'nickname' AND approval_status = 'active' AND deleted_at IS NULL
+           AND subject_user_id IN (${placeholders})
+         ORDER BY subject_user_id ASC, updated_at DESC`
+      )
+      .all(this.guild, ...ids);
+    return rows.map(toRecord);
+  }
+
+  searchOwn(userId: string, query: string, limit: number): MemoryCandidate[] {
+    const rows = this.db
+      .query<MemoryRow, [string, string, number]>(
+        `SELECT * FROM mind_memories
+         WHERE guild_id = ? AND owner_user_id = ? AND scope = 'user' AND kind = 'semantic'
+           AND approval_status = 'active' AND deleted_at IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)`
+      )
+      .all(this.guild, userId, Date.now());
+    return this.score(rows, query, limit);
+  }
+
+  /** 다른 사용자가 공유를 허용한 개인 기억만. 비공개 기억은 SQL 단계에서 빠진다. */
+  searchOtherShareable(
+    userIds: string[],
+    query: string,
+    limit: number
+  ): MemoryCandidate[] {
+    const ids = [...new Set(userIds)].filter((id) => id.length > 0);
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = this.db
+      .query<MemoryRow, [string, number, ...string[]]>(
+        `SELECT * FROM mind_memories
+         WHERE guild_id = ? AND scope = 'user' AND kind = 'semantic'
+           AND visibility = 'shareable' AND approval_status = 'active' AND deleted_at IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)
+           AND owner_user_id IN (${placeholders})`
+      )
+      .all(this.guild, Date.now(), ...ids);
+    return this.score(rows, query, limit);
+  }
+
+  /** 공용 호칭은 규칙으로 적용하므로 후보 검색에서 뺀다. */
+  searchGuild(query: string, limit: number): MemoryCandidate[] {
+    const rows = this.db
+      .query<MemoryRow, [string, number]>(
+        `SELECT * FROM mind_memories
+         WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
+           AND visibility = 'shareable' AND approval_status = 'active' AND deleted_at IS NULL
+           AND category <> 'nickname'
+           AND (expires_at IS NULL OR expires_at > ?)`
+      )
+      .all(this.guild, Date.now());
+    return this.score(rows, query, limit);
+  }
+
+  /**
+   * 세 검색 경로를 합친다. 권한 필터는 각 SQL이 이미 적용했고,
+   * 여기서는 중복 제거와 범위별 균형만 맞춘다.
+   */
+  retrieve(request: MemoryRetrievalRequest): MemoryRetrievalResult {
+    const own =
+      request.includeOwn === false
+        ? []
+        : this.searchOwn(request.actorUserId, request.query, request.candidateLimit);
+    const referenced = request.referencedUserIds.filter(
+      (id) => id !== request.actorUserId
+    );
+    const other =
+      request.includeOther === false
+        ? []
+        : this.searchOtherShareable(referenced, request.query, request.candidateLimit);
+    const guild =
+      request.includeGuild === false
+        ? []
+        : this.searchGuild(request.query, request.candidateLimit);
+
+    const conventions =
+      request.includeGuild === false
+        ? []
+        : this.findApplicableConventions([request.actorUserId, ...referenced]);
+
+    return {
+      candidates: interleave([own, other, guild], Math.max(0, request.candidateLimit)),
+      conventions
+    };
+  }
+
+  markAccessed(ids: number[]): void {
+    if (ids.length === 0) return;
+    const now = Date.now();
+    const update = this.db.query(
+      "UPDATE mind_memories SET last_accessed_at = ? WHERE id = ? AND guild_id = ?"
+    );
+    for (const id of ids) update.run(now, id, this.guild);
+  }
+
+  private score(rows: MemoryRow[], query: string, limit: number): MemoryCandidate[] {
     if (rows.length === 0) return [];
 
     const ftsHits = this.searchIndex(query);
@@ -300,13 +806,9 @@ export class MindMemoryStore {
       .slice(0, Math.max(0, limit));
   }
 
-  markAccessed(ids: number[]): void {
-    if (ids.length === 0) return;
-    const now = Date.now();
-    const update = this.db.query(
-      "UPDATE mind_memories SET last_accessed_at = ? WHERE id = ? AND guild_id = ?"
-    );
-    for (const id of ids) update.run(now, id, this.guild);
+  private reindex(id: number, content: string): void {
+    this.db.query("DELETE FROM mind_memory_fts WHERE rowid = ?").run(id);
+    this.index(id, content);
   }
 
   private searchIndex(query: string): Set<number> {
@@ -333,5 +835,31 @@ export class MindMemoryStore {
     } catch (error) {
       console.error("[mind] FTS 색인 실패", error);
     }
+  }
+
+  private audit(input: {
+    memoryId: number;
+    actorUserId: string;
+    action: "ADD" | "UPDATE" | "DELETE" | "APPROVE" | "REJECT";
+    source: "natural_language" | "slash_command" | "discord_message";
+    previousValue: string | null;
+    newValue: string | null;
+  }): void {
+    this.db
+      .query(
+        `INSERT INTO mind_memory_audit
+           (guild_id, memory_id, actor_user_id, action, source, previous_value, new_value, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        this.guild,
+        input.memoryId,
+        input.actorUserId,
+        input.action,
+        input.source,
+        input.previousValue,
+        input.newValue,
+        Date.now()
+      );
   }
 }
