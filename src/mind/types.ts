@@ -58,13 +58,13 @@ export type RelationshipState = {
   lastInteractionAt: number;
 };
 
-export type MemoryScope = "user" | "guild" | "legacy";
+export type MemoryScope = "user";
 export type MemoryKind = "semantic" | "episodic" | "reflective";
 
 export type MemoryRecord = {
   id: number;
   guildId: string;
-  ownerUserId: string | null;
+  ownerUserId: string;
   scope: MemoryScope;
   kind: MemoryKind;
   content: string;

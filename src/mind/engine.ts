@@ -342,10 +342,6 @@ export class MindEngine {
     return this.memories.list(userId, limit);
   }
 
-  sharedMemories(limit = 50) {
-    return this.memories.guildMemories(limit);
-  }
-
   clearMemories(userId: string): number {
     const removed = this.memories.clear(userId);
     this.state.resetRelationship(userId);

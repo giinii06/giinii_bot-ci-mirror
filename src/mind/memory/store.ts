@@ -30,7 +30,7 @@ type MemoryRow = {
 };
 
 export type MemoryInput = {
-  ownerUserId: string | null;
+  ownerUserId: string;
   scope?: MemoryScope;
   kind?: MemoryKind;
   content: string;
@@ -81,22 +81,25 @@ const similarity = (left: string, right: string): number => {
   return (2 * shared) / total;
 };
 
-const toRecord = (row: MemoryRow): MemoryRecord => ({
-  id: row.id,
-  guildId: row.guild_id,
-  ownerUserId: row.owner_user_id,
-  scope: row.scope as MemoryScope,
-  kind: row.kind as MemoryKind,
-  content: row.content,
-  confidence: row.confidence,
-  importance: row.importance,
-  sourceMessageId: row.source_message_id,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at,
-  lastAccessedAt: row.last_accessed_at,
-  expiresAt: row.expires_at,
-  version: row.version
-});
+const toRecord = (row: MemoryRow): MemoryRecord => {
+  if (!row.owner_user_id || row.scope !== "user") throw new Error("사용자 기억이 아닙니다");
+  return {
+    id: row.id,
+    guildId: row.guild_id,
+    ownerUserId: row.owner_user_id,
+    scope: "user",
+    kind: row.kind as MemoryKind,
+    content: row.content,
+    confidence: row.confidence,
+    importance: row.importance,
+    sourceMessageId: row.source_message_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastAccessedAt: row.last_accessed_at,
+    expiresAt: row.expires_at,
+    version: row.version
+  };
+};
 
 /**
  * FTS 질의는 사용자 입력을 그대로 쓰지 않는다.
@@ -137,7 +140,7 @@ export class MindMemoryStore {
     const rows = this.db
       .query<MemoryRow, [string, string, number, number]>(
         `SELECT * FROM mind_memories
-         WHERE guild_id = ? AND owner_user_id = ? AND deleted_at IS NULL
+         WHERE guild_id = ? AND owner_user_id = ? AND scope = 'user' AND deleted_at IS NULL
            AND (expires_at IS NULL OR expires_at > ?)
          ORDER BY updated_at DESC LIMIT ?`
       )
@@ -145,27 +148,11 @@ export class MindMemoryStore {
     return rows.map(toRecord);
   }
 
-  /**
-   * 서버 전체가 공유하는 기억. 기존 memory.md를 옮긴 것들이 여기에 들어간다.
-   * 후보 검색에 걸리지 않아도 프롬프트에 항상 실어, 큐레이션된 사실이 사라지지 않게 한다.
-   */
-  guildMemories(limit = 50): MemoryRecord[] {
-    const rows = this.db
-      .query<MemoryRow, [string, number, number]>(
-        `SELECT * FROM mind_memories
-         WHERE guild_id = ? AND scope = 'guild' AND deleted_at IS NULL
-           AND (expires_at IS NULL OR expires_at > ?)
-         ORDER BY id ASC LIMIT ?`
-      )
-      .all(this.guild, Date.now(), limit);
-    return rows.map(toRecord);
-  }
-
   count(userId: string): number {
     const row = this.db
       .query<{ n: number }, [string, string, number]>(
         `SELECT COUNT(*) AS n FROM mind_memories
-         WHERE guild_id = ? AND owner_user_id = ? AND deleted_at IS NULL
+         WHERE guild_id = ? AND owner_user_id = ? AND scope = 'user' AND deleted_at IS NULL
            AND (expires_at IS NULL OR expires_at > ?)`
       )
       .get(this.guild, userId, Date.now());
@@ -174,6 +161,8 @@ export class MindMemoryStore {
 
   /** 같은 출처 메시지에서 같은 내용이 두 번 들어가지 않도록 정규화 값으로 한 번 더 막는다. */
   add(input: MemoryInput): MemoryRecord | null {
+    if (!input.ownerUserId?.trim()) throw new Error("기억 소유자가 필요합니다");
+    if (input.scope !== undefined && input.scope !== "user") throw new Error("사용자 기억만 저장할 수 있습니다");
     const content = cleanMemoryText(input.content).slice(0, MAX_MEMORY_LENGTH);
     if (!content) return null;
     const normalized = normalizeMemory(content);
@@ -215,7 +204,7 @@ export class MindMemoryStore {
   byId(id: number): MemoryRecord | null {
     const row = this.db
       .query<MemoryRow, [number, string]>(
-        "SELECT * FROM mind_memories WHERE id = ? AND guild_id = ? AND deleted_at IS NULL"
+        "SELECT * FROM mind_memories WHERE id = ? AND guild_id = ? AND scope = 'user' AND owner_user_id IS NOT NULL AND deleted_at IS NULL"
       )
       .get(id, this.guild);
     return row ? toRecord(row) : null;
@@ -279,7 +268,7 @@ export class MindMemoryStore {
         `SELECT * FROM mind_memories
          WHERE guild_id = ? AND deleted_at IS NULL
            AND (expires_at IS NULL OR expires_at > ?)
-           AND (owner_user_id = ? OR scope = 'guild')
+           AND owner_user_id = ? AND scope = 'user'
          ORDER BY updated_at DESC LIMIT 200`
       )
       .all(this.guild, Date.now(), userId);

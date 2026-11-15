@@ -162,7 +162,7 @@ docker compose logs -f bot
 - 모델은 `<memory>` 태그를 만들지 않습니다. 저장·수정은 Decision의 의도와 TypeScript의 소유권 검증을 함께 통과해야 반영됩니다.
 - 기억 삭제는 자연어로 요청해도 실행되지 않습니다. `/memory delete` 또는 `/memory clear` 슬래시 명령으로만 지울 수 있습니다.
 - 대상이 애매한 수정은 실행하지 않고 되묻습니다.
-- 기존 `data/memory.md`는 첫 기동에서 서버 공용 기억으로 한 번 옮겨집니다.
+- 서버 공용 기억과 `memory.md` 자동 이전은 사용하지 않습니다. 기억은 소유자의 대화에서만 검색됩니다.
 - Decision 호출은 하루 900회, 분당 18회로 스스로 제한합니다. 한도나 장애에 걸리면 규칙 기반 판단으로 답하고, 생성형 LLM은 그래도 한 번만 부릅니다.
 - `perplexity/pplx-decider-v1.3:free`는 OpenRouter의 무료 Decision 모델입니다. 무료 기간이 끝나면 `MIND_DECISION_MODEL`을 유료 모델로 바꾸거나 자체 호스팅으로 옮겨야 합니다.
 
@@ -187,7 +187,6 @@ docker compose logs -f bot
 | `REASONING_EFFORT` | X | 기본 `low` |
 | `EXA_API_KEY` | X | 넣으면 대화에서 웹 검색 |
 | `AGENTS_PATH` | X | 성격 지침 파일. 기본 `SOUL.md` |
-| `MEMORY_PATH` | X | 기존 기억 파일. 첫 기동 이전에만 씀. 기본 `data/memory.md` |
 | `MIND_ENABLED` | X | 기본 `true`. `false`면 Decision 호출 없이 규칙 기반으로 판단 |
 | `MIND_DECISION_MODEL` | X | 기본 `perplexity/pplx-decider-v1.3:free` |
 | `MIND_DECISION_FLASH_MODEL` | X | 기본 `perplexity/pplx-decider-flash-v1.3:free` |
@@ -199,7 +198,6 @@ docker compose logs -f bot
 | `MIND_MEMORY_CANDIDATES` | X | 후보 검색 상한. 기본 8 |
 | `MIND_MEMORY_SELECTED` | X | 답변에 넣을 기억 상한. 기본 5 |
 | `MIND_AUTO_MEMORY` | X | 명시 요청 없는 자동 저장. 기본 `true` |
-| `MIND_MEMORY_MIGRATION` | X | 기존 `memory.md` 이전. 기본 `true` |
 | `MIND_EMOTION_DECAY_ENABLED` | X | 감정 감쇠. 기본 `true` |
 | `MIND_RELATIONSHIP_UPDATE_LIMIT` | X | 상호작용 1회당 관계 변화 상한. 기본 0.03 |
 | `MIND_SEARCH_TIMEOUT_MS` | X | 답변 전 검색 제한. 기본 3000ms |

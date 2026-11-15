@@ -3,7 +3,6 @@ import { ALLOWED_GUILD_ID, isAllowedGuild } from "../command-rules.js";
 import { mindConfig } from "../mind/config.js";
 import { ensureMindSchema, ensureRootSchema } from "../mind/db.js";
 import { MindEngine } from "../mind/engine.js";
-import { migrateLegacyMemory } from "../mind/memory/migration.js";
 import type { MindRequest, SearchHit } from "../mind/types.js";
 import { buildConversation } from "./context.js";
 import { chatConfig, isChatEnabled } from "./config.js";
@@ -118,20 +117,16 @@ const replyToTrigger = async (
   const frame = target.mind.compileFrame(context, decision, memoryResult);
 
   const instructions = await loadInstructions(chatConfig.agentsPath);
-  const sharedMemories = target.mind.sharedMemories(50);
-  const memoriesById = new Map(
-    [...sharedMemories, ...frame.selectedMemories].map((memory) => [memory.id, memory])
-  );
   const messages: ChatMessage[] = [
     {
       role: "system",
       content: buildSystemPrompt({
         instructions: instructions.text,
         frame,
-        memories: [...memoriesById.values()],
+        memories: frame.selectedMemories,
         memoryResult,
         web,
-        memoryBudget: mindConfig.memory.coreBudget + mindConfig.memory.charBudget
+        memoryBudget: mindConfig.memory.charBudget
       })
     },
     ...buildConversation(
@@ -176,19 +171,6 @@ export const initChat = async (client: Client<true>): Promise<void> => {
     apiKey: chatConfig.apiKey,
     config: mindConfig
   });
-
-  if (mindConfig.memory.migration) {
-    const migrated = await migrateLegacyMemory(
-      mind.memories,
-      db,
-      ALLOWED_GUILD_ID,
-      chatConfig.memoryPath
-    ).catch((error) => {
-      console.error("[mind] 기존 기억 이전 실패", error);
-      return 0;
-    });
-    if (migrated > 0) console.log(`[mind] 기존 기억 ${migrated}개를 SQLite로 옮겼습니다.`);
-  }
 
   const router = new OpenRouterClient(
     chatConfig.apiKey,

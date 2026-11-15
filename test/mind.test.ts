@@ -1,8 +1,5 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { mindConfig } from "../src/mind/config.js";
 import { CircuitBreaker } from "../src/mind/decision/circuit-breaker.js";
 import { parseDecision } from "../src/mind/decision/parser.js";
@@ -12,7 +9,6 @@ import { MindEngine } from "../src/mind/engine.js";
 import { handleMemoryCommand } from "../src/mind/commands.js";
 import { compileFrame } from "../src/mind/frame.js";
 import { commitMemoryOperation, describeMemoryResult } from "../src/mind/memory/operations.js";
-import { migrateLegacyMemory } from "../src/mind/memory/migration.js";
 import { MindMemoryStore, selectMemories } from "../src/mind/memory/store.js";
 import { MIND_SCHEMA, ROOT_SCHEMA } from "../src/mind/schema.js";
 import { DEFAULT_EMOTION, MindStateStore } from "../src/mind/state.js";
@@ -291,25 +287,33 @@ describe("기억 저장소", () => {
     expect(candidates.map((item) => item.memory.content)).toEqual(["민지는 커피를 좋아한다"]);
   });
 
-  test("서버 공용 기억은 모든 사용자가 볼 수 있다", () => {
-    const store = new MindMemoryStore(mindDb(), GUILD);
-    store.add({ ownerUserId: null, scope: "guild", content: "이 서버는 아침에 조용하다" });
-
-    expect(store.candidates(USER, "서버", 10)).toHaveLength(1);
+  test("기존 공용 기억은 검색·목록·직접 조회에서 제외한다", () => {
+    const db = mindDb();
+    const store = new MindMemoryStore(db, GUILD);
+    for (const owner of [null, USER]) {
+      db.query(`INSERT INTO mind_memories
+        (guild_id, owner_user_id, scope, kind, content, created_at, updated_at)
+        VALUES (?, ?, 'guild', 'semantic', '서버 공용 기억', 1, 1)`)
+        .run(GUILD, owner);
+    }
+    expect(store.candidates(USER, "서버 공용", 10)).toEqual([]);
+    expect(store.list(USER)).toEqual([]);
+    expect(store.count(USER)).toBe(0);
+    expect(store.byId(1)).toBeNull();
+    expect(store.byId(2)).toBeNull();
   });
 
-  test("서버 공용 기억은 검색과 무관하게 항상 꺼내 쓸 수 있다", () => {
+  test("소유자 없는 기억을 저장하지 않는다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    store.add({ ownerUserId: null, scope: "guild", content: "기니는 21살이다." });
-    store.add({ ownerUserId: USER, content: "민지는 커피를 좋아한다" });
-
-    expect(store.guildMemories().map((memory) => memory.content)).toEqual(["기니는 21살이다."]);
+    expect(() => store.add({ ownerUserId: "", content: "공용 기억" })).toThrow();
+    expect(() => store.add({ ownerUserId: "  ", content: "공용 기억" })).toThrow();
+    expect(() => Reflect.apply(store.add, store, [{ ownerUserId: USER, scope: "guild", content: "공용 기억" }])).toThrow();
   });
 
   test("발화자 이름으로 기억을 찾는다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    store.add({ ownerUserId: null, scope: "guild", content: "기니는 21살이다." });
-    store.add({ ownerUserId: null, scope: "guild", content: "설하는 17살이다." });
+    store.add({ ownerUserId: USER, content: "기니는 21살이다." });
+    store.add({ ownerUserId: "other", content: "설하는 17살이다." });
 
     const candidates = store.candidates(USER, "기니 나 누군지 기억해?", 8);
     expect(candidates.map((item) => item.memory.content)).toContain("기니는 21살이다.");
@@ -566,31 +570,6 @@ describe("CharacterFrame 중재", () => {
   });
 });
 
-describe("레거시 기억 이전", () => {
-  test("memory.md를 서버 공용 기억으로 한 번만 옮긴다", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "giny-migrate-"));
-    const db = mindDb();
-    const store = new MindMemoryStore(db, GUILD);
-    const path = join(dir, "memory.md");
-
-    try {
-      await writeFile(path, "# 기니봇 메모리\n\n- 민지는 부산에 산다.\n- 민지는 고양이를 키운다.\n", "utf8");
-
-      expect(await migrateLegacyMemory(store, db, GUILD, path)).toBe(2);
-      expect(store.candidates(USER, "부산", 10)).toHaveLength(1);
-      expect(await migrateLegacyMemory(store, db, GUILD, path)).toBe(0);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("파일이 없으면 조용히 넘어간다", async () => {
-    const db = mindDb();
-    const store = new MindMemoryStore(db, GUILD);
-    expect(await migrateLegacyMemory(store, db, GUILD, "does-not-exist/memory.md")).toBe(0);
-  });
-});
-
 describe("MindEngine", () => {
   const engine = (db = mindDb()) =>
     new MindEngine({
@@ -604,8 +583,8 @@ describe("MindEngine", () => {
   test("본문에 이름이 없어도 발화자 이름으로 기억 후보를 찾는다", () => {
     const mind = engine();
     mind.memories.add({
-      ownerUserId: null,
-      scope: "guild",
+      ownerUserId: USER,
+      scope: "user",
       kind: "semantic",
       content: "기니는 21살이다."
     });
@@ -617,7 +596,7 @@ describe("MindEngine", () => {
     });
 
     expect(context.candidates.map((item) => item.memory.content)).toContain("기니는 21살이다.");
-    expect(mind.sharedMemories().map((memory) => memory.content)).toContain("기니는 21살이다.");
+    expect(mind.prepareContext({ ...context.request, userId: "other" }).candidates).toEqual([]);
   });
 
   test("API 키가 없으면 규칙 기반 폴백으로 판단한다", async () => {

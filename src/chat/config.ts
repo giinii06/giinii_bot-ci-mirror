@@ -1,6 +1,3 @@
-import { dirname, join } from "node:path";
-import { databasePath } from "../config.js";
-
 const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -31,7 +28,6 @@ export const chatConfig = {
   reasoningEffort: readEnv("REASONING_EFFORT") ?? "low",
   exaApiKey: readEnv("EXA_API_KEY"),
   agentsPath: readEnv("AGENTS_PATH") ?? "SOUL.md",
-  memoryPath: readEnv("MEMORY_PATH") ?? join(dirname(databasePath), "memory.md"),
   prefix: "기니봇아",
   historyLimit: 10,
   maxReplyTokens: 800,
