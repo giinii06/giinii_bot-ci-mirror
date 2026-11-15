@@ -4,6 +4,15 @@
  */
 import type { Database } from "bun:sqlite";
 
+/** 여러 사용자가 등장하는 기억을 사용자별로 찾기 위한 색인. 관계 테이블이 아니다. */
+export const MIND_SUBJECTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS mind_memory_subjects (
+    memory_id INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY (memory_id, user_id)
+  );
+`;
+
 export const MIND_TABLES = `
   CREATE TABLE IF NOT EXISTS mind_relationships (
     guild_id TEXT NOT NULL,
@@ -13,7 +22,6 @@ export const MIND_TABLES = `
     playfulness REAL NOT NULL DEFAULT 0.3,
     engagement REAL NOT NULL DEFAULT 0,
     communication_style TEXT NOT NULL DEFAULT 'default',
-    boundaries TEXT NOT NULL DEFAULT '[]',
     confidence REAL NOT NULL DEFAULT 0,
     interaction_count INTEGER NOT NULL DEFAULT 0,
     positive_interaction_count INTEGER NOT NULL DEFAULT 0,
@@ -33,7 +41,6 @@ export const MIND_TABLES = `
     kind TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'fact',
     visibility TEXT NOT NULL DEFAULT 'private',
-    approval_status TEXT NOT NULL DEFAULT 'active',
     content TEXT NOT NULL,
     structured_value TEXT,
     normalized_content TEXT NOT NULL DEFAULT '',
@@ -42,8 +49,6 @@ export const MIND_TABLES = `
     source_message_id TEXT,
     source_channel_id TEXT,
     source_author_id TEXT,
-    reviewed_by_user_id TEXT,
-    reviewed_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     last_accessed_at INTEGER,
@@ -51,6 +56,7 @@ export const MIND_TABLES = `
     deleted_at INTEGER,
     version INTEGER NOT NULL DEFAULT 1
   );
+  ${MIND_SUBJECTS_TABLE}
   CREATE VIRTUAL TABLE IF NOT EXISTS mind_memory_fts USING fts5(
     content,
     tokenize = 'unicode61'
@@ -105,11 +111,8 @@ export const MIND_COLUMNS: Record<string, Record<string, string>> = {
     created_by_user_id: "TEXT",
     category: "TEXT NOT NULL DEFAULT 'fact'",
     visibility: "TEXT NOT NULL DEFAULT 'private'",
-    approval_status: "TEXT NOT NULL DEFAULT 'active'",
     structured_value: "TEXT",
-    source_channel_id: "TEXT",
-    reviewed_by_user_id: "TEXT",
-    reviewed_at: "INTEGER"
+    source_channel_id: "TEXT"
   },
   mind_relationships: {
     rapport: "REAL NOT NULL DEFAULT 0.5",
@@ -133,17 +136,12 @@ export const MIND_BACKFILL = [
   `UPDATE mind_memories
    SET visibility = 'shareable'
    WHERE scope = 'guild' AND visibility = 'private'`,
-  // 같은 사용자에게 활성 별명이 여럿이면 최신 하나만 남기고 나머지는 거절로 돌린다.
-  `UPDATE mind_memories
-   SET approval_status = 'rejected'
-   WHERE scope = 'guild' AND category = 'nickname' AND approval_status = 'active'
-     AND deleted_at IS NULL AND subject_user_id IS NOT NULL
-     AND id NOT IN (
-       SELECT MAX(id) FROM mind_memories
-       WHERE scope = 'guild' AND category = 'nickname' AND approval_status = 'active'
-         AND deleted_at IS NULL AND subject_user_id IS NOT NULL
-       GROUP BY guild_id, subject_user_id
-     )`
+  `INSERT OR IGNORE INTO mind_memory_subjects (memory_id, user_id)
+   SELECT id, subject_user_id FROM mind_memories
+   WHERE subject_user_id IS NOT NULL AND deleted_at IS NULL`,
+  `INSERT OR IGNORE INTO mind_memory_subjects (memory_id, user_id)
+   SELECT id, owner_user_id FROM mind_memories
+   WHERE scope = 'user' AND owner_user_id IS NOT NULL AND deleted_at IS NULL`
 ];
 
 export const MIND_INDEXES = `
@@ -155,15 +153,14 @@ export const MIND_INDEXES = `
   CREATE INDEX IF NOT EXISTS mind_memory_subject_idx
     ON mind_memories (guild_id, subject_user_id, scope, category, deleted_at);
   CREATE INDEX IF NOT EXISTS mind_memory_shared_idx
-    ON mind_memories (guild_id, scope, visibility, approval_status, deleted_at);
-  CREATE INDEX IF NOT EXISTS mind_memory_review_idx
-    ON mind_memories (guild_id, approval_status, created_at);
+    ON mind_memories (guild_id, scope, visibility, deleted_at);
   CREATE UNIQUE INDEX IF NOT EXISTS mind_active_guild_nickname_idx
-    ON mind_memories (guild_id, subject_user_id, category)
+    ON mind_memories (guild_id, subject_user_id)
     WHERE scope = 'guild'
       AND category = 'nickname'
-      AND approval_status = 'active'
       AND deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS mind_memory_subjects_user_idx
+    ON mind_memory_subjects (user_id, memory_id);
   CREATE UNIQUE INDEX IF NOT EXISTS mind_events_message_idx
     ON mind_events (guild_id, message_id) WHERE message_id IS NOT NULL;
   CREATE UNIQUE INDEX IF NOT EXISTS mind_feedback_bot_message_idx
@@ -181,7 +178,62 @@ const columnsOf = (db: Database, table: string): Set<string> => {
 };
 
 /**
- * 기존 DB에 빠진 컬럼만 더한다. 데이터를 지우거나 테이블을 다시 만들지 않는다.
+ * 승인 컬럼을 쓰던 DB를 즉시 활성화 모델로 옮긴다.
+ * 대기 중이던 기억은 활성화하고, 거부된 기억은 검색에서 빠지도록 표시한 뒤
+ * 승인 컬럼과 인덱스를 없앤다. 거부 기록은 미래의 차단 규칙으로 쓰지 않는다.
+ */
+const dropApprovalState = (db: Database): void => {
+  const columns = columnsOf(db, "mind_memories");
+  if (!columns.has("approval_status")) return;
+
+  db.exec("DROP INDEX IF EXISTS mind_memory_review_idx");
+  db.exec("DROP INDEX IF EXISTS mind_memory_shared_idx");
+  db.exec("DROP INDEX IF EXISTS mind_active_guild_nickname_idx");
+
+  const now = Date.now();
+  db.exec(
+    `UPDATE mind_memories
+     SET deleted_at = COALESCE(deleted_at, ${now}), updated_at = ${now}
+     WHERE approval_status = 'rejected'`
+  );
+  db.exec(
+    `DELETE FROM mind_memory_fts
+     WHERE rowid IN (SELECT id FROM mind_memories WHERE approval_status = 'rejected')`
+  );
+  db.exec("UPDATE mind_memories SET approval_status = 'active' WHERE approval_status = 'pending'");
+
+  // 같은 대상의 활성 별명은 최신 하나만 남긴다.
+  db.exec(
+    `UPDATE mind_memories
+     SET deleted_at = ${now}, updated_at = ${now}
+     WHERE scope = 'guild' AND category = 'nickname' AND approval_status = 'active'
+       AND deleted_at IS NULL AND subject_user_id IS NOT NULL
+       AND id NOT IN (
+         SELECT MAX(id) FROM mind_memories
+         WHERE scope = 'guild' AND category = 'nickname' AND approval_status = 'active'
+           AND deleted_at IS NULL AND subject_user_id IS NOT NULL
+         GROUP BY guild_id, subject_user_id
+       )`
+  );
+  db.exec(
+    `DELETE FROM mind_memory_fts
+     WHERE rowid IN (
+       SELECT id FROM mind_memories
+       WHERE scope = 'guild' AND category = 'nickname' AND deleted_at IS NOT NULL
+     )`
+  );
+
+  db.exec("ALTER TABLE mind_memories DROP COLUMN approval_status");
+  if (columns.has("reviewed_by_user_id")) {
+    db.exec("ALTER TABLE mind_memories DROP COLUMN reviewed_by_user_id");
+  }
+  if (columns.has("reviewed_at")) {
+    db.exec("ALTER TABLE mind_memories DROP COLUMN reviewed_at");
+  }
+};
+
+/**
+ * 기존 DB에 빠진 컬럼만 더하고, 승인 상태는 즉시 활성화 모델로 옮긴다.
  * storage에 의존하지 않아 테스트가 DB 경로 설정과 무관하게 쓸 수 있다.
  */
 export const migrateMindSchema = (db: Database): void => {
@@ -194,6 +246,9 @@ export const migrateMindSchema = (db: Database): void => {
       added.add(`${table}.${name}`);
     }
   }
+
+  dropApprovalState(db);
+  db.exec(MIND_SUBJECTS_TABLE);
 
   // trust → rapport 개명. 컬럼을 이번에 새로 만들었을 때만 값을 옮겨
   // 이후 실행에서 사용자가 조정한 rapport를 덮어쓰지 않는다.

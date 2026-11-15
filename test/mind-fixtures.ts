@@ -43,6 +43,7 @@ export const requestOf = (overrides: Partial<MindRequest> = {}): MindRequest => 
   replyToAuthorId: null,
   botWasReplyTarget: false,
   referencedUsers: [],
+  ambiguousUserNames: [],
   createdAt: 10_000,
   recent: [],
   ...overrides
@@ -58,7 +59,6 @@ export const relationshipOf = (
   playfulness: 0.6,
   engagement: 0.4,
   communicationStyle: "default",
-  boundaries: [],
   confidence: 0.5,
   interactionCount: 10,
   positiveInteractionCount: 6,
@@ -79,7 +79,8 @@ export const memoryDecisionOf = (
   subjectUserId: null,
   targetMemoryId: null,
   confidence: 0.8,
-  needsApproval: false,
+  memoryWorthiness: 0,
+  involvesOtherUser: false,
   explicit: false,
   ...overrides
 });
@@ -120,7 +121,6 @@ export const memoryRecordOf = (overrides: Partial<MemoryRecord> = {}): MemoryRec
   subjectUserId: USER,
   createdByUserId: USER,
   visibility: "private",
-  approval: "active",
   content: "민지는 커피를 좋아한다",
   structuredValue: null,
   confidence: 0.8,

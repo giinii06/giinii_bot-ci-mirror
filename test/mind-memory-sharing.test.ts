@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { MindMemoryStore } from "../src/mind/memory/store.js";
-import { GUILD, OTHER, USER, mindDb } from "./mind-fixtures.js";
+import { GUILD, OTHER, USER, actorOf, mindDb } from "./mind-fixtures.js";
 
 const storeOf = () => new MindMemoryStore(mindDb(), GUILD);
 
@@ -170,7 +170,7 @@ describe("세 갈래 기억 조회", () => {
     expect(result.conventions.map((memory) => memory.structuredValue)).toEqual(["천재"]);
   });
 
-  test("거절된 호칭은 적용되지 않는다", () => {
+  test("삭제된 호칭은 적용되지 않는다", () => {
     const store = storeOf();
     const nickname = store.addGuild({
       createdByUserId: USER,
@@ -181,7 +181,7 @@ describe("세 갈래 기억 조회", () => {
       source: "slash_command"
     });
 
-    store.releaseGuildNickname(OTHER, OTHER);
+    store.deleteGuild(nickname!.id, actorOf({ isAdministrator: true }));
 
     const result = store.retrieve({
       actorUserId: USER,
@@ -190,6 +190,6 @@ describe("세 갈래 기억 조회", () => {
       candidateLimit: 10
     });
     expect(result.conventions).toEqual([]);
-    expect(store.byId(nickname!.id)?.approval).toBe("rejected");
+    expect(store.byId(nickname!.id)).toBeNull();
   });
 });

@@ -101,23 +101,6 @@ export const sharedMemoryCommand = new SlashCommandBuilder()
         option.setName("id").setDescription("기억 번호").setRequired(true)
       )
   )
-  .addSubcommand((sub) => sub.setName("pending").setDescription("승인 대기 목록을 봅니다"))
-  .addSubcommand((sub) =>
-    sub
-      .setName("approve")
-      .setDescription("승인 대기 기억을 승인합니다")
-      .addIntegerOption((option) =>
-        option.setName("id").setDescription("기억 번호").setRequired(true)
-      )
-  )
-  .addSubcommand((sub) =>
-    sub
-      .setName("reject")
-      .setDescription("승인 대기 기억을 거절합니다")
-      .addIntegerOption((option) =>
-        option.setName("id").setDescription("기억 번호").setRequired(true)
-      )
-  )
   .addSubcommand((sub) =>
     sub
       .setName("nickname")
@@ -300,36 +283,6 @@ export const handleSharedMemoryCommand = async (
     const removed = engine.deleteGuildMemory(id, actor);
     await interaction.reply(
       ephemeral(removed ? `공용 기억 ${id}번을 지웠어.` : `공용 기억 ${id}번을 찾지 못했어.`)
-    );
-    return;
-  }
-
-  if (subcommand === "pending") {
-    const memories = engine.listPendingGuildMemories(25);
-    if (memories.length === 0) {
-      await interaction.reply(ephemeral("승인 대기 중인 공용 기억이 없어."));
-      return;
-    }
-    await interaction.reply(
-      ephemeral(
-        `승인 대기 ${memories.length}개야.\n${memories.map(memoryLine).join("\n")}`
-      )
-    );
-    return;
-  }
-
-  if (subcommand === "approve" || subcommand === "reject") {
-    const id = interaction.options.getInteger("id", true);
-    const changed =
-      subcommand === "approve"
-        ? engine.approveGuildMemory(id, actor)
-        : engine.rejectGuildMemory(id, actor);
-    await interaction.reply(
-      ephemeral(
-        changed
-          ? `공용 기억 ${id}번을 ${subcommand === "approve" ? "승인" : "거절"}했어.`
-          : `대기 중인 공용 기억 ${id}번을 찾지 못했어.`
-      )
     );
     return;
   }

@@ -5,9 +5,8 @@ import type {
   MemoryVisibility,
   ReferencedUser
 } from "../types.js";
-import type { BotUserRelationshipStore } from "../relationship/store.js";
-import { EXPLICIT_CUE, extractMemory, factOf } from "./extractor.js";
-import { SENSITIVE, guildApprovalFor, validateNickname } from "./policy.js";
+import { extractMemory, factOf, type ExtractedMemoryFact } from "./extractor.js";
+import { validateNickname } from "./policy.js";
 import type { MindMemoryStore } from "./store.js";
 
 export type MemoryCommitInput = {
@@ -17,10 +16,9 @@ export type MemoryCommitInput = {
   text: string;
   decision: MemoryDecision;
   referencedUsers: ReferencedUser[];
+  ambiguousUserNames?: string[];
   authorDisplayName: string;
   autoMemory: boolean;
-  guildAutoNickname: boolean;
-  guildApprovalRequired: boolean;
 };
 
 const empty = (
@@ -46,269 +44,232 @@ const success = (
   reason: null
 });
 
-const pending = (content: string, reason: string): MemoryOperationResult => ({
-  status: "pending",
-  added: [content],
-  updated: [],
-  removed: [],
-  reason
-});
+export type ScopeInput = {
+  actorUserId: string;
+  relatedUserIds: string[];
+  involvesOtherUser?: boolean;
+  modelScope: "user" | "guild" | "none";
+};
 
 /**
- * 기억 변경은 Decision의 의도와 TypeScript의 검증을 함께 통과해야 한다.
- * 저장 범위·대상·공개 여부·권한은 모델이 아니라 이 함수가 확정한다.
+ * 저장 범위의 최종 결정은 모델이 아니라 이 함수가 한다.
+ * 기억 내용에 다른 사용자가 조금이라도 관련되면 개인 범위로 남길 수 없다.
  */
-export const commitMemoryOperation = (
+export const resolveMemoryScope = (
+  input: ScopeInput
+): "user" | "guild" | "none" => {
+  const hasOtherUser =
+    input.involvesOtherUser === true ||
+    input.relatedUserIds.some((id) => id !== input.actorUserId);
+
+  if (hasOtherUser) return "guild";
+  if (input.modelScope === "guild") return "guild";
+  // 명확한 사실로 판단된 경우 none은 개인 기억 후보로 다시 읽는다.
+  return "user";
+};
+
+const saveNickname = (
   store: MindMemoryStore,
-  relationship: BotUserRelationshipStore,
+  input: MemoryCommitInput,
+  fact: ExtractedMemoryFact
+): MemoryOperationResult => {
+  if (!fact.primarySubjectId) {
+    return empty("needs_confirmation", "누구의 별명인지 분명하지 않습니다");
+  }
+  if (!fact.structuredValue) {
+    return empty("needs_confirmation", "별명을 분명히 알려주세요");
+  }
+
+  const validation = validateNickname(fact.structuredValue);
+  if (!validation.ok) return empty("blocked", validation.reason);
+
+  const existing = store.findGuildNickname(fact.primarySubjectId);
+  if (existing?.structuredValue?.toLowerCase() === validation.value.toLowerCase()) {
+    return empty("none", "이미 같은 별명이 있습니다");
+  }
+
+  const saved = store.replaceGuildNickname({
+    subjectUserId: fact.primarySubjectId,
+    nickname: validation.value,
+    content: fact.content,
+    actorUserId: input.actor.userId,
+    sourceMessageId: input.messageId,
+    sourceChannelId: input.channelId,
+    source: "natural_language"
+  });
+  if (!saved) return empty("failed", "별명을 저장하지 못했습니다");
+  return existing ? success([], [saved.content]) : success([saved.content]);
+};
+
+const updateMemory = (
+  store: MindMemoryStore,
   input: MemoryCommitInput
 ): MemoryOperationResult => {
   const { actor, decision } = input;
-
-  if (decision.operation === "none") return empty("none");
-  if (decision.operation === "unclear") {
-    return empty("needs_confirmation", "어떤 기억을 말하는지 분명하지 않습니다");
+  if (decision.targetMemoryId === null) {
+    return empty("needs_confirmation", "수정할 기억을 하나로 특정하지 못했습니다");
   }
 
-  const extracted = extractMemory({
-    text: input.text,
-    category: decision.category,
-    subjectUserId: decision.subjectUserId,
-    referencedUsers: input.referencedUsers,
-    authorId: actor.userId,
-    authorDisplayName: input.authorDisplayName
+  const target = store.byId(decision.targetMemoryId);
+  if (!target) return empty("failed", "수정할 기억을 찾지 못했습니다");
+
+  if (target.scope === "user") {
+    if (target.ownerUserId !== actor.userId) {
+      return empty("blocked", "다른 사람의 개인 기억은 수정할 수 없습니다");
+    }
+    const updated = store.updatePersonal(target.id, actor.userId, factOf(input.text));
+    if (!updated) return empty("failed", "기억을 수정하지 못했습니다");
+    return success([], [updated.content]);
+  }
+
+  if (!actor.isAdministrator) {
+    return empty("blocked", "공용 기억 수정은 관리자만 할 수 있습니다");
+  }
+  const updated = store.updateGuild(target.id, actor, {
+    content: factOf(input.text),
+    structuredValue: target.structuredValue
   });
-  const fact = extracted?.content ?? factOf(input.text);
-  const explicit =
-    decision.explicit || extracted?.isExplicit === true || EXPLICIT_CUE.test(input.text);
+  if (!updated) return empty("failed", "공용 기억을 수정하지 못했습니다");
+  return success([], [updated.content]);
+};
 
-  if (decision.operation === "add") {
-    if (decision.scope === "none") return empty("none");
-
-    if (decision.scope === "user") {
-      const subject = decision.subjectUserId ?? actor.userId;
-      if (subject !== actor.userId) {
-        return empty("blocked", "다른 사람의 개인 기억은 저장할 수 없습니다");
-      }
-      if (!explicit && !input.autoMemory) return empty("none");
-      if (!explicit && SENSITIVE.test(fact)) return empty("none");
-
-      const category =
-        decision.category === "nickname" || decision.category === "server_convention"
-          ? "preference"
-          : decision.category;
-      const content =
-        extracted?.category === "nickname" && extracted.structuredValue
-          ? `나의 선호 호칭은 "${extracted.structuredValue}"이다.`
-          : fact;
-
-      const saved = store.addPersonal({
-        ownerUserId: actor.userId,
-        createdByUserId: actor.userId,
-        content,
-        category,
-        visibility: decision.visibility,
-        confidence: explicit ? 0.9 : 0.7,
-        importance: explicit ? 0.7 : 0.5,
-        sourceMessageId: input.messageId,
-        sourceChannelId: input.channelId
-      });
-      if (!saved) return empty("none", "이미 같은 내용이 저장돼 있습니다");
-      return success([saved.content]);
-    }
-
-    // 공용 기억은 명시적인 요청 없이는 만들지 않는다.
-    if (!explicit) return empty("none");
-    if (SENSITIVE.test(fact)) {
-      return empty("blocked", "민감한 내용은 공용 기억으로 저장할 수 없습니다");
-    }
-
-    const category = extracted?.category ?? decision.category;
-    if (category === "nickname") {
-      return addNickname(store, input, extracted?.content ?? fact, extracted?.structuredValue ?? null);
-    }
-
-    const approval = guildApprovalFor({
-      isAdministrator: actor.isAdministrator,
-      category,
-      autoNickname: input.guildAutoNickname,
-      approvalRequired: input.guildApprovalRequired
-    });
-    const saved = store.addGuild({
-      createdByUserId: actor.userId,
-      category,
-      subjectUserId: decision.subjectUserId,
-      content: fact,
-      approval,
-      confidence: explicit ? 0.9 : 0.7,
-      importance: explicit ? 0.7 : 0.5,
-      sourceMessageId: input.messageId,
-      sourceChannelId: input.channelId,
-      source: "natural_language"
-    });
-    if (!saved) return empty("none", "이미 같은 내용이 저장돼 있습니다");
-    return saved.approval === "pending"
-      ? pending(saved.content, "관리자 승인을 기다립니다")
-      : success([saved.content]);
-  }
-
-  if (decision.operation === "update") {
-    if (decision.targetMemoryId === null) {
-      return empty("needs_confirmation", "수정할 기억을 하나로 특정하지 못했습니다");
-    }
-    const target = store.byId(decision.targetMemoryId);
-    if (!target) return empty("failed", "수정할 기억을 찾지 못했습니다");
-
-    if (target.scope === "user") {
-      if (target.ownerUserId !== actor.userId) {
-        return empty("blocked", "다른 사람의 개인 기억은 수정할 수 없습니다");
-      }
-      const updated = store.updatePersonal(
-        target.id,
-        actor.userId,
-        extracted?.content ?? factOf(input.text)
+const deleteMemory = (input: MemoryCommitInput): MemoryOperationResult => {
+  if (input.decision.scope === "guild") {
+    if (input.decision.category === "nickname") {
+      return empty(
+        "blocked",
+        "공용 별명은 /shared-memory nickname 또는 delete 슬래시 명령으로만 관리합니다"
       );
-      if (!updated) return empty("failed", "기억을 수정하지 못했습니다");
-      return success([], [updated.content]);
     }
-
-    if (actor.isAdministrator) {
-      const updated = store.updateGuild(target.id, actor, {
-        content: extracted?.content ?? fact,
-        structuredValue: extracted?.structuredValue ?? target.structuredValue
-      });
-      if (!updated) return empty("failed", "공용 기억을 수정하지 못했습니다");
-      return success([], [updated.content]);
-    }
-
-    if (!explicit) return empty("none");
-    const proposed = store.addGuild({
-      createdByUserId: actor.userId,
-      category: target.category,
-      subjectUserId: target.subjectUserId,
-      content: extracted?.content ?? fact,
-      structuredValue: extracted?.structuredValue ?? target.structuredValue,
-      approval: "pending",
-      sourceMessageId: input.messageId,
-      sourceChannelId: input.channelId,
-      source: "natural_language"
-    });
-    return proposed
-      ? pending(proposed.content, "관리자 승인을 기다립니다")
-      : empty("none", "이미 처리 중인 요청이 있습니다");
-  }
-
-  // delete
-  if (decision.scope === "guild" && decision.category === "nickname") {
-    const active = store.findGuildNickname(actor.userId);
-    const targetsSelf =
-      decision.subjectUserId === actor.userId || decision.subjectUserId === null;
-    if (active && targetsSelf) {
-      const released = store.releaseGuildNickname(actor.userId, actor.userId);
-      if (released) {
-        relationship.recordBoundary(actor.userId, input.text);
-        return success([], [], [released.content]);
-      }
-    }
-    return empty("none", "적용 중인 별명이 없습니다");
-  }
-
-  if (decision.scope === "guild") {
     return empty(
       "blocked",
       "공용 기억은 /shared-memory delete 슬래시 명령으로만 지울 수 있습니다"
     );
   }
-
   return empty(
     "blocked",
     "자연어로는 기억을 삭제할 수 없습니다. /memory delete 슬래시 명령을 써야 합니다"
   );
 };
 
-const addNickname = (
+/**
+ * 기억 변경은 Decision의 의도와 TypeScript의 검증을 함께 통과해야 한다.
+ * 저장 범위·대상·공개 여부는 모델이 아니라 이 함수가 확정한다.
+ */
+export const commitMemoryOperation = (
   store: MindMemoryStore,
-  input: MemoryCommitInput,
-  content: string,
-  rawNickname: string | null
+  input: MemoryCommitInput
 ): MemoryOperationResult => {
   const { actor, decision } = input;
-  const subject = decision.subjectUserId;
-  if (!subject) return empty("needs_confirmation", "누구의 별명인지 분명하지 않습니다");
-  if (!rawNickname) return empty("needs_confirmation", "별명을 분명히 알려주세요");
 
-  const validation = validateNickname(rawNickname);
-  if (!validation.ok) return empty("blocked", validation.reason);
-  const nickname = validation.value;
+  if (decision.operation === "unclear") {
+    return empty("needs_confirmation", "어떤 기억을 말하는지 분명하지 않습니다");
+  }
+  if (decision.operation === "update") return updateMemory(store, input);
+  if (decision.operation === "delete") return deleteMemory(input);
 
-  const rejection = store.findNicknameRejection(subject, nickname);
-  if (rejection) return empty("blocked", "대상 사용자가 그 호칭을 거부했습니다");
+  const facts = extractMemory({
+    text: input.text,
+    category: decision.category,
+    subjectUserId: decision.subjectUserId,
+    referencedUsers: input.referencedUsers,
+    ambiguousUserNames: input.ambiguousUserNames,
+    authorId: actor.userId,
+    authorDisplayName: input.authorDisplayName,
+    worthiness: decision.memoryWorthiness,
+    explicit: decision.explicit,
+    operation: decision.operation,
+    decisionScope: decision.scope
+  });
 
-  const existing = store.findGuildNickname(subject);
-  if (existing) {
-    if (existing.structuredValue?.toLowerCase() === nickname.toLowerCase()) {
-      return empty("none", "이미 같은 별명이 있습니다");
+  const added: string[] = [];
+  const updated: string[] = [];
+  let duplicate = false;
+  let issue: { status: "blocked" | "failed" | "needs_confirmation"; reason: string } | null =
+    null;
+
+  for (const fact of facts) {
+    if (!fact.isDurableFact) continue;
+
+    const explicit = decision.explicit || fact.isExplicit;
+    if (!explicit && !input.autoMemory) continue;
+
+    if (fact.isNickname) {
+      const result = saveNickname(store, input, fact);
+      if (result.status === "success") {
+        added.push(...result.added);
+        updated.push(...result.updated);
+      } else if (result.status === "none") {
+        duplicate = true;
+      } else if (result.reason) {
+        issue ??= { status: result.status, reason: result.reason };
+      }
+      continue;
     }
-    if (actor.isAdministrator) {
-      const updated = store.updateGuild(existing.id, actor, {
-        content,
-        structuredValue: nickname,
-        subjectUserId: subject
-      });
-      return updated
-        ? success([], [updated.content])
-        : empty("failed", "별명을 바꾸지 못했습니다");
-    }
 
-    // 일반 사용자의 기존 별명 변경은 관리자 승인을 받는다.
-    const proposed = store.addGuild({
-      createdByUserId: actor.userId,
-      category: "nickname",
-      subjectUserId: subject,
-      content,
-      structuredValue: nickname,
-      approval: "pending",
-      sourceMessageId: input.messageId,
-      sourceChannelId: input.channelId,
-      source: "natural_language"
+    const scope = resolveMemoryScope({
+      actorUserId: actor.userId,
+      relatedUserIds: fact.relatedUserIds,
+      involvesOtherUser: fact.involvesOtherUser,
+      modelScope: fact.decisionScope
     });
-    return proposed
-      ? pending(proposed.content, "관리자 승인을 기다립니다")
-      : empty("none", "이미 처리 중인 요청이 있습니다");
+    if (scope === "none") continue;
+
+    if (scope === "guild") {
+      const saved = store.addGuild({
+        createdByUserId: actor.userId,
+        category: fact.category,
+        subjectUserId: fact.primarySubjectId,
+        relatedUserIds: fact.relatedUserIds,
+        content: fact.content,
+        confidence: fact.confidence,
+        importance: explicit ? 0.7 : 0.5,
+        sourceMessageId: input.messageId,
+        sourceChannelId: input.channelId,
+        source: "natural_language"
+      });
+      if (saved) added.push(saved.content);
+      else duplicate = true;
+      continue;
+    }
+
+    const category =
+      fact.category === "nickname" || fact.category === "server_convention"
+        ? "preference"
+        : fact.category;
+    const saved = store.addPersonal({
+      ownerUserId: actor.userId,
+      createdByUserId: actor.userId,
+      content: fact.content,
+      category,
+      visibility: decision.visibility,
+      confidence: fact.confidence,
+      importance: explicit ? 0.7 : 0.5,
+      sourceMessageId: input.messageId,
+      sourceChannelId: input.channelId
+    });
+    if (saved) added.push(saved.content);
+    else duplicate = true;
   }
 
-  const approval = guildApprovalFor({
-    isAdministrator: actor.isAdministrator,
-    category: "nickname",
-    autoNickname: input.guildAutoNickname,
-    approvalRequired: input.guildApprovalRequired
-  });
-  const saved = store.addGuild({
-    createdByUserId: actor.userId,
-    category: "nickname",
-    subjectUserId: subject,
-    content,
-    structuredValue: nickname,
-    approval,
-    confidence: 0.9,
-    importance: 0.7,
-    sourceMessageId: input.messageId,
-    sourceChannelId: input.channelId,
-    source: "natural_language"
-  });
-  if (!saved) return empty("none", "이미 같은 별명이 있습니다");
-  return saved.approval === "pending"
-    ? pending(saved.content, "관리자 승인을 기다립니다")
-    : success([saved.content]);
+  if (added.length === 0 && updated.length === 0) {
+    if (issue) return empty(issue.status, issue.reason);
+    return empty("none", duplicate ? "이미 같은 내용이 저장돼 있습니다" : null);
+  }
+
+  return {
+    status: "success",
+    added,
+    updated,
+    removed: [],
+    reason: issue?.reason ?? null
+  };
 };
 
 export const describeMemoryResult = (result: MemoryOperationResult): string => {
   if (result.status === "none") return "이번 턴에는 기억을 바꾸지 않았다.";
   if (result.status === "needs_confirmation") {
     return `기억을 바꾸지 않았다. ${result.reason ?? "대상이 불분명하다"}. 어떤 기억인지 되물어야 한다.`;
-  }
-  if (result.status === "pending") {
-    return `기억을 바로 반영하지 않고 관리자 승인 대기로 남겼다. ${result.reason ?? ""}. 승인 전에는 저장됐다고 말하지 않는다.`;
   }
   if (result.status === "failed") {
     return `기억 변경에 실패했다. ${result.reason ?? ""}. 성공했다고 말하지 않는다.`;

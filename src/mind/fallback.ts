@@ -24,13 +24,14 @@ const noMemory = (): MemoryDecision => ({
   subjectUserId: null,
   targetMemoryId: null,
   confidence: 0,
-  needsApproval: false,
+  memoryWorthiness: 0,
+  involvesOtherUser: false,
   explicit: false
 });
 
 /**
  * Decision API를 쓸 수 없을 때의 규칙 기반 판단.
- * 공용 기억은 만들지 않는다. 장애가 공용 기억 변경으로 이어지면 안 된다.
+ * 기억 저장 자체는 operations의 사실 추출이 맡고, 여기서는 명시 요청만 표시한다.
  */
 export const localDecision = (context: MindContext): DecisionDraft => {
   const text = context.request.text;
@@ -78,6 +79,7 @@ export const localDecision = (context: MindContext): DecisionDraft => {
       operation: "add",
       scope: "user",
       subjectUserId: context.request.userId,
+      memoryWorthiness: 1,
       explicit: true
     };
     humorStrategy = "none";

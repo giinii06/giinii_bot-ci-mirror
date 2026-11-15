@@ -84,8 +84,8 @@ const GOAL_CRITERIA: Record<string, string> = {
 
 const MEMORY_SCOPE_CRITERIA: Record<string, string> = {
   none: "저장할 기억이 없다",
-  user: "특정 사용자의 개인 사실이나 취향",
-  guild: "서버 공용 정보 또는 서버에서 쓰는 별명"
+  user: "말한 사람 자신에 대한 개인 사실이나 취향",
+  guild: "서버 공용 정보, 다른 사용자에 관한 정보, 서버에서 쓰는 별명"
 };
 
 const MEMORY_CATEGORY_CRITERIA: Record<MemoryCategory, string> = {
@@ -202,8 +202,25 @@ export const buildQuestions = (context: MindContext): QuestionMap => {
     },
     memory_scope: {
       type: "choice",
-      instructions: "이 기억은 개인 기억인가, 서버 공용 기억인가?",
+      instructions:
+        "이 기억은 개인 기억인가, 서버 공용 기억인가? 참고값이며, 다른 사용자가 관련되면 코드가 공용으로 강제한다.",
       criteria: MEMORY_SCOPE_CRITERIA
+    },
+    memory_worthiness: {
+      type: "noul",
+      instructions: "이 메시지에 장기적으로 기억할 만한 사실이 있는가?",
+      criteria: {
+        true: "이름·거주지·직업·취향·관계·습관처럼 나중에 다시 쓸 수 있는 정보",
+        false: "질문, 인사, 감탄, 일시적인 기분이나 날씨"
+      }
+    },
+    memory_involves_other_user: {
+      type: "noul",
+      instructions: "기억할 내용에 이 메시지를 보낸 사람 외 다른 사용자가 관련되어 있는가?",
+      criteria: {
+        true: "다른 사용자의 사실·평가·관계·별명이 포함됨",
+        false: "말한 사람 자신에 대한 내용만 있음"
+      }
     },
     memory_category: {
       type: "choice",
@@ -214,14 +231,6 @@ export const buildQuestions = (context: MindContext): QuestionMap => {
       type: "choice",
       instructions: "이 기억을 다른 사용자의 대화에서도 써도 되는가?",
       criteria: MEMORY_VISIBILITY_CRITERIA
-    },
-    memory_requires_approval: {
-      type: "noul",
-      instructions: "관리자 확인을 거쳐야 하는 공용 기억 변경인가?",
-      criteria: {
-        true: "서버 규칙이나 여러 사람에게 영향을 주는 변경",
-        false: "가벼운 별명이나 이미 허용된 범위의 변경"
-      }
     },
     memory_write_intent: {
       type: "noul",
@@ -327,6 +336,14 @@ export const renderState = (context: MindContext): string => {
     lines.push("");
   }
 
+  if (request.ambiguousUserNames.length > 0) {
+    lines.push("[확인되지 않은 이름]");
+    lines.push(
+      `${request.ambiguousUserNames.map((name) => clip(name, 60)).join(", ")} (같은 이름의 사용자가 둘 이상)`
+    );
+    lines.push("");
+  }
+
   lines.push("[최근 대화]");
   if (recent.length === 0) {
     lines.push("(없음)");
@@ -349,11 +366,6 @@ export const renderState = (context: MindContext): string => {
       `장난 ${relationship.playfulness.toFixed(2)}, 참여 ${relationship.engagement.toFixed(2)}, ` +
       `대화 스타일 ${relationship.communicationStyle}, 상호작용 ${relationship.interactionCount}회`
   );
-  if (relationship.boundaries.length > 0) {
-    lines.push(
-      `명시적 경계: ${relationship.boundaries.map((item) => `"${clip(item, 60)}"`).join(", ")}`
-    );
-  }
   lines.push("");
 
   if (conventions.length > 0) {
@@ -385,10 +397,11 @@ export const renderState = (context: MindContext): string => {
 
 export const MEMORY_QUESTION_KEYS = [
   "memory_scope",
+  "memory_worthiness",
+  "memory_involves_other_user",
   "memory_category",
   "memory_visibility",
   "memory_subject",
-  "memory_requires_approval",
   "memory_write_intent"
 ] as const;
 

@@ -126,6 +126,14 @@ const buildRequest = (
     displayName: user.displayName,
     aliases: [user.username]
   }));
+  const references = resolveReferencedUsers({
+    authorId: message.author.id,
+    botId: target.botId,
+    text: trigger.text,
+    mentions,
+    replyTo,
+    roster: rosterOf(message, recent)
+  });
 
   return {
     messageId: message.id,
@@ -140,14 +148,8 @@ const buildRequest = (
     replyToMessageId: message.reference?.messageId,
     replyToAuthorId: repliedUser?.id ?? null,
     botWasReplyTarget: repliedUser?.id === target.botId,
-    referencedUsers: resolveReferencedUsers({
-      authorId: message.author.id,
-      botId: target.botId,
-      text: trigger.text,
-      mentions,
-      replyTo,
-      roster: rosterOf(message, recent)
-    }),
+    referencedUsers: references.users,
+    ambiguousUserNames: references.ambiguousNames,
     createdAt: message.createdTimestamp,
     recent: recent.map((entry) => ({
       id: entry.id,
@@ -226,6 +228,7 @@ const replyToTrigger = async (
 
   const sent = await message.reply({
     content: clamp(reply),
+    // 별명에 @everyone 같은 문자열이 있어도 실제 멘션으로 발송하지 않는다.
     allowedMentions: { repliedUser: true, parse: [] }
   });
   recordOwnMessage(target, sent);

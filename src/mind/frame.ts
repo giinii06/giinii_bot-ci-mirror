@@ -52,18 +52,12 @@ export const compileFrame = (
     constraints.push("기억을 바꿨다고 말하지 말고, 어떤 기억인지 짧게 되묻는다.");
   } else if (memoryResult.status === "failed") {
     constraints.push("기억 변경에 실패했으면 저장했다고 말하지 않는다.");
-  } else if (memoryResult.status === "pending") {
-    constraints.push("공용 기억은 아직 승인 대기 중이라고 말한다. 저장됐다고 단정하지 않는다.");
   } else if (memoryResult.status === "blocked") {
     constraints.push("기억을 바꾸지 못했으면 바꿨다고 말하지 않는다.");
   }
 
   if (decision.source === "local_fallback") {
     constraints.push("판단 근거가 충분하지 않으니 짧고 무난하게 답한다.");
-  }
-
-  if (relationship.boundaries.length > 0) {
-    constraints.push("이 사람이 정한 경계를 넘는 농담은 하지 않는다.");
   }
 
   const tone: CharacterFrame["style"]["tone"] =
@@ -88,7 +82,6 @@ export const compileFrame = (
     .filter(
       (memory) =>
         memory.category === "nickname" &&
-        memory.approval === "active" &&
         memory.subjectUserId !== null &&
         memory.structuredValue !== null
     )

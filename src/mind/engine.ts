@@ -26,7 +26,6 @@ import type {
   CharacterFrame,
   CompletedTurn,
   MemoryActor,
-  MemoryApproval,
   MemoryCategory,
   MemoryOperationResult,
   MemoryRecord,
@@ -62,7 +61,6 @@ export type GuildMemoryInput = {
   subjectUserId: string | null;
   content: string;
   structuredValue?: string | null;
-  approval?: MemoryApproval;
 };
 
 export type NicknameResult =
@@ -273,7 +271,7 @@ export class MindEngine {
       return { status: "none", added: [], updated: [], removed: [], reason: null };
     }
 
-    return commitMemoryOperation(this.memories, this.relationship, {
+    return commitMemoryOperation(this.memories, {
       actor: {
         userId: context.request.userId,
         guildId: context.request.guildId,
@@ -285,10 +283,9 @@ export class MindEngine {
       text: context.request.text,
       decision: decision.memory,
       referencedUsers: context.request.referencedUsers,
+      ambiguousUserNames: context.request.ambiguousUserNames,
       authorDisplayName: context.request.displayName,
-      autoMemory: this.deps.config.memory.autoMemory,
-      guildAutoNickname: this.deps.config.memory.guildAutoNickname,
-      guildApprovalRequired: this.deps.config.memory.guildApprovalRequired
+      autoMemory: this.deps.config.memory.autoMemory
     });
   }
 
@@ -328,12 +325,9 @@ export class MindEngine {
         );
       if (inserted.changes === 0) return false;
 
-      const boundaryText =
-        decision.relationshipSignal === "boundary_set" ? context.request.text : null;
       const next = this.relationship.applyInteraction(
         this.relationship.load(context.request.userId, now),
         decision.relationshipSignal,
-        boundaryText,
         now
       );
       this.relationship.save(next, now);
@@ -407,10 +401,6 @@ export class MindEngine {
     return this.memories.listGuild(limit);
   }
 
-  listPendingGuildMemories(limit = 25) {
-    return this.memories.listPendingGuild(limit);
-  }
-
   addGuildMemory(input: GuildMemoryInput): MemoryRecord | null {
     if (!input.actor.isAdministrator) return null;
     return this.memories.addGuild({
@@ -419,7 +409,6 @@ export class MindEngine {
       subjectUserId: input.subjectUserId,
       content: input.content,
       structuredValue: input.structuredValue ?? null,
-      approval: input.approval ?? "active",
       confidence: 0.9,
       importance: 0.7,
       source: "slash_command"
@@ -438,14 +427,6 @@ export class MindEngine {
     return this.memories.deleteGuild(id, actor);
   }
 
-  approveGuildMemory(id: number, actor: MemoryActor): MemoryRecord | null {
-    return this.memories.approveGuild(id, actor);
-  }
-
-  rejectGuildMemory(id: number, actor: MemoryActor): MemoryRecord | null {
-    return this.memories.rejectGuild(id, actor);
-  }
-
   setGuildNickname(input: {
     actor: MemoryActor;
     subjectUserId: string;
@@ -459,27 +440,11 @@ export class MindEngine {
     if (!validation.ok) return { ok: false, reason: validation.reason };
 
     const content = `${input.subjectDisplayName}의 별명은 "${validation.value}"이다.`;
-    const existing = this.memories.findGuildNickname(input.subjectUserId);
-    if (existing) {
-      const updated = this.memories.updateGuild(existing.id, input.actor, {
-        content,
-        structuredValue: validation.value,
-        subjectUserId: input.subjectUserId
-      });
-      return updated
-        ? { ok: true, memory: updated }
-        : { ok: false, reason: "별명을 바꾸지 못했습니다" };
-    }
-
-    const saved = this.memories.addGuild({
-      createdByUserId: input.actor.userId,
-      category: "nickname",
+    const saved = this.memories.replaceGuildNickname({
       subjectUserId: input.subjectUserId,
+      nickname: validation.value,
       content,
-      structuredValue: validation.value,
-      approval: "active",
-      confidence: 0.9,
-      importance: 0.7,
+      actorUserId: input.actor.userId,
       source: "slash_command"
     });
     return saved

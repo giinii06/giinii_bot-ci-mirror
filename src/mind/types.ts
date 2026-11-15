@@ -42,9 +42,6 @@ export const MEMORY_CATEGORIES = [
 ] as const;
 export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
 
-export const MEMORY_APPROVALS = ["active", "pending", "rejected"] as const;
-export type MemoryApproval = (typeof MEMORY_APPROVALS)[number];
-
 export const COMMUNICATION_STYLES = [
   "default",
   "concise",
@@ -55,10 +52,10 @@ export const COMMUNICATION_STYLES = [
 export type CommunicationStyle = (typeof COMMUNICATION_STYLES)[number];
 
 export type DecisionSource = "remote" | "remote_refined" | "local_fallback";
+/** 승인 대기 상태는 없다. 공용 기억은 저장 즉시 활성화된다. */
 export type MemoryOperationStatus =
   | "none"
   | "success"
-  | "pending"
   | "failed"
   | "needs_confirmation"
   | "blocked";
@@ -74,7 +71,6 @@ export type BotUserRelationship = {
   engagement: number;
 
   communicationStyle: CommunicationStyle;
-  boundaries: string[];
 
   confidence: number;
   interactionCount: number;
@@ -104,7 +100,6 @@ export type MemoryRecord = {
   createdByUserId: string;
 
   visibility: MemoryVisibility;
-  approval: MemoryApproval;
 
   content: string;
   /** 별명처럼 값만 따로 활용하는 기억. */
@@ -171,6 +166,8 @@ export type MindRequest = {
   botWasReplyTarget: boolean;
   /** 멘션·답장·표시 이름으로 확인한 대화 상대. ID를 새로 만들지 않는다. */
   referencedUsers: ReferencedUser[];
+  /** 이름이 겹쳐 ID를 하나로 정하지 못한 표시 이름. 기억 범위는 guild로 강제한다. */
+  ambiguousUserNames: string[];
   createdAt: number;
   /** 현재 메시지를 제외한 채널 최근 기록. 오래된 것부터 정렬돼 있다. */
   recent: Array<{
@@ -200,7 +197,10 @@ export type MemoryDecision = {
   subjectUserId: string | null;
   targetMemoryId: number | null;
   confidence: number;
-  needsApproval: boolean;
+  /** 장기적으로 기억할 가치. 0.5 이상이면 저장 후보로 본다. */
+  memoryWorthiness: number;
+  /** 모델이 본 타인 관련성. 최종 범위는 코드가 확인한 참조로 강제한다. */
+  involvesOtherUser: boolean;
   /** 사용자가 명시적으로 저장을 요청했는지. 자동 저장 여부를 가른다. */
   explicit: boolean;
 };

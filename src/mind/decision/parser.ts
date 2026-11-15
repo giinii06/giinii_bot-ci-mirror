@@ -44,6 +44,8 @@ export type DecisionSignals = {
   memoryAmbiguous: boolean;
   /** 개인·공용 분류 확률이 비슷하다. */
   memoryScopeUncertain: boolean;
+  /** 코드가 다른 사용자 참조를 확인했다. Scope 재판단이 필요 없다. */
+  hasOtherUserReference: boolean;
   /** 상황 판단과 행동 선택이 서로 어긋난다. */
   conflicting: boolean;
 };
@@ -155,7 +157,8 @@ const memoryDecisionOf = (  answers: Record<string, DecisionAnswer>,
     subjectUserId,
     targetMemoryId,
     confidence,
-    needsApproval: noul(answers, "memory_requires_approval") >= 0.5,
+    memoryWorthiness: noul(answers, "memory_worthiness"),
+    involvesOtherUser: noul(answers, "memory_involves_other_user") >= 0.5,
     explicit: noul(answers, "memory_write_intent") >= 0.5
   };
 };
@@ -224,6 +227,9 @@ export const parseDecision = (
       memory.operation === "add" &&
       scopeAnswer !== null &&
       marginOf(scopeAnswer) < 0.15,
+    hasOtherUserReference:
+      context.request.referencedUsers.length > 0 ||
+      context.request.ambiguousUserNames.length > 0,
     conflicting:
       (socialContext === "conflict" && action === "tease_back") ||
       (userNeeds === "comfort" && action === "tease_back")

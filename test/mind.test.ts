@@ -7,12 +7,15 @@ import { buildQuestions, renderState } from "../src/mind/decision/questions.js";
 import { MindEngine } from "../src/mind/engine.js";
 import { handleMemoryCommand } from "../src/mind/commands.js";
 import { compileFrame } from "../src/mind/frame.js";
+import { mentionsName, resolveReferencedUsers } from "../src/mind/identity-resolver.js";
 import {
   commitMemoryOperation,
-  describeMemoryResult
+  describeMemoryResult,
+  resolveMemoryScope
 } from "../src/mind/memory/operations.js";
 import { MindMemoryStore, selectMemories } from "../src/mind/memory/store.js";
 import { BotUserRelationshipStore } from "../src/mind/relationship/store.js";
+import type { MemoryDecision } from "../src/mind/types.js";
 import {
   ADMIN,
   GUILD,
@@ -50,7 +53,8 @@ describe("Decision 질문과 state", () => {
     expect(questions.memory_category?.type).toBe("choice");
     expect(questions.memory_visibility?.type).toBe("choice");
     expect(questions.memory_subject?.type).toBe("choice");
-    expect(questions.memory_requires_approval?.type).toBe("noul");
+    expect(questions.memory_worthiness?.type).toBe("noul");
+    expect(questions.memory_involves_other_user?.type).toBe("noul");
     expect(questions.memory_write_intent?.type).toBe("noul");
     expect(questions.emotion_impact).toBeUndefined();
     expect(questions.emotion_intensity).toBeUndefined();
@@ -149,7 +153,8 @@ describe("Decision 파싱", () => {
         memory_category: choice("nickname"),
         memory_visibility: choice("shareable"),
         memory_subject: choice("u1"),
-        memory_requires_approval: { type: "noul", noul: 0.2, confidence: 0.8 },
+        memory_worthiness: { type: "noul", noul: 0.8, confidence: 0.8 },
+        memory_involves_other_user: { type: "noul", noul: 0.9, confidence: 0.8 },
         memory_write_intent: { type: "noul", noul: 0.9, confidence: 0.9 }
       },
       context,
@@ -162,7 +167,8 @@ describe("Decision 파싱", () => {
     expect(draft.memory.visibility).toBe("shareable");
     expect(draft.memory.subjectUserId).toBe(OTHER);
     expect(draft.memory.explicit).toBe(true);
-    expect(draft.memory.needsApproval).toBe(false);
+    expect(draft.memory.memoryWorthiness).toBeCloseTo(0.8, 3);
+    expect(draft.memory.involvesOtherUser).toBe(true);
   });
 
   test("답이 없으면 보수적인 기본값을 쓴다", () => {
@@ -372,21 +378,20 @@ describe("기억 저장소", () => {
 describe("명시적 기억 작업", () => {
   const commit = (
     store: MindMemoryStore,
-    decision: Parameters<typeof commitMemoryOperation>[2]["decision"],
+    decision: MemoryDecision,
     text: string,
     options: { autoMemory?: boolean; actor?: Parameters<typeof actorOf>[0] } = {}
   ) =>
-    commitMemoryOperation(store, relationshipStore(), {
+    commitMemoryOperation(store, {
       actor: actorOf(options.actor),
       messageId: "m1",
       channelId: "c1",
       text,
       decision,
       referencedUsers: [],
+      ambiguousUserNames: [],
       authorDisplayName: "민지",
-      autoMemory: options.autoMemory ?? true,
-      guildAutoNickname: true,
-      guildApprovalRequired: true
+      autoMemory: options.autoMemory ?? true
     });
 
   test("명시적으로 기억해 달라고 하면 개인 기억으로 저장한다", () => {
@@ -401,10 +406,11 @@ describe("명시적 기억 작업", () => {
         subjectUserId: USER,
         targetMemoryId: null,
         confidence: 0.9,
-        needsApproval: false,
+        memoryWorthiness: 0.9,
+        involvesOtherUser: false,
         explicit: true
       },
-      "나 커피 안 마셔. 기억해"
+      "나 커피 안 마셔 기억해"
     );
 
     expect(result.status).toBe("success");
@@ -421,7 +427,8 @@ describe("명시적 기억 작업", () => {
       subjectUserId: USER,
       targetMemoryId: null,
       confidence: 0.7,
-      needsApproval: false,
+      memoryWorthiness: 0.7,
+      involvesOtherUser: false,
       explicit: false
     };
     expect(commit(store, auto, "오늘 날씨 좋다", { autoMemory: false }).status).toBe(
@@ -446,7 +453,8 @@ describe("명시적 기억 작업", () => {
         subjectUserId: USER,
         targetMemoryId: null,
         confidence: 0.5,
-        needsApproval: false,
+        memoryWorthiness: 0.5,
+        involvesOtherUser: false,
         explicit: true
       },
       "고양이가 아니라 강아지야"
@@ -474,7 +482,8 @@ describe("명시적 기억 작업", () => {
         subjectUserId: USER,
         targetMemoryId: saved.id,
         confidence: 0.9,
-        needsApproval: false,
+        memoryWorthiness: 0.9,
+        involvesOtherUser: false,
         explicit: true
       },
       "그 기억 지워"
@@ -508,20 +517,20 @@ describe("관계 엔진", () => {
         rapport: 0.7,
         playfulness: 0.5,
         interactionCount: 12,
-        boundaries: ["욕설 금지"],
+        communicationStyle: "casual",
         lastInteractionAt: 5
       })
     );
 
     const loaded = store.load(USER);
-    expect(loaded.boundaries).toEqual(["욕설 금지"]);
+    expect(loaded.communicationStyle).toBe("casual");
     expect(loaded.rapport).toBeCloseTo(0.7, 3);
     expect(loaded.interactionCount).toBe(12);
   });
 
   test("장난을 주고받으면 장난 선호와 라포가 오른다", () => {
     const store = relationshipStore();
-    const next = store.applyInteraction(relationshipOf(), "playful", null, 0);
+    const next = store.applyInteraction(relationshipOf(), "playful", 0);
 
     expect(next.playfulness).toBeCloseTo(0.63, 3);
     expect(next.rapport).toBeCloseTo(0.609, 3);
@@ -529,17 +538,11 @@ describe("관계 엔진", () => {
     expect(next.positiveInteractionCount).toBe(7);
   });
 
-  test("명시적 경계는 즉시 저장하고 장난 선호를 낮춘다", () => {
+  test("경계 신호는 장난 선호를 낮추고 부정 피드백으로 센다", () => {
     const store = relationshipStore();
-    const next = store.applyInteraction(
-      relationshipOf(),
-      "boundary_set",
-      "그런 농담 하지 마",
-      0
-    );
+    const next = store.applyInteraction(relationshipOf(), "boundary_set", 0);
 
     expect(next.playfulness).toBeCloseTo(0.54, 3);
-    expect(next.boundaries).toEqual(["그런 농담 하지 마"]);
     expect(next.negativeFeedbackCount).toBe(2);
   });
 
@@ -548,7 +551,7 @@ describe("관계 엔진", () => {
       enabled: false,
       updateLimit: 0.03
     });
-    const next = store.applyInteraction(relationshipOf(), "playful", null, 0);
+    const next = store.applyInteraction(relationshipOf(), "playful", 0);
     expect(next.interactionCount).toBe(11);
     expect(next.playfulness).toBe(0.6);
   });
@@ -583,17 +586,17 @@ describe("CharacterFrame 중재", () => {
     expect(frame.action).toBe("acknowledge");
   });
 
-  test("승인 대기 기억은 저장됐다고 말하지 않게 한다", () => {
+  test("저장에 성공한 기억은 그대로 Frame에 싣는다", () => {
     const frame = compileFrame(contextOf(), decisionOf(), {
-      status: "pending",
+      status: "success",
       added: ["서버 규칙"],
       updated: [],
       removed: [],
-      reason: "관리자 승인을 기다립니다"
+      reason: null
     });
 
-    expect(frame.memoryStatus).toBe("pending");
-    expect(frame.constraints.join(" ")).toContain("승인 대기");
+    expect(frame.memoryStatus).toBe("success");
+    expect(frame.constraints.join(" ")).not.toContain("저장했다고 말하지 않는다");
   });
 
   test("활성 공용 별명을 Frame에 따로 싣는다", () => {
@@ -605,7 +608,6 @@ describe("CharacterFrame 중재", () => {
           ownerUserId: null,
           subjectUserId: USER,
           category: "nickname",
-          approval: "active",
           structuredValue: "천재",
           content: '민지의 별명은 "천재"이다.'
         })
@@ -731,5 +733,97 @@ describe("MindEngine", () => {
 
     expect(context.request.isAdministrator).toBe(true);
     expect(actorOf({ userId: ADMIN, isAdministrator: true }).isAdministrator).toBe(true);
+  });
+});
+
+describe("이름 언급 판정", () => {
+  test("한국어 조사가 붙어도 이름으로 인식한다", () => {
+    expect(mentionsName("빅시는 미국에 살아", "빅시")).toBe(true);
+    expect(mentionsName("빅시가 게임을 잘해", "빅시")).toBe(true);
+    expect(mentionsName("빅시랑 어제 놀았어", "빅시")).toBe(true);
+    expect(mentionsName("빅시한테 물어봐", "빅시")).toBe(true);
+    expect(mentionsName("빅시에게 선물했어", "빅시")).toBe(true);
+  });
+
+  test("단어 중간에 우연히 들어간 이름은 언급이 아니다", () => {
+    expect(mentionsName("빅시티에 갔다", "빅시")).toBe(false);
+    expect(mentionsName("민지는 커피를 좋아해", "지")).toBe(false);
+  });
+
+  test("같은 이름이 둘이면 사용자를 고르지 않고 이름만 남긴다", () => {
+    const resolved = resolveReferencedUsers({
+      authorId: USER,
+      botId: "bot",
+      text: "민지는 미국에 살아",
+      mentions: [],
+      replyTo: null,
+      roster: [
+        { userId: OTHER, displayName: "민지" },
+        { userId: "100000000000000005", displayName: "민지" }
+      ]
+    });
+
+    expect(resolved.users).toEqual([]);
+    expect(resolved.ambiguousNames).toEqual(["민지"]);
+  });
+
+  test("조사가 붙은 여러 이름을 각각 사용자로 찾는다", () => {
+    const resolved = resolveReferencedUsers({
+      authorId: USER,
+      botId: "bot",
+      text: "빅시랑 철수는 친구야",
+      mentions: [],
+      replyTo: null,
+      roster: [
+        { userId: OTHER, displayName: "빅시" },
+        { userId: "100000000000000005", displayName: "철수" }
+      ]
+    });
+
+    expect(resolved.users.map((user) => user.userId).sort()).toEqual(
+      [OTHER, "100000000000000005"].sort()
+    );
+    expect(resolved.ambiguousNames).toEqual([]);
+  });
+});
+
+describe("저장 범위 확정", () => {
+  test("타인이 조금이라도 관련되면 모델이 user를 골라도 공용이다", () => {
+    expect(
+      resolveMemoryScope({
+        actorUserId: USER,
+        relatedUserIds: [USER, OTHER],
+        involvesOtherUser: false,
+        modelScope: "user"
+      })
+    ).toBe("guild");
+  });
+
+  test("본인만 관련되면 모델의 공용 판단을 존중한다", () => {
+    expect(
+      resolveMemoryScope({
+        actorUserId: USER,
+        relatedUserIds: [USER],
+        modelScope: "guild"
+      })
+    ).toBe("guild");
+    expect(
+      resolveMemoryScope({
+        actorUserId: USER,
+        relatedUserIds: [],
+        modelScope: "user"
+      })
+    ).toBe("user");
+  });
+
+  test("확인된 사실은 모델이 none을 골라도 개인 기억으로 다시 읽는다", () => {
+    expect(
+      resolveMemoryScope({
+        actorUserId: USER,
+        relatedUserIds: [],
+        involvesOtherUser: false,
+        modelScope: "none"
+      })
+    ).toBe("user");
   });
 });

@@ -2,11 +2,9 @@ import type { Database } from "bun:sqlite";
 import type { Snowflake } from "discord.js";
 import { cleanMemoryText } from "../../chat/memory.js";
 import {
-  MEMORY_APPROVALS,
   MEMORY_CATEGORIES,
   MEMORY_VISIBILITIES,
   type MemoryActor,
-  type MemoryApproval,
   type MemoryCandidate,
   type MemoryCategory,
   type MemoryRecord,
@@ -27,7 +25,6 @@ type MemoryRow = {
   kind: string;
   category: string;
   visibility: string;
-  approval_status: string;
   content: string;
   structured_value: string | null;
   normalized_content: string;
@@ -59,9 +56,10 @@ export type GuildMemoryInput = {
   createdByUserId: string;
   category: MemoryCategory;
   subjectUserId: string | null;
+  /** 기억에 등장하는 모든 사용자. subject_user_id 하나로는 다중 사용자 기억을 찾기 어렵다. */
+  relatedUserIds?: string[];
   content: string;
   structuredValue?: string | null;
-  approval?: MemoryApproval;
   confidence?: number;
   importance?: number;
   sourceMessageId?: string | null;
@@ -73,8 +71,18 @@ export type GuildMemoryPatch = {
   content?: string;
   category?: MemoryCategory;
   subjectUserId?: string | null;
+  relatedUserIds?: string[];
   structuredValue?: string | null;
-  approval?: MemoryApproval;
+};
+
+export type GuildNicknameInput = {
+  subjectUserId: string;
+  nickname: string;
+  content: string;
+  actorUserId: string;
+  sourceMessageId?: string | null;
+  sourceChannelId?: string | null;
+  source: "natural_language" | "slash_command";
 };
 
 export type MemoryRetrievalRequest = {
@@ -142,11 +150,6 @@ const visibilityOf = (value: string): MemoryVisibility =>
     ? (value as MemoryVisibility)
     : "private";
 
-const approvalOf = (value: string): MemoryApproval =>
-  (MEMORY_APPROVALS as readonly string[]).includes(value)
-    ? (value as MemoryApproval)
-    : "active";
-
 const toRecord = (row: MemoryRow): MemoryRecord => ({
   id: row.id,
   guildId: row.guild_id,
@@ -157,7 +160,6 @@ const toRecord = (row: MemoryRow): MemoryRecord => ({
   subjectUserId: row.subject_user_id,
   createdByUserId: row.created_by_user_id ?? row.owner_user_id ?? SYSTEM_ACTOR,
   visibility: visibilityOf(row.visibility),
-  approval: approvalOf(row.approval_status),
   content: row.content,
   structuredValue: row.structured_value,
   confidence: row.confidence,
@@ -264,9 +266,9 @@ export class MindMemoryStore {
         .query(
           `INSERT INTO mind_memories
              (guild_id, owner_user_id, subject_user_id, created_by_user_id, scope, kind, category,
-              visibility, approval_status, content, normalized_content, confidence, importance,
+              visibility, content, normalized_content, confidence, importance,
               source_message_id, source_channel_id, created_at, updated_at, version)
-           VALUES (?, ?, ?, ?, 'user', 'semantic', ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+           VALUES (?, ?, ?, ?, 'user', 'semantic', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
         )
         .run(
           this.guild,
@@ -287,6 +289,7 @@ export class MindMemoryStore {
 
       const id = Number(result.lastInsertRowid);
       this.index(id, content);
+      this.saveSubjects(id, [owner]);
       return this.byId(id);
     } catch (error) {
       if (error instanceof Error && error.message.includes("UNIQUE")) return null;
@@ -294,6 +297,7 @@ export class MindMemoryStore {
     }
   }
 
+  /** 공용 기억은 저장 즉시 활성화된다. 승인 상태 컬럼은 두지 않는다. */
   addGuild(input: GuildMemoryInput): MemoryRecord | null {
     const content = cleanMemoryText(input.content).slice(0, MAX_MEMORY_LENGTH);
     if (!content) return null;
@@ -301,36 +305,36 @@ export class MindMemoryStore {
     if (!normalized) return null;
 
     const now = Date.now();
+    const subjects = this.subjectIdsOfInput(input.subjectUserId, input.relatedUserIds);
     try {
-      const result = this.db
-        .query(
-          `INSERT INTO mind_memories
-             (guild_id, owner_user_id, subject_user_id, created_by_user_id, scope, kind, category,
-              visibility, approval_status, content, structured_value, normalized_content, confidence,
-              importance, source_message_id, source_channel_id, created_at, updated_at, version)
-           VALUES (?, NULL, ?, ?, 'guild', 'semantic', ?, 'shareable', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
-        )
-        .run(
-          this.guild,
-          input.subjectUserId,
-          input.createdByUserId,
-          input.category,
-          input.approval ?? "active",
-          content,
-          input.structuredValue ?? null,
-          normalized,
-          input.confidence ?? 0.8,
-          input.importance ?? 0.5,
-          input.sourceMessageId ?? null,
-          input.sourceChannelId ?? null,
-          now,
-          now
-        );
+      const save = this.db.transaction(() => {
+        const result = this.db
+          .query(
+            `INSERT INTO mind_memories
+               (guild_id, owner_user_id, subject_user_id, created_by_user_id, scope, kind, category,
+                visibility, content, structured_value, normalized_content, confidence, importance,
+                source_message_id, source_channel_id, created_at, updated_at, version)
+             VALUES (?, NULL, ?, ?, 'guild', 'semantic', ?, 'shareable', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+          )
+          .run(
+            this.guild,
+            input.subjectUserId,
+            input.createdByUserId,
+            input.category,
+            content,
+            input.structuredValue ?? null,
+            normalized,
+            input.confidence ?? 0.8,
+            input.importance ?? 0.5,
+            input.sourceMessageId ?? null,
+            input.sourceChannelId ?? null,
+            now,
+            now
+          );
 
-      const id = Number(result.lastInsertRowid);
-      this.index(id, content);
-      const saved = this.byId(id);
-      if (saved) {
+        const id = Number(result.lastInsertRowid);
+        this.index(id, content);
+        this.saveSubjects(id, subjects);
         this.audit({
           memoryId: id,
           actorUserId: input.createdByUserId,
@@ -339,12 +343,68 @@ export class MindMemoryStore {
           previousValue: null,
           newValue: content
         });
-      }
-      return saved;
+        return id;
+      });
+
+      return this.byId(save());
     } catch (error) {
       if (error instanceof Error && error.message.includes("UNIQUE")) return null;
       throw error;
     }
+  }
+
+  /**
+   * 별명은 대상 사용자당 하나만 유효하다. 기존 별명이 있으면 같은 행을
+   * 새 값으로 바꾸고, 없으면 새로 만든다. 두 별명이 동시에 활성화되지 않는다.
+   */
+  replaceGuildNickname(input: GuildNicknameInput): MemoryRecord | null {
+    const content = cleanMemoryText(input.content).slice(0, MAX_MEMORY_LENGTH);
+    if (!content) return null;
+    const current = this.findGuildNickname(input.subjectUserId);
+    if (!current) {
+      return this.addGuild({
+        createdByUserId: input.actorUserId,
+        category: "nickname",
+        subjectUserId: input.subjectUserId,
+        relatedUserIds: [input.subjectUserId],
+        content,
+        structuredValue: input.nickname,
+        confidence: 0.9,
+        importance: 0.7,
+        sourceMessageId: input.sourceMessageId ?? null,
+        sourceChannelId: input.sourceChannelId ?? null,
+        source: input.source
+      });
+    }
+
+    const now = Date.now();
+    try {
+      const replace = this.db.transaction(() => {
+        this.db
+          .query(
+            `UPDATE mind_memories
+             SET content = ?, structured_value = ?, normalized_content = ?,
+                 updated_at = ?, version = version + 1
+             WHERE id = ? AND guild_id = ? AND deleted_at IS NULL`
+          )
+          .run(content, input.nickname, normalizeMemory(content), now, current.id, this.guild);
+        this.reindex(current.id, content);
+        this.saveSubjects(current.id, [input.subjectUserId]);
+        this.audit({
+          memoryId: current.id,
+          actorUserId: input.actorUserId,
+          action: "UPDATE",
+          source: input.source,
+          previousValue: current.content,
+          newValue: content
+        });
+      });
+      replace();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("UNIQUE")) return null;
+      throw error;
+    }
+    return this.byId(current.id);
   }
 
   byId(id: number): MemoryRecord | null {
@@ -410,6 +470,7 @@ export class MindMemoryStore {
       )
       .run(now, now, id, this.guild);
     this.db.query("DELETE FROM mind_memory_fts WHERE rowid = ?").run(id);
+    this.db.query("DELETE FROM mind_memory_subjects WHERE memory_id = ?").run(id);
     return true;
   }
 
@@ -437,7 +498,11 @@ export class MindMemoryStore {
         )
         .run(now, now, this.guild, userId);
       const drop = this.db.query("DELETE FROM mind_memory_fts WHERE rowid = ?");
-      for (const id of ids) drop.run(id);
+      const dropSubjects = this.db.query("DELETE FROM mind_memory_subjects WHERE memory_id = ?");
+      for (const id of ids) {
+        drop.run(id);
+        dropSubjects.run(id);
+      }
     });
     remove();
     return ids.length;
@@ -448,23 +513,11 @@ export class MindMemoryStore {
       .query<MemoryRow, [string, number, number]>(
         `SELECT * FROM mind_memories
          WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
-           AND approval_status = 'active' AND deleted_at IS NULL
+           AND deleted_at IS NULL
            AND (expires_at IS NULL OR expires_at > ?)
          ORDER BY id ASC LIMIT ?`
       )
       .all(this.guild, Date.now(), limit);
-    return rows.map(toRecord);
-  }
-
-  listPendingGuild(limit = 50): MemoryRecord[] {
-    const rows = this.db
-      .query<MemoryRow, [string, number]>(
-        `SELECT * FROM mind_memories
-         WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
-           AND approval_status = 'pending' AND deleted_at IS NULL
-         ORDER BY created_at ASC LIMIT ?`
-      )
-      .all(this.guild, limit);
     return rows.map(toRecord);
   }
 
@@ -484,33 +537,37 @@ export class MindMemoryStore {
       patch.subjectUserId === undefined ? current.subjectUserId : patch.subjectUserId;
     const structured =
       patch.structuredValue === undefined ? current.structuredValue : patch.structuredValue;
-    const approval = patch.approval ?? current.approval;
 
     try {
-      this.db
-        .query(
-          `UPDATE mind_memories
-           SET content = ?, normalized_content = ?, category = ?, subject_user_id = ?,
-               structured_value = ?, approval_status = ?, updated_at = ?, version = version + 1
-           WHERE id = ? AND guild_id = ? AND deleted_at IS NULL`
-        )
-        .run(
-          text,
-          normalizeMemory(text),
-          category,
-          subject,
-          structured,
-          approval,
-          Date.now(),
-          id,
-          this.guild
-        );
+      const update = this.db.transaction(() => {
+        this.db
+          .query(
+            `UPDATE mind_memories
+             SET content = ?, normalized_content = ?, category = ?, subject_user_id = ?,
+                 structured_value = ?, updated_at = ?, version = version + 1
+             WHERE id = ? AND guild_id = ? AND deleted_at IS NULL`
+          )
+          .run(
+            text,
+            normalizeMemory(text),
+            category,
+            subject,
+            structured,
+            Date.now(),
+            id,
+            this.guild
+          );
+        this.reindex(id, text);
+        if (patch.relatedUserIds !== undefined || patch.subjectUserId !== undefined) {
+          this.saveSubjects(id, this.subjectIdsOfInput(subject, patch.relatedUserIds));
+        }
+      });
+      update();
     } catch (error) {
       if (error instanceof Error && error.message.includes("UNIQUE")) return null;
       throw error;
     }
 
-    this.reindex(id, text);
     this.audit({
       memoryId: id,
       actorUserId: actor.userId,
@@ -536,6 +593,7 @@ export class MindMemoryStore {
       )
       .run(now, now, id, this.guild);
     this.db.query("DELETE FROM mind_memory_fts WHERE rowid = ?").run(id);
+    this.db.query("DELETE FROM mind_memory_subjects WHERE memory_id = ?").run(id);
     this.audit({
       memoryId: id,
       actorUserId: actor.userId,
@@ -547,131 +605,17 @@ export class MindMemoryStore {
     return true;
   }
 
-  approveGuild(id: number, actor: MemoryActor): MemoryRecord | null {
-    if (!actor.isAdministrator) return null;
-    const current = this.byId(id);
-    if (!current || current.scope !== "guild" || current.approval !== "pending") return null;
-
-    const now = Date.now();
-    const approve = this.db.transaction(() => {
-      if (current.category === "nickname" && current.subjectUserId) {
-        this.db
-          .query(
-            `UPDATE mind_memories
-             SET approval_status = 'rejected', reviewed_by_user_id = ?, reviewed_at = ?,
-                 updated_at = ?, version = version + 1
-             WHERE guild_id = ? AND scope = 'guild' AND category = 'nickname'
-               AND subject_user_id = ? AND approval_status = 'active'
-               AND deleted_at IS NULL AND id <> ?`
-          )
-          .run(actor.userId, now, now, this.guild, current.subjectUserId, id);
-      }
-      this.db
-        .query(
-          `UPDATE mind_memories
-           SET approval_status = 'active', reviewed_by_user_id = ?, reviewed_at = ?,
-               updated_at = ?, version = version + 1
-           WHERE id = ? AND guild_id = ?`
-        )
-        .run(actor.userId, now, now, id, this.guild);
-    });
-
-    try {
-      approve();
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("UNIQUE")) return null;
-      throw error;
-    }
-
-    this.audit({
-      memoryId: id,
-      actorUserId: actor.userId,
-      action: "APPROVE",
-      source: actor.source,
-      previousValue: "pending",
-      newValue: current.content
-    });
-    return this.byId(id);
-  }
-
-  rejectGuild(id: number, actor: MemoryActor): MemoryRecord | null {
-    if (!actor.isAdministrator) return null;
-    const current = this.byId(id);
-    if (!current || current.scope !== "guild" || current.approval !== "pending") return null;
-
-    const now = Date.now();
-    this.db
-      .query(
-        `UPDATE mind_memories
-         SET approval_status = 'rejected', reviewed_by_user_id = ?, reviewed_at = ?,
-             updated_at = ?, version = version + 1
-         WHERE id = ? AND guild_id = ?`
-      )
-      .run(actor.userId, now, now, id, this.guild);
-    this.audit({
-      memoryId: id,
-      actorUserId: actor.userId,
-      action: "REJECT",
-      source: actor.source,
-      previousValue: "pending",
-      newValue: current.content
-    });
-    return this.byId(id);
-  }
-
   findGuildNickname(userId: string): MemoryRecord | null {
     const row = this.db
       .query<MemoryRow, [string, string]>(
         `SELECT * FROM mind_memories
          WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
-           AND category = 'nickname' AND approval_status = 'active' AND deleted_at IS NULL
+           AND category = 'nickname' AND deleted_at IS NULL
            AND subject_user_id = ?
          ORDER BY updated_at DESC LIMIT 1`
       )
       .get(this.guild, userId);
     return row ? toRecord(row) : null;
-  }
-
-  /** 대상 사용자가 거부한 호칭은 다시 자동 저장하지 않는다. */
-  findNicknameRejection(userId: string, nickname: string): MemoryRecord | null {
-    const row = this.db
-      .query<MemoryRow, [string, string, string]>(
-        `SELECT * FROM mind_memories
-         WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
-           AND category = 'nickname' AND approval_status = 'rejected'
-           AND subject_user_id = ? AND lower(trim(structured_value)) = lower(trim(?))
-         ORDER BY updated_at DESC LIMIT 1`
-      )
-      .get(this.guild, userId, nickname);
-    return row ? toRecord(row) : null;
-  }
-
-  /**
-   * 본인이 자기에게 붙은 공용 별명을 거부한다. 관리자 권한 없이 실행되지만
-   * 대상은 반드시 본인이어야 하고, 활성 별명만 내린다.
-   */
-  releaseGuildNickname(userId: string, actorUserId: string): MemoryRecord | null {
-    const active = this.findGuildNickname(userId);
-    if (!active) return null;
-
-    const now = Date.now();
-    this.db
-      .query(
-        `UPDATE mind_memories
-         SET approval_status = 'rejected', reviewed_by_user_id = ?, reviewed_at = ?,
-             updated_at = ?, version = version + 1
-         WHERE id = ? AND guild_id = ?`
-      )
-      .run(actorUserId, now, now, active.id, this.guild);
-    this.audit({
-      memoryId: active.id,
-      actorUserId,
-      action: "REJECT",
-      source: "discord_message",
-      previousValue: "active",
-      newValue: active.content
-    });
-    return active;
   }
 
   findApplicableConventions(userIds: string[]): MemoryRecord[] {
@@ -682,7 +626,7 @@ export class MindMemoryStore {
       .query<MemoryRow, [string, ...string[]]>(
         `SELECT * FROM mind_memories
          WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
-           AND category = 'nickname' AND approval_status = 'active' AND deleted_at IS NULL
+           AND category = 'nickname' AND deleted_at IS NULL
            AND subject_user_id IN (${placeholders})
          ORDER BY subject_user_id ASC, updated_at DESC`
       )
@@ -690,12 +634,22 @@ export class MindMemoryStore {
     return rows.map(toRecord);
   }
 
+  /** 한 기억에 색인된 모든 사용자. 다중 사용자 기억을 사용자별로 찾을 때 쓴다. */
+  subjectIdsOf(memoryId: number): string[] {
+    return this.db
+      .query<{ user_id: string }, [number]>(
+        "SELECT user_id FROM mind_memory_subjects WHERE memory_id = ? ORDER BY user_id ASC"
+      )
+      .all(memoryId)
+      .map((row) => row.user_id);
+  }
+
   searchOwn(userId: string, query: string, limit: number): MemoryCandidate[] {
     const rows = this.db
       .query<MemoryRow, [string, string, number]>(
         `SELECT * FROM mind_memories
          WHERE guild_id = ? AND owner_user_id = ? AND scope = 'user' AND kind = 'semantic'
-           AND approval_status = 'active' AND deleted_at IS NULL
+           AND deleted_at IS NULL
            AND (expires_at IS NULL OR expires_at > ?)`
       )
       .all(this.guild, userId, Date.now());
@@ -715,7 +669,7 @@ export class MindMemoryStore {
       .query<MemoryRow, [string, number, ...string[]]>(
         `SELECT * FROM mind_memories
          WHERE guild_id = ? AND scope = 'user' AND kind = 'semantic'
-           AND visibility = 'shareable' AND approval_status = 'active' AND deleted_at IS NULL
+           AND visibility = 'shareable' AND deleted_at IS NULL
            AND (expires_at IS NULL OR expires_at > ?)
            AND owner_user_id IN (${placeholders})`
       )
@@ -729,7 +683,7 @@ export class MindMemoryStore {
       .query<MemoryRow, [string, number]>(
         `SELECT * FROM mind_memories
          WHERE guild_id = ? AND scope = 'guild' AND kind = 'semantic'
-           AND visibility = 'shareable' AND approval_status = 'active' AND deleted_at IS NULL
+           AND visibility = 'shareable' AND deleted_at IS NULL
            AND category <> 'nickname'
            AND (expires_at IS NULL OR expires_at > ?)`
       )
@@ -806,6 +760,28 @@ export class MindMemoryStore {
       .slice(0, Math.max(0, limit));
   }
 
+  private subjectIdsOfInput(
+    subjectUserId: string | null,
+    relatedUserIds: string[] | undefined
+  ): string[] {
+    return [
+      ...new Set(
+        [subjectUserId, ...(relatedUserIds ?? [])].filter(
+          (id): id is string => !!id && id.length > 0
+        )
+      )
+    ];
+  }
+
+  private saveSubjects(memoryId: number, userIds: string[]): void {
+    this.db.query("DELETE FROM mind_memory_subjects WHERE memory_id = ?").run(memoryId);
+    if (userIds.length === 0) return;
+    const insert = this.db.query(
+      "INSERT OR IGNORE INTO mind_memory_subjects (memory_id, user_id) VALUES (?, ?)"
+    );
+    for (const userId of userIds) insert.run(memoryId, userId);
+  }
+
   private reindex(id: number, content: string): void {
     this.db.query("DELETE FROM mind_memory_fts WHERE rowid = ?").run(id);
     this.index(id, content);
@@ -840,7 +816,7 @@ export class MindMemoryStore {
   private audit(input: {
     memoryId: number;
     actorUserId: string;
-    action: "ADD" | "UPDATE" | "DELETE" | "APPROVE" | "REJECT";
+    action: "ADD" | "UPDATE" | "DELETE";
     source: "natural_language" | "slash_command" | "discord_message";
     previousValue: string | null;
     newValue: string | null;

@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { extractMemory, factOf } from "../src/mind/memory/extractor.js";
 import { commitMemoryOperation } from "../src/mind/memory/operations.js";
-import { guildApprovalFor, validateNickname } from "../src/mind/memory/policy.js";
+import { validateNickname } from "../src/mind/memory/policy.js";
 import { MindMemoryStore } from "../src/mind/memory/store.js";
-import { BotUserRelationshipStore } from "../src/mind/relationship/store.js";
 import type { MemoryDecision } from "../src/mind/types.js";
 import {
   GUILD,
@@ -14,48 +13,47 @@ import {
   mindDb
 } from "./mind-fixtures.js";
 
-const roster = [{ userId: OTHER, displayName: "민지", referenceType: "name" as const, confidence: 0.9 }];
+const roster = [
+  { userId: OTHER, displayName: "민지", referenceType: "name" as const, confidence: 0.9 }
+];
 
 const extract = (
   text: string,
   referencedUsers = roster,
-  subjectUserId: string | null = USER
+  subjectUserId: string | null = USER,
+  ambiguousUserNames: string[] = []
 ) =>
   extractMemory({
     text,
     category: "fact",
     subjectUserId,
     referencedUsers,
+    ambiguousUserNames,
     authorId: USER,
     authorDisplayName: "영희"
-  });
+  })[0];
 
 const setup = () => {
   const db = mindDb();
   const store = new MindMemoryStore(db, GUILD);
-  const relationship = new BotUserRelationshipStore(db, GUILD, {
-    enabled: true,
-    updateLimit: 0.05
-  });
   const commit = (
     text: string,
     decision: Partial<MemoryDecision>,
-    overrides: Partial<Parameters<typeof commitMemoryOperation>[2]> = {}
+    overrides: Partial<Parameters<typeof commitMemoryOperation>[1]> = {}
   ) =>
-    commitMemoryOperation(store, relationship, {
+    commitMemoryOperation(store, {
       actor: actorOf(),
       messageId: "m1",
       channelId: "c1",
       text,
       decision: memoryDecisionOf(decision),
       referencedUsers: roster,
+      ambiguousUserNames: [],
       authorDisplayName: "영희",
       autoMemory: true,
-      guildAutoNickname: true,
-      guildApprovalRequired: false,
       ...overrides
     });
-  return { db, store, relationship, commit };
+  return { db, store, commit };
 };
 
 describe("기억 추출", () => {
@@ -64,7 +62,7 @@ describe("기억 추출", () => {
 
     expect(extracted).toMatchObject({
       category: "nickname",
-      subjectUserId: OTHER,
+      primarySubjectId: OTHER,
       structuredValue: "천재",
       isExplicit: true
     });
@@ -76,16 +74,23 @@ describe("기억 추출", () => {
       "앞으로 민지를 천재라고 불러",
       [
         { userId: OTHER, displayName: "민지", referenceType: "name", confidence: 0.9 },
-        { userId: "100000000000000005", displayName: "민지", referenceType: "name", confidence: 0.9 }
+        {
+          userId: "100000000000000005",
+          displayName: "민지",
+          referenceType: "name",
+          confidence: 0.9
+        }
       ],
-      null
+      null,
+      ["민지"]
     );
 
-    expect(extracted?.subjectUserId).toBeNull();
+    expect(extracted?.primarySubjectId).toBeNull();
+    expect(extracted?.involvesOtherUser).toBe(true);
   });
 
   test("자기 자신을 가리키면 요청자로 정한다", () => {
-    expect(extract("나를 왕이라고 불러")?.subjectUserId).toBe(USER);
+    expect(extract("나를 왕이라고 불러")?.primarySubjectId).toBe(USER);
   });
 
   test("일반 기억 요청은 요청 표현만 떼고 문장을 남긴다", () => {
@@ -96,141 +101,104 @@ describe("기억 추출", () => {
     expect(extracted?.isExplicit).toBe(true);
     expect(factOf("오늘 날씨가 좋다")).toBe("오늘 날씨가 좋다");
   });
+
+  test("한 메시지의 개인 사실과 타인 사실을 따로 뽑는다", () => {
+    const facts = extractMemory({
+      text: "나는 커피를 좋아해. 민지는 미국에 살아",
+      category: "fact",
+      subjectUserId: USER,
+      referencedUsers: roster,
+      authorId: USER,
+      authorDisplayName: "영희"
+    });
+
+    expect(facts.map((fact) => fact.content)).toEqual([
+      "나는 커피를 좋아해.",
+      "민지는 미국에 살아"
+    ]);
+    expect(facts.map((fact) => fact.involvesOtherUser)).toEqual([false, true]);
+  });
 });
 
 describe("별명 정책", () => {
-  test("빈 값·긴 값·링크·멘션·욕설을 막는다", () => {
+  test("빈 값과 긴 값만 막는다", () => {
     expect(validateNickname("  ").ok).toBe(false);
     expect(validateNickname("가".repeat(21)).ok).toBe(false);
-    expect(validateNickname("https://example.com").ok).toBe(false);
-    expect(validateNickname("@everyone").ok).toBe(false);
-    expect(validateNickname("병신").ok).toBe(false);
+  });
+
+  test("링크와 멘션 문자열은 일반 텍스트로 저장한다", () => {
+    expect(validateNickname("https://example.com")).toEqual({
+      ok: true,
+      value: "https://example.com"
+    });
+    expect(validateNickname("@everyone")).toEqual({ ok: true, value: "@everyone" });
   });
 
   test("따옴표를 떼고 20자까지 허용한다", () => {
     expect(validateNickname('"천재"')).toEqual({ ok: true, value: "천재" });
     expect(validateNickname("가".repeat(20)).ok).toBe(true);
   });
-
-  test("승인 상태는 모델이 아니라 설정 표가 정한다", () => {
-    const base = { isAdministrator: false, category: "server_convention" as const };
-
-    expect(guildApprovalFor({ ...base, isAdministrator: true, autoNickname: false, approvalRequired: true })).toBe("active");
-    expect(guildApprovalFor({ ...base, autoNickname: false, approvalRequired: false })).toBe("active");
-    expect(guildApprovalFor({ ...base, autoNickname: false, approvalRequired: true })).toBe("pending");
-    expect(
-      guildApprovalFor({ ...base, category: "nickname", autoNickname: true, approvalRequired: true })
-    ).toBe("active");
-    expect(
-      guildApprovalFor({ ...base, category: "nickname", autoNickname: false, approvalRequired: false })
-    ).toBe("pending");
-  });
 });
 
-describe("별명 저장과 거부", () => {
-  test("자동 별명이 켜져 있으면 일반 사용자의 별명도 바로 적용된다", () => {
+describe("별명 저장과 교체", () => {
+  const nicknameDecision: Partial<MemoryDecision> = {
+    operation: "add",
+    scope: "guild",
+    category: "nickname",
+    subjectUserId: OTHER,
+    explicit: true
+  };
+
+  test("일반 사용자의 별명 요청도 바로 적용된다", () => {
     const { store, commit } = setup();
 
-    const result = commit("앞으로 민지를 천재라고 불러", {
-      operation: "add",
-      scope: "guild",
-      category: "nickname",
-      subjectUserId: OTHER,
-      explicit: true
-    });
+    const result = commit("앞으로 민지를 천재라고 불러", nicknameDecision);
 
     expect(result.status).toBe("success");
     expect(store.findGuildNickname(OTHER)?.structuredValue).toBe("천재");
   });
 
-  test("자동 별명이 꺼져 있으면 관리자 승인 대기로 남긴다", () => {
+  test("기존 별명이 있으면 일반 사용자도 즉시 교체한다", () => {
     const { store, commit } = setup();
+    commit("앞으로 민지를 천재라고 불러", nicknameDecision);
 
-    const result = commit(
-      "앞으로 민지를 천재라고 불러",
-      {
-        operation: "add",
-        scope: "guild",
-        category: "nickname",
-        subjectUserId: OTHER,
-        explicit: true
-      },
-      { guildAutoNickname: false }
-    );
+    const result = commit("앞으로 민지를 바보라고 불러", nicknameDecision);
 
-    expect(result.status).toBe("pending");
-    expect(store.findGuildNickname(OTHER)).toBeNull();
-    expect(store.listPendingGuild()).toHaveLength(1);
+    expect(result.status).toBe("success");
+    expect(store.findGuildNickname(OTHER)?.structuredValue).toBe("바보");
+    expect(store.listGuild()).toHaveLength(1);
   });
 
-  test("일반 사용자가 기존 별명을 바꾸면 승인 대기로 남는다", () => {
-    const { store, commit } = setup();
-    commit("앞으로 민지를 천재라고 불러", {
-      operation: "add",
-      scope: "guild",
-      category: "nickname",
-      subjectUserId: OTHER,
-      explicit: true
-    });
-
-    const result = commit("앞으로 민지를 바보라고 불러", {
-      operation: "add",
-      scope: "guild",
-      category: "nickname",
-      subjectUserId: OTHER,
-      explicit: true
-    });
-
-    expect(result.status).toBe("pending");
-    expect(store.findGuildNickname(OTHER)?.structuredValue).toBe("천재");
-  });
-
-  test("관리자는 기존 별명을 바로 바꾼다", () => {
+  test("관리자도 같은 교체 서비스를 쓴다", () => {
     const { store, commit } = setup();
     const admin = actorOf({ userId: "100000000000000003", isAdministrator: true });
-    const decision: Partial<MemoryDecision> = {
-      operation: "add",
-      scope: "guild",
-      category: "nickname",
-      subjectUserId: OTHER,
-      explicit: true
-    };
 
-    commit("앞으로 민지를 천재라고 불러", decision, { actor: admin });
-    commit("앞으로 민지를 바보라고 불러", decision, { actor: admin });
+    commit("앞으로 민지를 천재라고 불러", nicknameDecision, { actor: admin });
+    commit("앞으로 민지를 바보라고 불러", nicknameDecision, { actor: admin });
 
     expect(store.findGuildNickname(OTHER)?.structuredValue).toBe("바보");
     expect(store.listGuild()).toHaveLength(1);
   });
 
-  test("대상이 거부한 별명은 다시 붙지 않는다", () => {
+  test("삭제된 과거 별명은 새 별명 저장을 막지 않는다", () => {
     const { store, commit } = setup();
-    const decision: Partial<MemoryDecision> = {
-      operation: "add",
-      scope: "guild",
-      category: "nickname",
-      subjectUserId: OTHER,
-      explicit: true
-    };
-    commit("앞으로 민지를 천재라고 불러", decision);
-    store.releaseGuildNickname(OTHER, OTHER);
+    const saved = commit("앞으로 민지를 천재라고 불러", nicknameDecision);
+    expect(saved.status).toBe("success");
 
-    const again = commit("앞으로 민지를 천재라고 불러", decision);
+    const active = store.findGuildNickname(OTHER);
+    if (!active) throw new Error("별명 저장 실패");
+    store.deleteGuild(active.id, actorOf({ isAdministrator: true }));
 
-    expect(again.status).toBe("blocked");
-    expect(again.reason).toContain("거부");
-    expect(store.findGuildNickname(OTHER)).toBeNull();
+    const again = commit("앞으로 민지를 천재라고 불러", nicknameDecision, {
+      messageId: "m2"
+    });
+    expect(again.status).toBe("success");
+    expect(store.findGuildNickname(OTHER)?.structuredValue).toBe("천재");
   });
 
-  test("본인이 자연어로 자기 별명을 거부하면 경계로 남긴다", () => {
-    const { store, relationship, commit } = setup();
-    commit("앞으로 민지를 천재라고 불러", {
-      operation: "add",
-      scope: "guild",
-      category: "nickname",
-      subjectUserId: OTHER,
-      explicit: true
-    });
+  test("본인이 자연어로 별명을 거부해도 별명은 그대로다", () => {
+    const { store, commit } = setup();
+    commit("앞으로 민지를 천재라고 불러", nicknameDecision);
 
     const result = commit(
       "그 별명은 부르지 마",
@@ -243,10 +211,8 @@ describe("별명 저장과 거부", () => {
       { actor: actorOf({ userId: OTHER }) }
     );
 
-    expect(result.status).toBe("success");
-    expect(result.removed).toEqual(['민지의 별명은 "천재"이다.']);
-    expect(store.findGuildNickname(OTHER)).toBeNull();
-    expect(relationship.load(OTHER).boundaries).toContain("그 별명은 부르지 마");
+    expect(result.status).toBe("blocked");
+    expect(store.findGuildNickname(OTHER)?.structuredValue).toBe("천재");
   });
 
   test("공용 기억 삭제는 자연어로 할 수 없다", () => {

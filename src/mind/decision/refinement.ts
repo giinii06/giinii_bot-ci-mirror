@@ -27,7 +27,7 @@ export const needsRefinement = (
 ): boolean => {
   if (!limits.adaptiveRefinement) return false;
   if (signals.memoryAmbiguous) return false;
-  if (signals.memoryScopeUncertain) return true;
+  if (signals.memoryScopeUncertain && !signals.hasOtherUserReference) return true;
   if (signals.conflicting) return true;
 
   const risky = TEASING.includes(draft.action) || draft.action === "set_boundary";
@@ -58,7 +58,7 @@ export const refineOptions = (
   return {
     actions,
     askTease: actions.some((action) => TEASING.includes(action)),
-    askScope: signals.memoryScopeUncertain
+    askScope: signals.memoryScopeUncertain && !signals.hasOtherUserReference
   };
 };
 
@@ -103,16 +103,10 @@ export const buildRefineQuestions = (
 };
 
 export const renderRefineState = (context: MindContext, draft: DecisionDraft): string => {
-  const boundary =
-    context.relationship.boundaries.length > 0
-      ? `명시적 경계: ${context.relationship.boundaries.join(", ")}`
-      : "명시적 경계: 없음";
-
   return [
     `[메시지] ${context.request.text}`,
     `[호출] ${context.request.trigger}`,
     `[관계] 친숙도 ${context.relationship.familiarity.toFixed(2)}, 라포 ${context.relationship.rapport.toFixed(2)}, 장난 ${context.relationship.playfulness.toFixed(2)}`,
-    boundary,
     `[1차 판단] 의도 ${draft.intent}, 상황 ${draft.socialContext}, 행동 ${draft.action}, ` +
       `기억 ${draft.memory.operation}/${draft.memory.scope}, 확신 ${draft.confidence.toFixed(2)}`,
     "[최근 대화]",

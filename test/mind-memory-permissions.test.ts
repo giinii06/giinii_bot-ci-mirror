@@ -4,11 +4,11 @@ import { handleSharedMemoryCommand } from "../src/mind/commands.js";
 import { MindEngine } from "../src/mind/engine.js";
 import { commitMemoryOperation } from "../src/mind/memory/operations.js";
 import { MindMemoryStore } from "../src/mind/memory/store.js";
-import { BotUserRelationshipStore } from "../src/mind/relationship/store.js";
 import type { MemoryDecision } from "../src/mind/types.js";
 import {
   GUILD,
   OTHER,
+  OTHER_GUILD,
   USER,
   actorOf,
   fakeCommandInteraction,
@@ -17,29 +17,28 @@ import {
   rootDb
 } from "./mind-fixtures.js";
 
+const roster = [
+  { userId: OTHER, displayName: "민지", referenceType: "name" as const, confidence: 0.9 }
+];
+
 const commit = (
   store: MindMemoryStore,
   text: string,
   decision: Partial<MemoryDecision>,
-  overrides: Partial<Parameters<typeof commitMemoryOperation>[2]> = {}
+  overrides: Partial<Parameters<typeof commitMemoryOperation>[1]> = {}
 ) =>
-  commitMemoryOperation(
-    store,
-    new BotUserRelationshipStore(mindDb(), GUILD, { enabled: true, updateLimit: 0.03 }),
-    {
-      actor: actorOf(),
-      messageId: "m1",
-      channelId: "c1",
-      text,
-      decision: memoryDecisionOf(decision),
-      referencedUsers: [],
-      authorDisplayName: "영희",
-      autoMemory: true,
-      guildAutoNickname: true,
-      guildApprovalRequired: false,
-      ...overrides
-    }
-  );
+  commitMemoryOperation(store, {
+    actor: actorOf(),
+    messageId: "m1",
+    channelId: "c1",
+    text,
+    decision: memoryDecisionOf(decision),
+    referencedUsers: roster,
+    ambiguousUserNames: [],
+    authorDisplayName: "영희",
+    autoMemory: true,
+    ...overrides
+  });
 
 const engine = () =>
   new MindEngine({
@@ -51,7 +50,7 @@ const engine = () =>
   });
 
 describe("기억 권한", () => {
-  test("다른 사람의 개인 기억은 저장할 수 없다", () => {
+  test("타인 관련 기억은 Decision이 user를 골라도 공용으로 저장한다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
 
     const result = commit(store, "민지는 커피를 좋아해", {
@@ -61,7 +60,10 @@ describe("기억 권한", () => {
       explicit: true
     });
 
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("success");
+    expect(store.listGuild().map((memory) => memory.content)).toEqual([
+      "민지는 커피를 좋아해"
+    ]);
     expect(store.listOwn(USER)).toEqual([]);
   });
 
@@ -87,7 +89,7 @@ describe("기억 권한", () => {
 
   test("개인 기억 삭제는 자연어로 할 수 없다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
-    const theirs = store.addPersonal({
+    const mine = store.addPersonal({
       ownerUserId: USER,
       createdByUserId: USER,
       content: "민지는 커피를 좋아한다"
@@ -96,39 +98,80 @@ describe("기억 권한", () => {
     const result = commit(store, "그 기억 지워줘", {
       operation: "delete",
       scope: "user",
-      targetMemoryId: theirs!.id
+      targetMemoryId: mine!.id
     });
 
     expect(result.status).toBe("blocked");
     expect(result.reason).toContain("/memory delete");
-    expect(store.byId(theirs!.id)).not.toBeNull();
+    expect(store.byId(mine!.id)).not.toBeNull();
   });
 
-  test("공용 기억은 명시적 요청 없이 저장하지 않는다", () => {
+  test("타인 관련 기억은 명시적 요청 없이도 공용으로 저장한다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
 
-    const result = commit(store, "이 서버는 아침에 조용하다", {
-      operation: "add",
-      scope: "guild",
-      category: "server_convention"
+    const result = commit(store, "민지는 미국에 살아", {
+      operation: "none",
+      scope: "none"
     });
 
-    expect(result.status).toBe("none");
-    expect(store.listGuild()).toEqual([]);
+    expect(result.status).toBe("success");
+    expect(store.listGuild().map((memory) => memory.content)).toEqual([
+      "민지는 미국에 살아"
+    ]);
   });
 
-  test("민감한 내용은 공용 기억으로 저장하지 않는다", () => {
+  test("한 메시지의 개인 사실과 공용 사실을 각각 저장한다", () => {
     const store = new MindMemoryStore(mindDb(), GUILD);
 
-    const result = commit(store, "내 병원 기록도 공용으로 저장해줘", {
+    const result = commit(store, "나는 커피를 좋아해. 민지는 미국에 살아", {
       operation: "add",
-      scope: "guild",
-      category: "fact",
+      scope: "user",
+      subjectUserId: USER,
       explicit: true
     });
 
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("success");
+    expect(store.listOwn(USER).map((memory) => memory.content)).toEqual([
+      "나는 커피를 좋아해."
+    ]);
+    expect(store.listGuild().map((memory) => memory.content)).toEqual(["민지는 미국에 살아"]);
+  });
+
+  test("Decision이 none을 골라도 확인된 본인 사실은 개인 기억으로 저장한다", () => {
+    const store = new MindMemoryStore(mindDb(), GUILD);
+
+    const result = commit(store, "나는 커피를 좋아해", {
+      operation: "none",
+      scope: "none"
+    });
+
+    expect(result.status).toBe("success");
+    expect(store.listOwn(USER).map((memory) => memory.content)).toEqual(["나는 커피를 좋아해"]);
     expect(store.listGuild()).toEqual([]);
+  });
+
+  test("같은 메시지의 같은 사실은 한 번만 저장한다", () => {
+    const store = new MindMemoryStore(mindDb(), GUILD);
+    const decision = { operation: "add" as const, scope: "guild" as const };
+
+    const first = commit(store, "민지는 미국에 살아", decision);
+    const second = commit(store, "민지는 미국에 살아", decision);
+
+    expect(first.status).toBe("success");
+    expect(second.status).toBe("none");
+    expect(store.listGuild()).toHaveLength(1);
+  });
+
+  test("다른 서버의 공용 기억은 저장도 조회도 되지 않는다", () => {
+    const db = mindDb();
+    const here = new MindMemoryStore(db, GUILD);
+    const elsewhere = new MindMemoryStore(db, OTHER_GUILD);
+
+    commit(here, "민지는 미국에 살아", { operation: "add", scope: "guild" });
+
+    expect(here.listGuild()).toHaveLength(1);
+    expect(elsewhere.listGuild()).toEqual([]);
+    expect(elsewhere.searchGuild("미국", 5)).toEqual([]);
   });
 
   test("관리자 여부는 요청자가 정하고 모델 답은 쓰지 않는다", () => {
@@ -144,12 +187,11 @@ describe("기억 권한", () => {
         category: "server_convention",
         explicit: true
       },
-      { actor: member, guildApprovalRequired: true }
+      { actor: member }
     );
 
-    expect(result.status).toBe("pending");
-    expect(store.listGuild()).toEqual([]);
-    expect(store.listPendingGuild()).toHaveLength(1);
+    expect(result.status).toBe("success");
+    expect(store.listGuild()).toHaveLength(1);
   });
 });
 
@@ -182,7 +224,7 @@ describe("관리자 공용 기억 명령", () => {
     expect(list.replies[0]).toContain("이 서버는 아침에 조용하다");
   });
 
-  test("관리자도 잘못된 별명은 저장하지 않는다", async () => {
+  test("관리자 별명의 링크는 일반 텍스트로 저장한다", async () => {
     const mind = engine();
     const { interaction, replies } = fakeCommandInteraction({
       subcommand: "nickname",
@@ -193,27 +235,7 @@ describe("관리자 공용 기억 명령", () => {
 
     await handleSharedMemoryCommand(interaction, mind);
 
-    expect(replies[0]).toContain("링크나 멘션");
-    expect(mind.listGuildMemories()).toEqual([]);
-  });
-
-  test("승인 대기 목록은 관리자만 볼 수 있다", async () => {
-    const mind = engine();
-    mind.memories.addGuild({
-      createdByUserId: USER,
-      category: "server_convention",
-      subjectUserId: null,
-      content: "대기 중인 규칙",
-      approval: "pending",
-      source: "natural_language"
-    });
-
-    const denied = fakeCommandInteraction({ subcommand: "pending", admin: false });
-    await handleSharedMemoryCommand(denied.interaction, mind);
-    expect(denied.replies[0]).toBe("관리자만 사용할 수 있습니다.");
-
-    const allowed = fakeCommandInteraction({ subcommand: "pending", admin: true });
-    await handleSharedMemoryCommand(allowed.interaction, mind);
-    expect(allowed.replies[0]).toContain("대기 중인 규칙");
+    expect(replies[0]).toContain("https://example.com");
+    expect(mind.listGuildMemories()[0]?.structuredValue).toBe("https://example.com");
   });
 });

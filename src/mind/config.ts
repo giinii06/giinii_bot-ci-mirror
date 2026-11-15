@@ -51,11 +51,7 @@ export const mindConfig = {
     /** 다른 사용자가 공유를 허용한 개인 기억 검색. */
     otherUserEnabled: toBool("MIND_OTHER_USER_MEMORY_ENABLED", true),
     /** 서버 공용 기억 검색과 적용. */
-    guildEnabled: toBool("MIND_GUILD_MEMORY_ENABLED", true),
-    /** 일반 사용자의 안전한 별명 요청을 바로 활성화한다. */
-    guildAutoNickname: toBool("MIND_GUILD_AUTO_NICKNAME", true),
-    /** 별명이 아닌 공용 기억은 관리자 승인을 받는다. */
-    guildApprovalRequired: toBool("MIND_GUILD_APPROVAL_REQUIRED", true)
+    guildEnabled: toBool("MIND_GUILD_MEMORY_ENABLED", true)
   },
 
   relationship: {
