@@ -48,33 +48,33 @@ test("normalizes equivalent user IDs before merging", () => {
   expect(result).toEqual([{ user_id: "same-user", shared_ms: 9_000, last_together_at: 9_000 }]);
 });
 
-test("renders a voice affinity PNG card", () => {
-  const png = renderVoiceAffinity("테스트", [{ name: "멤버", username: "member", sharedMs: 120_000 }]);
+test("renders a voice affinity PNG card", async () => {
+  const png = await renderVoiceAffinity("테스트", [{ name: "멤버", username: "member", sharedMs: 120_000 }]);
 
   expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
 });
 
-test("renders a voice volume PNG card", () => {
-  const png = renderVoiceAffinity("전체", [{ name: "멤버", username: "member", sharedMs: 120_000 }], 1, 1, "volume");
+test("renders a voice volume PNG card", async () => {
+  const png = await renderVoiceAffinity("전체", [{ name: "멤버", username: "member", sharedMs: 120_000 }], 1, 1, "volume");
 
   expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
 });
 
-test("renders chat and combined activity PNG cards", () => {
+test("renders chat and combined activity PNG cards", async () => {
   const entries = [{ name: "멤버", username: "member", sharedMs: 12 }];
 
-  expect(renderVoiceAffinity("오늘", entries, 1, 1, "chat").subarray(0, 8).toString("hex"))
+  expect((await renderVoiceAffinity("오늘", entries, 1, 1, "chat")).subarray(0, 8).toString("hex"))
     .toBe("89504e470d0a1a0a");
-  expect(renderVoiceAffinity("오늘", entries, 1, 1, "activity").subarray(0, 8).toString("hex"))
+  expect((await renderVoiceAffinity("오늘", entries, 1, 1, "activity")).subarray(0, 8).toString("hex"))
     .toBe("89504e470d0a1a0a");
 });
 
-test("uses a podium on the first page and adds height for rows below it", () => {
-  const empty = pngSize(renderVoiceAffinity("전체", [], 1, 0, "volume"));
-  const one = pngSize(renderVoiceAffinity("전체", makeEntries(1), 1, 1, "volume"));
-  const three = pngSize(renderVoiceAffinity("전체", makeEntries(3), 1, 3, "volume"));
-  const four = pngSize(renderVoiceAffinity("전체", makeEntries(4), 1, 4, "volume"));
-  const seven = pngSize(renderVoiceAffinity("전체", makeEntries(7), 1, 7, "volume"));
+test("uses a podium on the first page and adds height for rows below it", async () => {
+  const empty = pngSize(await renderVoiceAffinity("전체", [], 1, 0, "volume"));
+  const one = pngSize(await renderVoiceAffinity("전체", makeEntries(1), 1, 1, "volume"));
+  const three = pngSize(await renderVoiceAffinity("전체", makeEntries(3), 1, 3, "volume"));
+  const four = pngSize(await renderVoiceAffinity("전체", makeEntries(4), 1, 4, "volume"));
+  const seven = pngSize(await renderVoiceAffinity("전체", makeEntries(7), 1, 7, "volume"));
 
   expect([empty.width, one.width, four.width, seven.width]).toEqual([2400, 2400, 2400, 2400]);
   expect(empty.height).toBeLessThanOrEqual(one.height);
@@ -83,35 +83,37 @@ test("uses a podium on the first page and adds height for rows below it", () => 
   expect(four.height).toBeLessThan(seven.height);
 });
 
-test("uses the same seven-row layout for both continuation pages", () => {
+test("uses the same seven-row layout for both continuation pages", async () => {
   const entries = makeEntries(7);
-  const first = pngSize(renderVoiceAffinity("전체", entries, 1, 21, "volume"));
-  const second = pngSize(renderVoiceAffinity("전체", entries, 8, 21, "volume"));
-  const third = pngSize(renderVoiceAffinity("전체", entries, 15, 21, "volume"));
+  const first = pngSize(await renderVoiceAffinity("전체", entries, 1, 21, "volume"));
+  const second = pngSize(await renderVoiceAffinity("전체", entries, 8, 21, "volume"));
+  const third = pngSize(await renderVoiceAffinity("전체", entries, 15, 21, "volume"));
 
   expect(second).toEqual(third);
   expect(second.width).toBe(first.width);
   expect(second.height).toBeLessThan(first.height);
 });
 
-test("gives every mode the same geometry for the same row count", () => {
+test("gives every mode the same geometry for the same row count", async () => {
   const entries = makeEntries(5);
-  const sizes = (["affinity", "volume", "chat", "activity"] as const)
-    .map((mode) => pngSize(renderVoiceAffinity("테스트", entries, 1, 5, mode)));
+  const sizes = (await Promise.all(
+    (["affinity", "volume", "chat", "activity"] as const)
+      .map((mode) => renderVoiceAffinity("테스트", entries, 1, 5, mode)),
+  )).map(pngSize);
 
   expect(new Set(sizes.map((size) => size.height)).size).toBe(1);
 });
 
-test("pages the affinity ranking seven people at a time", () => {
-  const threePages = rankingCards("테스트", makeEntries(21), "affinity", "voice-affinity.png");
+test("pages the affinity ranking seven people at a time", async () => {
+  const threePages = await rankingCards("테스트", makeEntries(21), "affinity", "voice-affinity.png");
 
   expect(threePages).toHaveLength(3);
   expect(threePages.every((card) => card.name === "voice-affinity.png")).toBe(true);
-  expect(rankingCards("테스트", makeEntries(7), "affinity", "voice-affinity.png")).toHaveLength(1);
+  expect(await rankingCards("테스트", makeEntries(7), "affinity", "voice-affinity.png")).toHaveLength(1);
 });
 
-test("drops the podium from the second page onward", () => {
-  const cards = rankingCards("테스트", makeEntries(21), "affinity", "voice-affinity.png");
+test("drops the podium from the second page onward", async () => {
+  const cards = await rankingCards("테스트", makeEntries(21), "affinity", "voice-affinity.png");
   const [first, second, third] = cards.map((card) => card.attachment);
   const [firstSize, secondSize, thirdSize] = cards.map((card) => pngSize(card.attachment));
 

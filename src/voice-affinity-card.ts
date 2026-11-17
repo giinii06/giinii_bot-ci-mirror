@@ -250,7 +250,7 @@ const drawRow = (
   label(ctx, format(entry.sharedMs), 1405, y + 34, 26, 226, "center");
 };
 
-export const renderVoiceAffinity = (
+export const renderVoiceAffinity = async (
   targetName: string,
   entries: VoiceAffinityEntry[],
   startRank = 1,
@@ -309,18 +309,18 @@ export const renderVoiceAffinity = (
     }
   }
 
-  return canvas.toBuffer("image/png");
+  return canvas.encode("png");
 };
 
-export const rankingCards = (
+export const rankingCards = async (
   title: string,
   entries: VoiceAffinityEntry[],
   mode: VoiceCardMode,
   name: string,
-) => Array.from({ length: Math.ceil(entries.length / PAGE_SIZE) }, (_, page) => ({
+) => Promise.all(Array.from({ length: Math.ceil(entries.length / PAGE_SIZE) }, async (_, page) => ({
   name,
-  attachment: renderVoiceAffinity(
+  attachment: await renderVoiceAffinity(
     title, entries.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
     page * PAGE_SIZE + 1, entries.length, mode, entries[0]?.sharedMs,
   ),
-}));
+})));

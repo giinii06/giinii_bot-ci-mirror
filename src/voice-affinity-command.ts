@@ -59,7 +59,7 @@ export const sendAffinityCards = async (
     );
     cards.push({
       name: "voice-affinity.png",
-      attachment: renderVoiceAffinity(targetName, entries, page * PAGE_SIZE + 1, total, "affinity", rankingMax),
+      attachment: await renderVoiceAffinity(targetName, entries, page * PAGE_SIZE + 1, total, "affinity", rankingMax),
     });
     if (page === 0) {
       if (pageCount === 1) return interaction.editReply({ files: [cards[0]!] });
@@ -113,7 +113,7 @@ export const handleVoiceAffinityCommand = async (interaction: ChatInputCommandIn
   const targetName = targetMember?.displayName ?? target.globalName ?? target.username;
   if (!affinities.length) {
     return interaction.editReply({
-      files: [{ name: "voice-affinity.png", attachment: renderVoiceAffinity(targetName, []) }],
+      files: [{ name: "voice-affinity.png", attachment: await renderVoiceAffinity(targetName, []) }],
     });
   }
   return sendAffinityCards(interaction, targetName, affinities, (userId) => rankingProfile(guild, userId));
@@ -135,7 +135,7 @@ export const handleVoiceVolumeCommand = async (interaction: ChatInputCommandInte
   const entries = await Promise.all(rankedUsers.map(async ({ user_id, voice_total }) => ({
     ...await rankingProfile(guild, user_id), sharedMs: voice_total * 1000,
   })));
-  return sendCardPages(interaction, rankingCards("전체", entries, "volume", "voice-volume.png"));
+  return sendCardPages(interaction, await rankingCards("전체", entries, "volume", "voice-volume.png"));
 };
 
 /** 채팅량은 전체 DB에서 미리 계산한 chat_stats에서, 통화량은 음성 기록에서 읽어 유저별로 합친다. */
@@ -186,7 +186,7 @@ export const handleStatisticsCommand = async (interaction: ChatInputCommandInter
     const ranked = await Promise.all(entries.map(async ({ userId, sharedMs }) => ({
       ...await profiles.get(userId)!, sharedMs,
     })));
-    return { name, attachment: renderVoiceAffinity("전체", ranked, 1, ranked.length, mode) };
+    return { name, attachment: await renderVoiceAffinity("전체", ranked, 1, ranked.length, mode) };
   }));
   return sendCardPages(interaction, cards);
 };
