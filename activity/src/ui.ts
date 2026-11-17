@@ -54,13 +54,6 @@ export const renderPanel = (
   if (selection.mode === "all") {
     delete panel.dataset.collapsed;
     panel.classList.remove("collapsed");
-    panel.append(
-      el("h2", "panel-title", "전체 네트워크"),
-      el("p", "panel-muted",
-        `${snapshot.nodes.length}명 · 기본 표시 관계 ${snapshot.links.filter((link) => link.visibleByDefault).length}개`),
-      el("p", "panel-hint", "노드를 누르면 그 사람의 관계만 남기고, 다른 사람을 한 번 더 누르면 둘을 비교해요."),
-      el("p", "panel-note", "‘친밀도’는 같은 음성 채널에 함께 머문 시간이에요."),
-    );
     return;
   }
 

@@ -23,11 +23,23 @@ export type GraphView = {
   dispose: () => void;
 };
 
+const SPACE_BG = "#050814";
+const FIT_PADDING = 16;
 const NEUTRAL_COLOR = "#8d9bb5";
 const LINK_COLORS = { mutual: "#cfdcff", "one-sided": "#7d90b8", other: "#4b5a76" } as const;
 const LINK_WIDTHS = { mutual: 1.2, "one-sided": 0.65, other: 0 } as const;
 const LINK_OPACITY = 0.4;
 const RING_COLORS = { focus: "#8ca6ff", first: "#8a7bff", second: "#35b3a4" } as const;
+const STAR_COLORS = ["#dbe8ff", "#ffffff", "#a8bcff", "#ffe3bf", "#d8bfff"] as const;
+const NEBULA_SPECS = [
+  { pos: [-520, 260, -720], color: "#21387a", scale: 920, opacity: 0.16 },
+  { pos: [620, -220, -680], color: "#432473", scale: 880, opacity: 0.14 },
+  { pos: [-260, -480, 640], color: "#15495e", scale: 840, opacity: 0.13 },
+  { pos: [480, 380, 620], color: "#2d1d59", scale: 820, opacity: 0.13 },
+  { pos: [0, 620, -420], color: "#1c3c6b", scale: 780, opacity: 0.12 },
+] as const;
+
+type FitPhase = "tick1" | "tick2" | "initial_done" | "settled";
 
 type VisualStateKey = "centered" | "active" | "dimmed";
 type VisualStateStyle = {
@@ -149,6 +161,104 @@ const communityColorOf = (node: GraphNode): string =>
     ? NEUTRAL_COLOR
     : COMMUNITY_COLORS[node.community % COMMUNITY_COLORS.length]!;
 
+const createSpaceBackdrop = (nebulaMap: THREE.Texture | null) => {
+  const group = new THREE.Group();
+  const starCount = 900;
+  const positions = new Float32Array(starCount * 3);
+  const colors = new Float32Array(starCount * 3);
+  const sizes = new Float32Array(starCount);
+  const palette = STAR_COLORS.map((hex) => new THREE.Color(hex));
+
+  let seed = 0x51a7f3;
+  const nextRand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 0x100000000;
+  };
+
+  for (let i = 0; i < starCount; i += 1) {
+    const u = nextRand() * 2 - 1;
+    const phi = nextRand() * Math.PI * 2;
+    const radius = 440 + nextRand() * 720;
+    const planar = Math.sqrt(1 - u * u);
+    positions[i * 3] = radius * planar * Math.cos(phi);
+    positions[i * 3 + 1] = radius * planar * Math.sin(phi);
+    positions[i * 3 + 2] = radius * u;
+
+    const tint = palette[Math.floor(nextRand() * palette.length)]!;
+    const brightness = 0.45 + nextRand() * 0.55;
+    colors[i * 3] = tint.r * brightness;
+    colors[i * 3 + 1] = tint.g * brightness;
+    colors[i * 3 + 2] = tint.b * brightness;
+    sizes[i] = 1.6 + Math.pow(nextRand(), 2) * 3.4;
+  }
+
+  const starGeometry = new THREE.BufferGeometry();
+  starGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  starGeometry.setAttribute("aColor", new THREE.BufferAttribute(colors, 3));
+  starGeometry.setAttribute("aSize", new THREE.BufferAttribute(sizes, 1));
+
+  const starMaterial = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float aSize;
+      attribute vec3 aColor;
+      varying vec3 vColor;
+      void main() {
+        vColor = aColor;
+        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = clamp(aSize * (380.0 / max(1.0, -mvPos.z)), 1.3, 6.0);
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        float d = length(gl_PointCoord - vec2(0.5));
+        float alpha = 1.0 - smoothstep(0.08, 0.5, d);
+        if (alpha <= 0.01) discard;
+        gl_FragColor = vec4(vColor, alpha);
+        #include <colorspace_fragment>
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  const stars = new THREE.Points(starGeometry, starMaterial);
+  stars.raycast = () => {};
+  group.add(stars);
+
+  const nebulaMaterials: THREE.SpriteMaterial[] = [];
+  if (nebulaMap) {
+    for (const spec of NEBULA_SPECS) {
+      const material = new THREE.SpriteMaterial({
+        map: nebulaMap,
+        color: spec.color,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        opacity: spec.opacity,
+        depthWrite: false,
+      });
+      const sprite = new THREE.Sprite(material);
+      sprite.position.set(spec.pos[0], spec.pos[1], spec.pos[2]);
+      sprite.scale.set(spec.scale, spec.scale, 1);
+      sprite.raycast = () => {};
+      nebulaMaterials.push(material);
+      group.add(sprite);
+    }
+  }
+
+  return {
+    group,
+    dispose: () => {
+      starGeometry.dispose();
+      starMaterial.dispose();
+      for (const material of nebulaMaterials) material.dispose();
+      group.clear();
+    },
+  };
+};
+
 export const mountGraph = (
   container: HTMLElement,
   initial: GraphSnapshot,
@@ -161,7 +271,7 @@ export const mountGraph = (
   let visuals = new Map<string, NodeVisual>();
   let hoveredId: string | null = null;
   let generation = 0;
-  let needsFit = true;
+  let fitPhase: FitPhase = "tick1";
   let userMoved = false;
 
   const graph = new ForceGraph3D(container, { controlType: "orbit" }) as unknown as
@@ -169,6 +279,8 @@ export const mountGraph = (
 
   const sphereGeometry = new THREE.SphereGeometry(BASE_RADIUS, 36, 24);
   const sharedHaloTexture = haloTexture();
+  const spaceBackdrop = createSpaceBackdrop(sharedHaloTexture);
+  graph.scene().add(spaceBackdrop.group);
   const fallbackMap = new THREE.DataTexture(new Uint8Array([14, 22, 42, 255]), 1, 1);
   fallbackMap.colorSpace = THREE.SRGBColorSpace;
   fallbackMap.needsUpdate = true;
@@ -222,7 +334,7 @@ export const mountGraph = (
       depthWrite: false,
       depthTest: true,
     }));
-    halo.scale.set(BASE_RADIUS * 3.3, BASE_RADIUS * 3.3, 1);
+    halo.scale.set(BASE_RADIUS * 2.9, BASE_RADIUS * 2.9, 1);
     halo.raycast = () => {};
 
     const ring = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -310,7 +422,7 @@ export const mountGraph = (
     const epoch = generation;
     snapshot = next;
     selection = nextSelection;
-    needsFit = true;
+    fitPhase = "tick1";
     userMoved = false;
 
     const scales = computeNodeScales(next.nodes);
@@ -366,7 +478,7 @@ export const mountGraph = (
   graph.d3Force("gravity", createGravityForce());
 
   graph
-    .backgroundColor("#0b1020")
+    .backgroundColor(SPACE_BG)
     .showNavInfo(false)
     .nodeLabel((node) => `<div class="tooltip"><strong>${escapeHtml(node.name)}</strong>`
       + `<span>${formatDuration(node.voiceMs)}</span></div>`)
@@ -393,7 +505,7 @@ export const mountGraph = (
     })
     .onNodeClick((node) => onSelect(node.id))
     .onBackgroundClick((event) => {
-      if (event.detail >= 2) graph.zoomToFit(500, 70);
+      if (event.detail >= 2) graph.zoomToFit(500, FIT_PADDING);
       else onSelect(null);
     })
     .enableNodeDrag(false)
@@ -421,14 +533,28 @@ export const mountGraph = (
   container.addEventListener("wheel", markMoved, { passive: true });
   resize();
 
+  graph.onEngineTick(() => {
+    if (fitPhase === "tick1") {
+      fitPhase = "tick2";
+      return;
+    }
+    if (fitPhase === "tick2") {
+      fitPhase = "initial_done";
+      if (userMoved) return;
+      graph.scene().updateMatrixWorld(true);
+      graph.zoomToFit(0, FIT_PADDING);
+    }
+  });
+
   graph.onEngineStop(() => {
-    if (!needsFit || userMoved) return;
-    needsFit = false;
-    graph.zoomToFit(600, 70);
+    if (fitPhase === "settled" || userMoved) return;
+    fitPhase = "settled";
+    graph.scene().updateMatrixWorld(true);
+    graph.zoomToFit(450, FIT_PADDING);
   });
 
   rebuild(initial, initialSelection, avatars);
-  graph.cameraPosition({ x: 0, y: 0, z: 420 }, undefined, 0);
+  graph.cameraPosition({ x: 0, y: 0, z: 160 }, undefined, 0);
 
   return {
     setSnapshot: rebuild,
@@ -440,6 +566,7 @@ export const mountGraph = (
       container.removeEventListener("wheel", markMoved);
       graph.pauseAnimation();
       disposeVisuals();
+      spaceBackdrop.dispose();
       sphereGeometry.dispose();
       sharedHaloTexture?.dispose();
       fallbackMap.dispose();
