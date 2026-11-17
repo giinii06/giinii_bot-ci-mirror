@@ -122,7 +122,7 @@ async function load(nextPeriod: GraphPeriod) {
   }
 }
 
-/** 같은 탭에서 기간을 바꿀 때마다 핸드셰이크를 다시 하지 않도록 저장된 세션을 먼저 쓴다. */
+/** 페이지를 새로고침해도 같은 탭이면 핸드셰이크를 다시 하지 않도록 저장된 세션을 먼저 쓴다. */
 const resumeSession = async (): Promise<string | null> => {
   const stored = readStoredToken();
   if (!stored) return null;
