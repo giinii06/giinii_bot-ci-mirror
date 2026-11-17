@@ -133,9 +133,9 @@ ocp 서버 배포는 프로젝트 스킬 `/deploy`가 맡습니다. 푸시, 서�
 ### 준비
 
 1. Developer Portal에서 해당 애플리케이션의 **Activities**를 켭니다. 꺼져 있으면 `LAUNCH_ACTIVITY`가 거절됩니다.
-2. Activity의 **URL Mapping**에 접두사 `/`를 Funnel 호스트로 연결합니다. 스킴 없이 `instance-...ts.net`처럼 호스트만 넣습니다. iframe은 `https://<app-id>.discordsays.com/`에서 열리고 그 경로가 이 호스트로 프록시됩니다. 상대 경로 `/api/...` 호출이 그대로 서버에 닿는 이유입니다.
+2. Activity의 **URL Mapping**에 접두사 `/`를 공개 오리진 호스트로 연결합니다. 스킴 없이 `140-245-73-42.sslip.io`처럼 호스트만 넣습니다. iframe은 `https://<app-id>.discordsays.com/`에서 열리고 그 경로가 이 호스트로 프록시됩니다. 상대 경로 `/api/...` 호출이 그대로 서버에 닿는 이유입니다.
 3. OAuth2 **Redirect**에 `https://127.0.0.1`을 추가합니다. Activity의 `authorize()`가 코드를 돌려줄 때 쓰는 값입니다.
-4. 호스트에서 Funnel을 `127.0.0.1:8787`(또는 `ACTIVITY_HTTP_PORT`)로 엽니다. Docker는 compose에서 `0.0.0.0:8787`로 열고 호스트 루프백에만 게시합니다.
+4. 호스트에서 Caddy가 80·443을 받아 `127.0.0.1:8787`(또는 `ACTIVITY_HTTP_PORT`)로 넘깁니다. Docker는 compose에서 `0.0.0.0:8787`로 열고 호스트 루프백에만 게시합니다. 인증서는 Let's Encrypt에서 자동으로 받고 갱신합니다. Tailscale Funnel은 쓰지 않습니다. 공용 Funnel 경로가 요청당 5~7초를 더했고, 공인 IP 직접 연결은 0.25~1.9초였습니다.
 5. `.env`에 `ACTIVITY_ENABLED=true`와 `DISCORD_CLIENT_SECRET`(Developer Portal > OAuth2)을 넣습니다. `DISCORD_CLIENT_ID`는 비워 두면 봇 토큰 첫 조각에서 읽습니다.
 6. 봇이 그 서버에 초대되어 있어야 합니다. Activity는 서버에 설치된 앱에서만 열립니다.
 7. `bun run build:activity`로 SPA를 빌드합니다. Docker 이미지는 빌드 단계에서 자동으로 만듭니다.
