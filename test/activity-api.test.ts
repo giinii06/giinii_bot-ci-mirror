@@ -8,7 +8,10 @@ import { createActivityHandler, startActivityWebServer, type ActivityWebDeps } f
 import type { GraphSnapshot } from "../src/voice-graph-contract.js";
 
 const distDir = mkdtempSync(join(tmpdir(), "giinii-activity-"));
-writeFileSync(join(distDir, "index.html"), "<!doctype html><title>graph</title>");
+writeFileSync(
+  join(distDir, "index.html"),
+  "<!doctype html><html><head><title>graph</title></head><body><div id=\"scene\"></div></body></html>",
+);
 
 afterAll(() => rmSync(distDir, { recursive: true, force: true }));
 
@@ -266,10 +269,20 @@ test("expires the session after its lifetime", async () => {
 test("serves the built index and nothing outside it", async () => {
   const index = await call("/");
   expect(index.status).toBe(200);
+  expect(index.headers.get("content-type")).toBe("text/html; charset=utf-8");
   expect(await index.text()).toContain("graph");
   expect((await call("/package.json")).status).toBe(404);
   expect((await call("/api")).status).toBe(404);
   expect((await call("/api/unknown")).status).toBe(404);
+});
+
+test("inlines the client id into the index so the first paint needs no extra request", async () => {
+  const index = await call("/");
+  expect(await index.text()).toContain('<meta name="activity-client-id" content="app1">');
+  // SPA 경로도 같은 문서를 받으므로 설정이 함께 실린다.
+  const spa = await call("/graph/anything");
+  expect(spa.status).toBe(200);
+  expect(await spa.text()).toContain('content="app1"');
 });
 
 test("limits repeated session attempts from one client", async () => {

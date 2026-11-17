@@ -89,6 +89,9 @@ const decodeSegment = (value: string): string | null => {
   }
 };
 
+const escapeAttribute = (value: string) =>
+  value.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+
 /**
  * Activity SPA가 쓰는 HTTP 표면. 서버는 JSON과 정적 파일만 돌려주며
  * WebGL·물리 계산은 전부 브라우저에서 일어난다.
@@ -208,9 +211,28 @@ export const createActivityHandler = (deps: ActivityWebDeps) => {
     return failure(404, "not_found");
   };
 
+  /**
+   * 클라이언트 ID를 index.html에 실어 보낸다. 디스코드 프록시를 거치는 요청 하나가 2~3초라
+   * 설정을 따로 받아 오면 그만큼 첫 화면이 늦어진다. 메타 태그라 CSP는 건드리지 않는다.
+   */
+  const serveIndex = async (): Promise<Response | null> => {
+    const file = Bun.file(join(deps.distDir, "index.html"));
+    if (!await file.exists()) return null;
+    const html = await file.text();
+    const meta = `<meta name="activity-client-id" content="${escapeAttribute(deps.clientId)}">`;
+    return new Response(html.includes("<head>") ? html.replace("<head>", `<head>${meta}`) : html, {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-cache",
+        ...SECURITY_HEADERS,
+      },
+    });
+  };
+
   const serveStatic = async (pathname: string): Promise<Response> => {
     const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
     if (relative.includes("..") || relative.includes("\0")) return failure(404, "not_found");
+    if (relative === "index.html") return await serveIndex() ?? failure(404, "not_found");
     const file = Bun.file(join(deps.distDir, relative));
     if (await file.exists()) {
       const immutable = relative.startsWith("assets/");
@@ -221,12 +243,8 @@ export const createActivityHandler = (deps: ActivityWebDeps) => {
         },
       });
     }
-    if (!relative.includes(".")) {
-      const index = Bun.file(join(deps.distDir, "index.html"));
-      if (await index.exists()) {
-        return new Response(index, { headers: { "cache-control": "no-cache", ...SECURITY_HEADERS } });
-      }
-    }
+    // SPA 경로도 같은 문서를 받는다. 설정은 여기에도 실려야 한다.
+    if (!relative.includes(".")) return await serveIndex() ?? failure(404, "not_found");
     return failure(404, "not_found");
   };
 

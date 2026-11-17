@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { startAvatars } from "../activity/src/api.js";
+import { loadActivityConfig, startAvatars } from "../activity/src/api.js";
 import type { GraphSnapshot } from "../src/voice-graph-contract.js";
 
 const graph = (): GraphSnapshot => ({
@@ -15,6 +15,28 @@ const graph = (): GraphSnapshot => ({
     { id: "222", name: "나", avatarPath: null, voiceMs: 5, community: null },
   ],
   links: [],
+});
+
+test("takes the client id from the served HTML before asking the API", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetched = 0;
+  globalThis.fetch = (async () => {
+    fetched += 1;
+    return new Response(JSON.stringify({ clientId: "from-api" }));
+  }) as unknown as typeof fetch;
+
+  try {
+    const inline = { querySelector: () => ({ content: " from-html " }) } as unknown as Document;
+    expect(await loadActivityConfig(inline)).toEqual({ clientId: "from-html" });
+    expect(fetched).toBe(0);
+
+    // 인라인 값이 없는 개발 서버에서는 예전 경로로 돌아간다.
+    const empty = { querySelector: () => null } as unknown as Document;
+    expect(await loadActivityConfig(empty)).toEqual({ clientId: "from-api" });
+    expect(fetched).toBe(1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("never sends the bearer to an avatar path outside the server route", async () => {

@@ -1,5 +1,5 @@
 import { DiscordSDK } from "@discord/embedded-app-sdk";
-import { createSession, fetchActivityConfig, fetchSession } from "./api.js";
+import { createSession, loadActivityConfig, fetchSession } from "./api.js";
 
 const STORAGE_KEY = "gfg_session";
 const READY_TIMEOUT_MS = 8_000;
@@ -70,7 +70,7 @@ const waitForReady = (sdk: DiscordSDK) => new Promise<void>((resolve, reject) =>
 
 /** 디스코드와 핸드셰이크하고 OAuth 코드를 서버 세션으로 바꿔 온다. */
 export const connectActivity = async (): Promise<StoredSession> => {
-  const { clientId } = await fetchActivityConfig();
+  const { clientId } = await loadActivityConfig();
   const sdk = openSdk(clientId);
   await waitForReady(sdk);
 

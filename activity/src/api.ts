@@ -27,6 +27,19 @@ export const fetchActivityConfig = async (): Promise<ActivityConfig> => {
   return await parse(response) as ActivityConfig;
 };
 
+/**
+ * 서버가 index.html에 실어 보낸 클라이언트 ID를 먼저 쓴다. 디스코드 프록시 왕복 한 번이
+ * 2~3초라, 설정 하나 때문에 요청을 한 번 더 하면 그만큼 첫 화면이 늦어진다.
+ * 인라인 값이 없는 개발 서버에서는 예전처럼 API로 받는다.
+ */
+export const loadActivityConfig = async (
+  root: Pick<Document, "querySelector"> = document,
+): Promise<ActivityConfig> => {
+  const inline = root.querySelector<HTMLMetaElement>('meta[name="activity-client-id"]')?.content.trim();
+  if (inline) return { clientId: inline };
+  return fetchActivityConfig();
+};
+
 export const createSession = async (code: string, instanceId: string): Promise<IssuedSession> => {
   const response = await fetch("/api/session/activity", {
     method: "POST",
