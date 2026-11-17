@@ -29,17 +29,19 @@ const fakeDiscord = () => {
     [guildPath(targetGuildId), response(removedCommands)],
   ]);
   const writes = [];
+  const bodies = [];
   client.rest.request = async ({ method, fullRoute, body }) => {
     if (method === "GET" && state.has(fullRoute)) return structuredClone(state.get(fullRoute));
     if (method === "PUT" && state.has(fullRoute) && Array.isArray(body)) {
       writes.push(fullRoute);
+      bodies.push({ fullRoute, body: structuredClone(body) });
       const registered = response(body);
       state.set(fullRoute, registered);
       return structuredClone(registered);
     }
     throw new Error(`Unexpected Discord request: ${method} ${fullRoute}`);
   };
-  return { client, state, writes };
+  return { client, state, writes, bodies };
 };
 
 test("removes legacy AI commands globally and from guilds while preserving voice commands and roulette", async () => {
@@ -75,7 +77,7 @@ test("a newly joined guild sync also ensures globals and leaves other guild regi
 });
 
 test("preserves the Activity Entry Point command when replacing global commands", async () => {
-  const { client, state } = fakeDiscord();
+  const { client, state, bodies } = fakeDiscord();
   state.get(globalPath).push({
     name: "launch", description: "3D 친밀도 그래프 열기", type: 4, handler: 2,
     id: "1000000000000000099", application_id: applicationId, version: "1",
@@ -88,5 +90,10 @@ test("preserves the Activity Entry Point command when replacing global commands"
     expect(entryPoint).toMatchObject({ type: 4, handler: 2 });
     expect(global.filter((command) => command.type !== 4).map((command) => command.name))
       .toEqual(["친밀도그래프", "친밀도", "통화량", "통계"]);
+
+    // 실제 PUT 본문도 확인한다. fake API가 본문을 그대로 돌려주므로 상태만 보면 누락을 놓친다.
+    const put = bodies.find((entry) => entry.fullRoute === globalPath);
+    expect(put.body.find((command) => command.type === 4))
+      .toMatchObject({ handler: 2, integration_types: [0], contexts: [0] });
   } finally { await client.destroy(); }
 });

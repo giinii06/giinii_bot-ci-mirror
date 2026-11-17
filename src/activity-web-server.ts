@@ -52,10 +52,12 @@ const bearerToken = (request: Request): string | undefined => {
   return header.slice(BEARER_PREFIX.length).trim() || undefined;
 };
 
-const clientKey = (request: Request) =>
-  request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-  || request.headers.get("x-real-ip")?.trim()
-  || "local";
+const clientKey = (request: Request) => {
+  // Funnel이 앞에 붙인 실제 홉을 쓴다. 클라이언트가 보낸 첫 값은 위조할 수 있다.
+  const forwarded = request.headers.get("x-forwarded-for")
+    ?.split(",").map((part) => part.trim()).filter(Boolean);
+  return forwarded?.at(-1) || request.headers.get("x-real-ip")?.trim() || "local";
+};
 
 const createLimiter = (limit: number, windowMs: number) => {
   const buckets = new Map<string, { count: number; resetAt: number }>();
@@ -97,10 +99,14 @@ export const createActivityHandler = (deps: ActivityWebDeps) => {
   const fetchImage = deps.fetchImage ?? avatars.load;
   const sessionLimit = createLimiter(10, 60_000);
   const graphLimit = createLimiter(120, 60_000);
+  const avatarLimit = createLimiter(300, 60_000);
 
   const requireSession = async (request: Request, now: number): Promise<ActivitySession | null> => {
     const session = findSession(bearerToken(request), now);
     if (!session) return null;
+    // 토큰이 다른 Activity 인스턴스로 옮겨 쓰이지 않게 요청마다 확인한다.
+    const instanceId = request.headers.get("x-activity-instance")?.trim();
+    if (!instanceId || instanceId !== session.instanceId) return null;
     if (now - session.verifiedAt <= REVERIFY_MS) return session;
     const allowed = deps.commandEnabled(session.guildId)
       && await deps.checkMember(session.guildId, session.userId).catch(() => false);
@@ -180,6 +186,7 @@ export const createActivityHandler = (deps: ActivityWebDeps) => {
     if (path.startsWith(AVATAR_PREFIX)) {
       if (request.method !== "GET") return failure(405, "method_not_allowed");
       if (!session) return failure(401, "unauthorized");
+      if (!avatarLimit(session.id, now)) return failure(429, "rate_limited");
       const userId = decodeSegment(path.slice(AVATAR_PREFIX.length));
       if (!userId || !/^\d{1,32}$/.test(userId)) return failure(404, "not_found");
       const avatarSource = deps.avatarUrl(session.guildId, userId);
@@ -224,7 +231,7 @@ export const createActivityHandler = (deps: ActivityWebDeps) => {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const now = clock();
-    if (url.pathname.startsWith("/api/")) return handleApi(request, url, now);
+    if (url.pathname === "/api" || url.pathname.startsWith("/api/")) return handleApi(request, url, now);
     if (request.method !== "GET" && request.method !== "HEAD") return failure(405, "method_not_allowed");
     return serveStatic(url.pathname);
   };

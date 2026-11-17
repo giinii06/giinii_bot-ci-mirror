@@ -17,15 +17,42 @@ const graph = (): GraphSnapshot => ({
   links: [],
 });
 
+test("never sends the bearer to an avatar path outside the server route", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetched = false;
+
+  globalThis.fetch = (async () => {
+    fetched = true;
+    return new Response(new Blob([new Uint8Array([1])], { type: "image/png" }));
+  }) as unknown as typeof fetch;
+
+  try {
+    const snapshot = graph();
+    snapshot.nodes[0]!.avatarPath = "https://evil.test/avatar.png";
+    const urls = await hydrateAvatars(snapshot, "tok", "i-abc");
+
+    expect(urls).toEqual([]);
+    expect(snapshot.nodes[0]!.avatarPath).toBeNull();
+    expect(fetched).toBe(false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetches a protected avatar with the bearer and swaps in an object URL", async () => {
   const originalFetch = globalThis.fetch;
   const originalCreate = URL.createObjectURL;
   const originalRevoke = URL.revokeObjectURL;
-  const seen: { url: string; auth: string | null }[] = [];
+  const seen: { url: string; auth: string | null; instance: string | null }[] = [];
   let created = 0;
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    seen.push({ url: String(input), auth: new Headers(init?.headers).get("authorization") });
+    const headers = new Headers(init?.headers);
+    seen.push({
+      url: String(input),
+      auth: headers.get("authorization"),
+      instance: headers.get("x-activity-instance"),
+    });
     return new Response(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
   }) as unknown as typeof fetch;
   URL.createObjectURL = (() => `blob:test/${++created}`) as typeof URL.createObjectURL;
@@ -33,12 +60,12 @@ test("fetches a protected avatar with the bearer and swaps in an object URL", as
 
   try {
     const snapshot = graph();
-    const urls = await hydrateAvatars(snapshot, "tok");
+    const urls = await hydrateAvatars(snapshot, "tok", "i-abc");
 
     expect(urls).toEqual(["blob:test/1"]);
     expect(snapshot.nodes[0]!.avatarPath).toBe("blob:test/1");
     expect(snapshot.nodes[1]!.avatarPath).toBeNull();
-    expect(seen).toEqual([{ url: "/api/graph/avatar/111", auth: "Bearer tok" }]);
+    expect(seen).toEqual([{ url: "/api/graph/avatar/111", auth: "Bearer tok", instance: "i-abc" }]);
   } finally {
     globalThis.fetch = originalFetch;
     URL.createObjectURL = originalCreate;

@@ -60,13 +60,11 @@ test("treats a DM or group-DM instance as unusable", async () => {
   expect(await auth(fetchImpl).resolveInstance("i-abc")).toBeNull();
 });
 
-test("rejects a malformed instance id without calling Discord", async () => {
+test("rejects an empty or oversized instance id without calling Discord", async () => {
   const { fetchImpl, calls } = recorder(() => json({ location: { kind: "gc", guild_id: "g1" }, users: [] }));
   const resolve = auth(fetchImpl).resolveInstance;
 
   expect(await resolve("")).toBeNull();
-  expect(await resolve("abc")).toBeNull();
-  expect(await resolve("i_abc")).toBeNull();
   expect(await resolve(`i-${"a".repeat(200)}`)).toBeNull();
   expect(calls).toHaveLength(0);
 });

@@ -17,7 +17,10 @@ const parse = async (response: Response): Promise<unknown> => {
   throw new ApiError(response.status, (body as { error?: string } | null)?.error ?? "request_failed");
 };
 
-const authorized = (token: string) => ({ authorization: `Bearer ${token}` });
+const authorized = (token: string, instanceId: string) => ({
+  authorization: `Bearer ${token}`,
+  "x-activity-instance": instanceId,
+});
 
 export const fetchActivityConfig = async (): Promise<ActivityConfig> => {
   const response = await fetch("/api/activity/config");
@@ -33,13 +36,15 @@ export const createSession = async (code: string, instanceId: string): Promise<I
   return await parse(response) as IssuedSession;
 };
 
-export const fetchSession = async (token: string): Promise<SessionInfo> => {
-  const response = await fetch("/api/session", { headers: authorized(token) });
+export const fetchSession = async (token: string, instanceId: string): Promise<SessionInfo> => {
+  const response = await fetch("/api/session", { headers: authorized(token, instanceId) });
   return await parse(response) as SessionInfo;
 };
 
-export const fetchGraph = async (period: GraphPeriod, token: string, signal?: AbortSignal): Promise<GraphSnapshot> => {
-  const response = await fetch(`/api/graph?period=${period}`, { headers: authorized(token), signal });
+export const fetchGraph = async (
+  period: GraphPeriod, token: string, instanceId: string, signal?: AbortSignal,
+): Promise<GraphSnapshot> => {
+  const response = await fetch(`/api/graph?period=${period}`, { headers: authorized(token, instanceId), signal });
   return await parse(response) as GraphSnapshot;
 };
 
@@ -51,6 +56,7 @@ export const fetchGraph = async (period: GraphPeriod, token: string, signal?: Ab
 export const hydrateAvatars = async (
   snapshot: GraphSnapshot,
   token: string,
+  instanceId: string,
   signal?: AbortSignal,
 ): Promise<string[]> => {
   const created: string[] = [];
@@ -58,7 +64,12 @@ export const hydrateAvatars = async (
     await Promise.all(snapshot.nodes.map(async (node) => {
       const path = node.avatarPath;
       if (!path) return;
-      const response = await fetch(path, { headers: authorized(token), signal }).catch(() => null);
+      // 스냅샷이 외부 URL을 들고 오면 베어러 토큰이 그쪽으로 나간다. 서버 경로만 받는다.
+      if (!path.startsWith("/api/graph/avatar/")) {
+        node.avatarPath = null;
+        return;
+      }
+      const response = await fetch(path, { headers: authorized(token, instanceId), signal }).catch(() => null);
       signal?.throwIfAborted();
       if (!response?.ok) {
         node.avatarPath = null;

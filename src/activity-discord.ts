@@ -6,7 +6,6 @@
  */
 const DISCORD_API_BASE = "https://discord.com/api/v10";
 const TIMEOUT_MS = 5_000;
-const INSTANCE_ID_PATTERN = /^i-[A-Za-z0-9-]+$/;
 
 export type ActivityInstance = { guildId: string; userIds: string[] };
 export type ActivityIdentity = { userId: string };
@@ -34,7 +33,6 @@ export const createDiscordActivityAuth = ({
 }: DiscordActivityAuthOptions): DiscordActivityAuth => {
   const resolveInstance = async (instanceId: string): Promise<ActivityInstance | null> => {
     if (typeof instanceId !== "string" || !instanceId || instanceId.length > 128) return null;
-    if (!INSTANCE_ID_PATTERN.test(instanceId)) return null;
 
     const response = await fetchImpl(
       `${apiBase}/applications/${clientId}/activity-instances/${encodeURIComponent(instanceId)}`,

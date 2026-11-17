@@ -1,7 +1,7 @@
 import "./style.css";
 import type { GraphPeriod, GraphSnapshot } from "../../src/voice-graph-contract.js";
-import { ApiError, fetchGraph, fetchSession, hydrateAvatars } from "./api.js";
-import { NotInDiscordError, clearStoredToken, connectActivity, readStoredToken } from "./discord.js";
+import { ApiError, fetchGraph, hydrateAvatars } from "./api.js";
+import { NotInDiscordError, connectActivity } from "./discord.js";
 import { mountGraph, type GraphView } from "./graph.js";
 import { initialSelection, pruneSelection, selectNode, type Selection } from "./selection.js";
 import { bindPeriods, renderPanel, renderTableFallback, setStatus } from "./ui.js";
@@ -37,6 +37,7 @@ const messageFor = (error: unknown) => {
 };
 
 let sessionToken: string | null = null;
+let sessionInstance: string | null = null;
 let snapshot: GraphSnapshot | null = null;
 let selection: Selection = initialSelection;
 let view: GraphView | null = null;
@@ -82,7 +83,8 @@ const mount = async (next: GraphSnapshot) => {
 
 async function load(nextPeriod: GraphPeriod) {
   const token = sessionToken;
-  if (!token) return;
+  const instanceId = sessionInstance;
+  if (!token || !instanceId) return;
   const id = ++requestId;
   controller?.abort();
   const local = new AbortController();
@@ -92,9 +94,9 @@ async function load(nextPeriod: GraphPeriod) {
   setStatus(status, "불러오는 중…");
 
   try {
-    const next = await fetchGraph(nextPeriod, token, local.signal);
+    const next = await fetchGraph(nextPeriod, token, instanceId, local.signal);
     if (id !== requestId) return;
-    const nextAvatars = await hydrateAvatars(next, token, local.signal);
+    const nextAvatars = await hydrateAvatars(next, token, instanceId, local.signal);
     if (id !== requestId) {
       releaseAvatars(nextAvatars);
       return;
@@ -122,19 +124,11 @@ async function load(nextPeriod: GraphPeriod) {
   }
 }
 
-/** 페이지를 새로고침해도 같은 탭이면 핸드셰이크를 다시 하지 않도록 저장된 세션을 먼저 쓴다. */
-const resumeSession = async (): Promise<string | null> => {
-  const stored = readStoredToken();
-  if (!stored) return null;
-  const alive = await fetchSession(stored).then(() => true, () => false);
-  if (alive) return stored;
-  clearStoredToken();
-  return null;
-};
-
 const boot = async () => {
   try {
-    sessionToken = await resumeSession() ?? await connectActivity();
+    const session = await connectActivity();
+    sessionToken = session.token;
+    sessionInstance = session.instanceId;
   } catch (error) {
     setStatus(status, messageFor(error), "error");
     syncPeriodButtons(period, true);

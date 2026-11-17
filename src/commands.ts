@@ -67,14 +67,14 @@ const syncCommandSet = async (manager: Pick<ApplicationCommandManager, "fetch" |
     .map((command) => {
       const raw = command.toJSON() as unknown as {
         name: string; description: string; type: ApplicationCommandType; handler?: number;
-        integration_types?: number[]; contexts?: number[];
+        integrationTypes?: number[]; contexts?: number[];
       };
       return {
         name: raw.name,
         description: raw.description,
         type: raw.type,
         handler: raw.handler ?? 2,
-        integration_types: raw.integration_types,
+        integration_types: raw.integrationTypes,
         contexts: raw.contexts,
       };
     });

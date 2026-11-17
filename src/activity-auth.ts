@@ -46,6 +46,8 @@ export const createSession = (
 
 export const findSession = (id: string | undefined, now = Date.now()): ActivitySession | null => {
   if (!id) return null;
+  // 만료된 세션은 다시 조회되지 않으면 남는다. 조회가 잦은 쪽에서도 한 번씩 쓸어낸다.
+  if (sessions.size > 256) sweep(now);
   const session = sessions.get(id);
   if (!session) return null;
   if (session.expiresAt <= now) {

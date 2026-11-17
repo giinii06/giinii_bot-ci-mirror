@@ -86,12 +86,16 @@ const startSession = (body: Record<string, unknown>) =>
     body: JSON.stringify(body),
   });
 
-const authed = (token: string) => ({ authorization: `Bearer ${token}` });
+const authed = (token: string, instanceId: string) => ({
+  authorization: `Bearer ${token}`,
+  "x-activity-instance": instanceId,
+});
 
 const openSession = async (instanceId = "i-abc", code = "code-ok") => {
   const response = await startSession({ code, instanceId });
   expect(response.status).toBe(200);
-  return (await response.json() as { token: string }).token;
+  const body = await response.json() as { token: string };
+  return { token: body.token, instanceId };
 };
 
 beforeEach(() => {
@@ -123,9 +127,22 @@ test("opens a bearer session from an OAuth code and answers with it", async () =
   // 세션은 쿠키가 아니라 베어러 토큰이다. 브라우저가 자동으로 붙일 수 있는 자격 증명을 남기지 않는다.
   expect(response.headers.get("set-cookie")).toBeNull();
 
-  const session = await call("/api/session", { headers: authed(body.token) });
+  const session = await call("/api/session", { headers: authed(body.token, "i-abc") });
   expect(session.status).toBe(200);
   expect(await session.json()).toEqual({ guildId: "g1", userId: "u1", expiresAt: body.expiresAt });
+});
+
+test("resumes a session only from the activity instance that issued it", async () => {
+  const session = await openSession("i-abc");
+  // 다른 인스턴스에서 저장된 토큰을 되살리려 하면 거절한다. 그러면 SPA가 새로 인증한다.
+  const mismatch = await call("/api/session", { headers: authed(session.token, "i-two") });
+  expect(mismatch.status).toBe(401);
+  expect(await mismatch.json()).toEqual({ error: "unauthorized" });
+  // 인스턴스를 아예 밝히지 않는 예전 형식도 통과시키지 않는다.
+  expect((await call("/api/session", {
+    headers: { authorization: `Bearer ${session.token}` },
+  })).status).toBe(401);
+  expect((await call("/api/session", { headers: authed(session.token, "i-abc") })).status).toBe(200);
 });
 
 test("takes the guild from the activity instance even when the body names another one", async () => {
@@ -133,8 +150,8 @@ test("takes the guild from the activity instance even when the body names anothe
   expect(response.status).toBe(200);
   expect((await response.json() as { guildId: string }).guildId).toBe("g1");
 
-  const token = await openSession();
-  const graph = await call("/api/graph?period=all", { headers: authed(token) });
+  const session = await openSession();
+  const graph = await call("/api/graph?period=all", { headers: authed(session.token, session.instanceId) });
   expect(graph.status).toBe(200);
   expect(calls).toEqual([{ guildId: "g1", period: "all" }]);
   expect(memberChecks.every((check) => check.guildId === "g1")).toBe(true);
@@ -188,52 +205,54 @@ test("rejects a session body that is not JSON or misses a field", async () => {
 
 test("serves the snapshot only to a bearer session and rejects unknown periods", async () => {
   expect((await call("/api/graph?period=all")).status).toBe(401);
-  expect((await call("/api/graph?period=all", { headers: authed("nope") })).status).toBe(401);
+  expect((await call("/api/graph?period=all", { headers: authed("nope", "i-abc") })).status).toBe(401);
   // 링크 시절의 쿠키는 더 이상 어떤 경로로도 통하지 않는다.
   expect((await call("/api/graph?period=all", { headers: { cookie: "gfg_session=nope" } })).status).toBe(401);
 
-  const token = await openSession();
-  const ok = await call("/api/graph?period=7d", { headers: authed(token) });
+  const session = await openSession();
+  const ok = await call("/api/graph?period=7d", { headers: authed(session.token, session.instanceId) });
   expect(ok.status).toBe(200);
   const body = await ok.json() as GraphSnapshot;
   expect(body.period).toBe("7d");
   expect(body.nodes.map((node) => node.id)).toEqual(["111", "222"]);
   expect(ok.headers.get("cache-control")).toBe("private, no-store");
   expect(calls).toEqual([{ guildId: "g1", period: "7d" }]);
-  expect((await call("/api/graph?period=1y", { headers: authed(token) })).status).toBe(422);
+  expect((await call("/api/graph?period=1y", { headers: authed(session.token, session.instanceId) })).status).toBe(422);
 });
 
 test("proxies only avatars that belong to the current graph", async () => {
-  const token = await openSession();
-  const allowed = await call("/api/graph/avatar/111", { headers: authed(token) });
+  const session = await openSession();
+  const headers = authed(session.token, session.instanceId);
+  const allowed = await call("/api/graph/avatar/111", { headers });
   expect(allowed.status).toBe(200);
   expect(allowed.headers.get("content-type")).toBe("image/png");
   expect(new Uint8Array(await allowed.arrayBuffer())).toEqual(new Uint8Array([137, 80, 78, 71]));
-  expect((await call("/api/graph/avatar/222", { headers: authed(token) })).status).toBe(404);
-  expect((await call("/api/graph/avatar/abc", { headers: authed(token) })).status).toBe(404);
+  expect((await call("/api/graph/avatar/222", { headers })).status).toBe(404);
+  expect((await call("/api/graph/avatar/abc", { headers })).status).toBe(404);
 });
 
 test("answers 404 for a malformed percent escape instead of failing", async () => {
-  const token = await openSession();
-  const response = await call("/api/graph/avatar/%E0%A4%A", { headers: authed(token) });
+  const session = await openSession();
+  const response = await call("/api/graph/avatar/%E0%A4%A", { headers: authed(session.token, session.instanceId) });
   expect(response.status).toBe(404);
   expect(await response.json()).toEqual({ error: "not_found" });
 });
 
 test("re-checks membership after the freshness window and fails closed", async () => {
-  const token = await openSession();
+  const session = await openSession();
+  const headers = authed(session.token, session.instanceId);
   state.now += REVERIFY_MS + 1;
-  expect((await call("/api/graph?period=all", { headers: authed(token) })).status).toBe(200);
+  expect((await call("/api/graph?period=all", { headers })).status).toBe(200);
   state.now += REVERIFY_MS + 1;
   state.member = false;
-  expect((await call("/api/graph?period=all", { headers: authed(token) })).status).toBe(401);
-  expect((await call("/api/session", { headers: authed(token) })).status).toBe(401);
+  expect((await call("/api/graph?period=all", { headers })).status).toBe(401);
+  expect((await call("/api/session", { headers })).status).toBe(401);
 });
 
 test("expires the session after its lifetime", async () => {
-  const token = await openSession();
+  const session = await openSession();
   state.now += SESSION_TTL_MS + 1;
-  expect((await call("/api/session", { headers: authed(token) })).status).toBe(401);
+  expect((await call("/api/session", { headers: authed(session.token, session.instanceId) })).status).toBe(401);
 });
 
 test("serves the built index and nothing outside it", async () => {
@@ -241,6 +260,7 @@ test("serves the built index and nothing outside it", async () => {
   expect(index.status).toBe(200);
   expect(await index.text()).toContain("graph");
   expect((await call("/package.json")).status).toBe(404);
+  expect((await call("/api")).status).toBe(404);
   expect((await call("/api/unknown")).status).toBe(404);
 });
 
@@ -254,6 +274,19 @@ test("limits repeated session attempts from one client", async () => {
     expect((await attempt()).status).toBe(401);
   }
   expect((await attempt()).status).toBe(429);
+});
+
+test("keys the session limit on the last forwarded hop, not a spoofable first one", async () => {
+  const attempt = (forwardedFor: string) => call("/api/session/activity", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-forwarded-for": forwardedFor },
+    body: JSON.stringify({ code: "code-missing", instanceId: "i-abc" }),
+  });
+  for (let round = 0; round < 10; round += 1) {
+    expect((await attempt("spoofed, 203.0.113.7")).status).toBe(401);
+  }
+  expect((await attempt("spoofed, 203.0.113.7")).status).toBe(429);
+  expect((await attempt("spoofed, 203.0.113.8")).status).toBe(401);
 });
 
 test("starts on a real port and serves the built index", async () => {
