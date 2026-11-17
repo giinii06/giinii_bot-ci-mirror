@@ -73,6 +73,9 @@ export const connectActivity = async (): Promise<StoredSession> => {
   const { clientId } = await loadActivityConfig();
   const sdk = openSdk(clientId);
   await waitForReady(sdk);
+  // 다른 채널로 넘어갈 때 작은 창으로 따라오지 않게 한다. 그래프는 이 채널에만 남는다.
+  // 실패해도 그래프는 그대로 열려야 하므로 삼킨다.
+  await sdk.commands.setConfig({ use_interactive_pip: false }).catch(() => undefined);
 
   // 같은 인스턴스의 새로고침이면 저장된 세션을 쓴다. 다른 인스턴스(다른 길드)의
   // 토큰을 재사용하면 현재 Activity의 명령 게이트를 건너뛰므로 인스턴스까지 비교한다.
