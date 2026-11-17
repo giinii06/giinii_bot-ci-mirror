@@ -94,7 +94,7 @@ const mount = async (next: GraphSnapshot, avatars: AvatarSource) => {
   }
   try {
     const { mountGraph } = await loadGraph();
-    view = await mountGraph(scene, next, selection, handleSelect, avatars);
+    view = mountGraph(scene, next, selection, handleSelect, avatars);
     bootPanel.remove();
   } catch (error) {
     console.error(error);
@@ -122,11 +122,15 @@ async function load(nextPeriod: GraphPeriod, preloaded?: GraphSnapshot) {
     snapshot = next;
     selection = pruneSelection(selection, next);
     try {
-      if (view) await view.setSnapshot(next, selection, avatars);
+      if (view) view.setSnapshot(next, selection, avatars);
       else await mount(next, avatars);
     } catch (error) {
       releaseAvatars(avatars.urls);
       throw error;
+    }
+    if (id !== requestId) {
+      releaseAvatars(avatars.urls);
+      return;
     }
     // 새 화면이 붙기 전에 이전 URL을 해제하면 텍스처가 빈 채로 남는다. 순서를 지킨다.
     const previous = avatarUrls;

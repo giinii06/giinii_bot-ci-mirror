@@ -1,11 +1,11 @@
 :root {
   color-scheme: dark;
-  --bg: #070c17;
-  --surface: rgba(15, 23, 41, 0.9);
-  --line: rgba(140, 165, 210, 0.16);
-  --text: #e8eefc;
-  --muted: #93a3c2;
-  --accent: #7c9dff;
+  --bg: #0b1020;
+  --surface: rgba(21, 30, 48, 0.92);
+  --line: rgba(145, 170, 215, 0.18);
+  --text: #ecf1fb;
+  --muted: #a5b2cc;
+  --accent: #8ca6ff;
   --first: #8a7bff;
   --second: #35b3a4;
 }
@@ -134,7 +134,8 @@ body {
 }
 
 .periods button {
-  padding: 6px 12px;
+  min-height: 40px;
+  padding: 8px 14px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -160,20 +161,65 @@ body {
   left: calc(12px + env(safe-area-inset-left));
   right: calc(12px + env(safe-area-inset-right));
   bottom: calc(12px + env(safe-area-inset-bottom));
-  max-height: 42vh;
+  max-height: 34vh;
   overflow: auto;
-  padding: 14px 16px 12px;
+  padding: 16px 18px 14px;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 20px;
   background: var(--surface);
   backdrop-filter: blur(16px);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
   font-size: 13px;
   line-height: 1.5;
   -webkit-overflow-scrolling: touch;
 }
 
+.panel:has(.panel-body) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .panel:empty {
   display: none;
+}
+
+.panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.panel-body {
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.panel.collapsed {
+  max-height: none;
+}
+
+.panel.collapsed .panel-body {
+  display: none;
+}
+
+.panel.collapsed .panel-title {
+  margin-bottom: 0;
+}
+
+.panel-toggle {
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(124, 157, 255, 0.1);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
 }
 
 @media (min-width: 900px) {
@@ -225,7 +271,7 @@ body {
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
-  padding: 4px 0;
+  padding: 6px 0;
   border-bottom: 1px solid rgba(140, 165, 210, 0.08);
 }
 
@@ -274,8 +320,8 @@ body {
   margin: 8px 0 4px;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(124, 157, 255, 0.06);
+  border-radius: 14px;
+  background: rgba(124, 157, 255, 0.09);
 }
 
 .metric-label {
@@ -292,6 +338,12 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+@media (max-width: 420px) {
+  .compare-columns {
+    grid-template-columns: 1fr;
+  }
 }
 
 .compare-block.first .panel-subtitle {

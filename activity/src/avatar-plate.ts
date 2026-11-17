@@ -18,37 +18,56 @@ export const loadImage = (url: string) => new Promise<HTMLImageElement>((resolve
   image.src = url;
 });
 
-/**
- * 원형으로 잘라낸 아바타 판. 구에 그대로 UV 매핑하면 얼굴이 왜곡되므로
- * 구 앞에 카메라를 향하는 판을 따로 붙인다. 사진이 없으면 이니셜로 채운다.
- */
-export const plateTexture = (source: HTMLImageElement | null, fallback: string): THREE.Texture | null => {
+const canvasTexture = (draw: (context: CanvasRenderingContext2D) => void): THREE.Texture | null => {
   const canvas = document.createElement("canvas");
   canvas.width = PLATE_SIZE;
   canvas.height = PLATE_SIZE;
   const context = canvas.getContext("2d");
   if (!context) return null;
-  context.beginPath();
-  context.arc(PLATE_SIZE / 2, PLATE_SIZE / 2, PLATE_SIZE / 2 - 1, 0, Math.PI * 2);
-  context.closePath();
-  context.clip();
-  if (source) {
-    const side = Math.min(source.naturalWidth, source.naturalHeight);
-    context.drawImage(
-      source, (source.naturalWidth - side) / 2, (source.naturalHeight - side) / 2, side, side,
-      0, 0, PLATE_SIZE, PLATE_SIZE,
-    );
-  } else {
-    context.fillStyle = "#223049";
-    context.fillRect(0, 0, PLATE_SIZE, PLATE_SIZE);
-    context.fillStyle = "#cfdbf2";
-    context.font = "600 50px system-ui, -apple-system, sans-serif";
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillText(fallback, PLATE_SIZE / 2, PLATE_SIZE / 2 + 2);
-  }
+  draw(context);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.needsUpdate = true;
   return texture;
 };
+
+/**
+ * 원형으로 잘라낸 아바타 판. 구에 그대로 UV 매핑하면 얼굴이 왜곡되므로
+ * 구 앞에 카메라를 향하는 판을 따로 붙인다. 사진이 없으면 이니셜로 채운다.
+ */
+export const plateTexture = (source: HTMLImageElement | null, fallback: string): THREE.Texture | null =>
+  canvasTexture((context) => {
+    context.beginPath();
+    context.arc(PLATE_SIZE / 2, PLATE_SIZE / 2, PLATE_SIZE / 2 - 1, 0, Math.PI * 2);
+    context.closePath();
+    context.clip();
+    if (source) {
+      const side = Math.min(source.naturalWidth, source.naturalHeight);
+      context.drawImage(
+        source, (source.naturalWidth - side) / 2, (source.naturalHeight - side) / 2, side, side,
+        0, 0, PLATE_SIZE, PLATE_SIZE,
+      );
+    } else {
+      context.fillStyle = "#19243b";
+      context.fillRect(0, 0, PLATE_SIZE, PLATE_SIZE);
+      context.fillStyle = "#f0f2ff";
+      context.font = "600 50px system-ui, -apple-system, sans-serif";
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.fillText(fallback, PLATE_SIZE / 2, PLATE_SIZE / 2 + 2);
+    }
+    context.beginPath();
+    context.arc(PLATE_SIZE / 2, PLATE_SIZE / 2, PLATE_SIZE / 2 - 4, 0, Math.PI * 2);
+    context.lineWidth = 4;
+    context.strokeStyle = "rgba(255, 255, 255, 0.28)";
+    context.stroke();
+  });
+
+export const ringTexture = (color: string): THREE.Texture | null =>
+  canvasTexture((context) => {
+    context.beginPath();
+    context.arc(PLATE_SIZE / 2, PLATE_SIZE / 2, PLATE_SIZE / 2 - 6, 0, Math.PI * 2);
+    context.lineWidth = 7;
+    context.strokeStyle = color;
+    context.stroke();
+  });

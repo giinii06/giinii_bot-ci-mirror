@@ -52,6 +52,8 @@ export const renderPanel = (
   const nameOf = (id: string) => names.get(id) ?? "알 수 없는 유저";
 
   if (selection.mode === "all") {
+    delete panel.dataset.collapsed;
+    panel.classList.remove("collapsed");
     panel.append(
       el("h2", "panel-title", "전체 네트워크"),
       el("p", "panel-muted",
@@ -62,10 +64,13 @@ export const renderPanel = (
     return;
   }
 
+  let title: HTMLElement;
+  const body = el("div", "panel-body");
+
   if (selection.mode === "focus") {
     const report = focusReport(snapshot, selection.userId);
-    panel.append(
-      el("h2", "panel-title", nameOf(report.id)),
+    title = el("h2", "panel-title", nameOf(report.id));
+    body.append(
       el("p", "panel-muted", `${PERIOD_LABEL[snapshot.period]} 음성 접속 ${formatDuration(report.voiceMs)}`),
       el("h3", "panel-subtitle", "주요 상대"),
       listOf(names, report.neighbors),
@@ -74,8 +79,8 @@ export const renderPanel = (
   } else {
     const first = nameOf(selection.first);
     if (!selection.second) {
-      panel.append(
-        el("h2", "panel-title", first),
+      title = el("h2", "panel-title", first);
+      body.append(
         el("p", "panel-hint", "비교할 두 번째 사람을 눌러 주세요."),
         el("p", "panel-muted", `${PERIOD_LABEL[snapshot.period]} 음성 접속 ${formatDuration(focusReport(snapshot, selection.first).voiceMs)}`),
       );
@@ -83,15 +88,14 @@ export const renderPanel = (
       const secondId = selection.second;
       const secondName = nameOf(secondId);
       const report = compareReport(snapshot, selection.first, secondId);
-      const title = el("h2", "panel-title compare-title");
+      title = el("h2", "panel-title compare-title");
       title.append(el("span", "name-first", first), el("span", "versus", "vs"), el("span", "name-second", secondName));
-      panel.append(title);
 
       const direct = el("div", "metric");
-      direct.append(el("span", "metric-label", "둘만의 동시 접속"));
+      direct.append(el("span", "metric-label", "두 사람의 같은 채널 동시 접속"));
       direct.append(el("strong", "metric-value", report.directMs > 0
         ? formatDuration(report.directMs) : "함께한 통화 기록 없음"));
-      panel.append(direct);
+      body.append(direct);
 
       const shared = el("section", "compare-block");
       shared.append(el("h3", "panel-subtitle", `공통 상대 ${report.sharedNeighbors.length}명`));
@@ -106,7 +110,7 @@ export const renderPanel = (
       } else {
         shared.append(el("p", "panel-muted", "공통으로 함께한 사람이 없어요."));
       }
-      panel.append(shared);
+      body.append(shared);
 
       const columns = el("div", "compare-columns");
       for (const [side, label, entries] of [
@@ -118,14 +122,34 @@ export const renderPanel = (
         column.append(listOf(names, entries));
         columns.append(column);
       }
-      panel.append(columns);
+      body.append(columns);
     }
   }
 
   const clear = el("button", "panel-clear", "전체 보기");
   clear.type = "button";
   clear.addEventListener("click", handlers.onClear);
-  panel.append(clear);
+  body.append(clear);
+
+  const toggle = el("button", "panel-toggle");
+  toggle.type = "button";
+  const setCollapsed = (collapsed: boolean) => {
+    panel.classList.toggle("collapsed", collapsed);
+    panel.dataset.collapsed = String(collapsed);
+    toggle.textContent = collapsed ? "펼치기" : "접기";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  };
+  const initialCollapsed = panel.dataset.collapsed !== undefined
+    ? panel.dataset.collapsed === "true"
+    : window.matchMedia("(max-width: 720px)").matches;
+  setCollapsed(initialCollapsed);
+  toggle.addEventListener("click", () => {
+    setCollapsed(!panel.classList.contains("collapsed"));
+  });
+
+  const header = el("div", "panel-header");
+  header.append(title, toggle);
+  panel.append(header, body);
 };
 
 /** WebGL을 쓸 수 없을 때 같은 JSON으로 읽을 수 있는 표를 만든다. 서버에 3D 대체 렌더를 요구하지 않는다. */
