@@ -132,11 +132,16 @@ export const createActivityHandler = (deps: ActivityWebDeps) => {
     const instanceId = typeof body?.instanceId === "string" ? body.instanceId : "";
     if (!code || !instanceId) return failure(400, "invalid_request");
 
-    let instance = await deps.discord.resolveInstance(instanceId);
+    // 두 호출은 서로의 결과를 쓰지 않는다. 함께 띄워 왕복 두 번을 한 번으로 겹친다.
+    // 길드 게이트가 먼저 닫히면 교환 결과는 버려지고 토큰은 발급되지 않는다.
+    const instancePromise = deps.discord.resolveInstance(instanceId);
+    const identityPromise = deps.discord.exchangeCode(code);
+
+    let instance = await instancePromise;
     if (!instance) return failure(403, "activity_instance_unavailable");
     if (!deps.commandEnabled(instance.guildId)) return failure(403, "command_disabled");
 
-    const identity = await deps.discord.exchangeCode(code);
+    const identity = await identityPromise;
     if (!identity) return failure(401, "oauth_failed");
     // 방금 입장한 유저가 인스턴스 참가자 목록에 아직 반영되지 않을 수 있다. 짧게 다시 확인한다.
     for (let attempt = 0; attempt < 2 && !instance.userIds.includes(identity.userId); attempt += 1) {
