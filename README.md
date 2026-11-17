@@ -68,6 +68,8 @@ docker compose logs -f bot
 
 이미지에 Bun 1.3.14와 ffmpeg가 들어 있어 별도 설치가 필요 없습니다. `./data`가 `/app/data`에 마운트되고, `data/seed`가 있으면 기동 시 `scripts/restore-db.ts`가 청크를 복원한 뒤 봇을 시작합니다. `data/`는 저장소에 없으므로 새로 받은 저장소는 빈 DB로 시작하고 디스코드 기록을 다시 백필합니다.
 
+ocp 서버 배포는 프로젝트 스킬 `/deploy`가 맡습니다. 푸시, 서버 체크아웃 fast-forward, 이미지 재빌드, 기동 확인까지 순서대로 처리합니다.
+
 ## Discord 설정
 
 `src/index.ts`가 선언하는 인텐트는 네 개입니다.
