@@ -1,4 +1,5 @@
 import { DiscordSDK } from "@discord/embedded-app-sdk";
+import type { GraphSnapshot } from "../../src/voice-graph-contract.js";
 import { createSession, loadActivityConfig, fetchSession } from "./api.js";
 
 const STORAGE_KEY = "gfg_session";
@@ -13,6 +14,7 @@ export class NotInDiscordError extends Error {
 }
 
 type StoredSession = { token: string; instanceId: string };
+export type ConnectedActivity = StoredSession & { snapshot: GraphSnapshot | null };
 
 const readStoredSession = (): StoredSession | null => {
   try {
@@ -69,7 +71,7 @@ const waitForReady = (sdk: DiscordSDK) => new Promise<void>((resolve, reject) =>
 });
 
 /** 디스코드와 핸드셰이크하고 OAuth 코드를 서버 세션으로 바꿔 온다. */
-export const connectActivity = async (): Promise<StoredSession> => {
+export const connectActivity = async (): Promise<ConnectedActivity> => {
   const { clientId } = await loadActivityConfig();
   const sdk = openSdk(clientId);
   await waitForReady(sdk);
@@ -79,7 +81,7 @@ export const connectActivity = async (): Promise<StoredSession> => {
   const stored = readStoredSession();
   if (stored?.instanceId === sdk.instanceId) {
     const alive = await fetchSession(stored.token, sdk.instanceId).then(() => true, () => false);
-    if (alive) return stored;
+    if (alive) return { ...stored, snapshot: null };
     clearStoredSession();
   }
 
@@ -93,5 +95,5 @@ export const connectActivity = async (): Promise<StoredSession> => {
   const session = await createSession(code, sdk.instanceId);
   const issued = { token: session.token, instanceId: sdk.instanceId };
   storeSession(issued);
-  return issued;
+  return { ...issued, snapshot: session.snapshot };
 };

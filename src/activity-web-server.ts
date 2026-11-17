@@ -151,12 +151,24 @@ export const createActivityHandler = (deps: ActivityWebDeps) => {
       instance = refreshed;
     }
     if (!instance.userIds.includes(identity.userId)) return failure(403, "not_in_activity");
+
+    // 첫 화면 스냅샷은 길드만 알면 되므로 멤버 확인과 겹쳐 계산한다.
+    const snapshotStarted = performance.now();
+    const snapshotPromise = deps.snapshot(instance.guildId, "all")
+      .catch(() => null)
+      .then((snapshot) => ({ snapshot, ms: performance.now() - snapshotStarted }));
+
     if (!await deps.checkMember(instance.guildId, identity.userId).catch(() => false)) {
       return failure(403, "not_a_member");
     }
 
     const session = createSession(instance.guildId, identity.userId, instanceId, now);
-    return json({ token: session.id, guildId: session.guildId, userId: session.userId, expiresAt: session.expiresAt });
+    const { snapshot, ms } = await snapshotPromise;
+    return json(
+      { token: session.id, guildId: session.guildId, userId: session.userId, expiresAt: session.expiresAt, snapshot },
+      200,
+      { "server-timing": `graph;dur=${Math.round(ms)}` },
+    );
   };
 
   const handleApi = async (request: Request, url: URL, now: number): Promise<Response> => {

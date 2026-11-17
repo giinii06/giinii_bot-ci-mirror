@@ -1,7 +1,7 @@
 import "./style.css";
 import type { GraphPeriod, GraphSnapshot } from "../../src/voice-graph-contract.js";
 import { ApiError, fetchGraph, startAvatars, type AvatarSource } from "./api.js";
-import { NotInDiscordError, connectActivity } from "./discord.js";
+import { NotInDiscordError, connectActivity, type ConnectedActivity } from "./discord.js";
 import type { GraphView } from "./graph.js";
 import { initialSelection, pruneSelection, selectNode, type Selection } from "./selection.js";
 import { bindPeriods, renderPanel, renderTableFallback, setStatus } from "./ui.js";
@@ -103,7 +103,7 @@ const mount = async (next: GraphSnapshot, avatars: AvatarSource) => {
   }
 };
 
-async function load(nextPeriod: GraphPeriod) {
+async function load(nextPeriod: GraphPeriod, preloaded?: GraphSnapshot) {
   const token = sessionToken;
   const instanceId = sessionInstance;
   if (!token || !instanceId) return;
@@ -116,7 +116,7 @@ async function load(nextPeriod: GraphPeriod) {
   setStatus(status, "불러오는 중…");
 
   try {
-    const next = await fetchGraph(nextPeriod, token, instanceId, local.signal);
+    const next = preloaded ?? await fetchGraph(nextPeriod, token, instanceId, local.signal);
     if (id !== requestId) return;
     const avatars = startAvatars(next, token, instanceId, local.signal);
     snapshot = next;
@@ -145,8 +145,9 @@ async function load(nextPeriod: GraphPeriod) {
 }
 
 const boot = async () => {
+  let session: ConnectedActivity;
   try {
-    const session = await connectActivity();
+    session = await connectActivity();
     sessionToken = session.token;
     sessionInstance = session.instanceId;
   } catch (error) {
@@ -154,7 +155,7 @@ const boot = async () => {
     syncPeriodButtons(period, true);
     return;
   }
-  await load("all");
+  await load("all", session.snapshot ?? undefined);
 };
 
 window.addEventListener("pagehide", () => {

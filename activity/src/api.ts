@@ -3,7 +3,7 @@ import type { GraphPeriod, GraphSnapshot } from "../../src/voice-graph-contract.
 export type SessionInfo = { guildId: string; userId: string; expiresAt: number };
 export type ActivityConfig = { clientId: string };
 /** 세션을 새로 만들 때만 토큰이 함께 온다. 이후 요청은 헤더로만 보낸다. */
-export type IssuedSession = SessionInfo & { token: string };
+export type IssuedSession = SessionInfo & { token: string; snapshot: GraphSnapshot | null };
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string) {
@@ -46,7 +46,8 @@ export const createSession = async (code: string, instanceId: string): Promise<I
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code, instanceId }),
   });
-  return await parse(response) as IssuedSession;
+  const body = await parse(response) as IssuedSession;
+  return { ...body, snapshot: body.snapshot ?? null };
 };
 
 export const fetchSession = async (token: string, instanceId: string): Promise<SessionInfo> => {

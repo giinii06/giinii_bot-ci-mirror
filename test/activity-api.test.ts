@@ -127,11 +127,17 @@ test("publishes the client id before any session exists", async () => {
 test("opens a bearer session from an OAuth code and answers with it", async () => {
   const response = await startSession({ code: "code-ok", instanceId: "i-abc" });
   expect(response.status).toBe(200);
-  const body = await response.json() as { token: string; guildId: string; userId: string; expiresAt: number };
+  const body = await response.json() as {
+    token: string; guildId: string; userId: string; expiresAt: number; snapshot: GraphSnapshot;
+  };
   expect(body.guildId).toBe("g1");
   expect(body.userId).toBe("u1");
   expect(body.expiresAt).toBe(state.now + SESSION_TTL_MS);
   expect(body.token.length).toBeGreaterThanOrEqual(32);
+  // 첫 화면 스냅샷은 세션 응답에 실려 온다. 부팅 때 /api/graph를 한 번 더 부르지 않는다.
+  expect(body.snapshot.period).toBe("all");
+  expect(calls).toContainEqual({ guildId: "g1", period: "all" });
+  expect(response.headers.get("server-timing")).toMatch(/^graph;dur=\d+$/);
   // 세션은 쿠키가 아니라 베어러 토큰이다. 브라우저가 자동으로 붙일 수 있는 자격 증명을 남기지 않는다.
   expect(response.headers.get("set-cookie")).toBeNull();
 
@@ -159,8 +165,10 @@ test("takes the guild from the activity instance even when the body names anothe
   expect((await response.json() as { guildId: string }).guildId).toBe("g1");
 
   const session = await openSession();
+  calls.length = 0;
   const graph = await call("/api/graph?period=all", { headers: authed(session.token, session.instanceId) });
   expect(graph.status).toBe(200);
+  // 세션 발급도 스냅샷을 한 번 만들지만, 그래프 요청은 정확히 한 번만 돈다.
   expect(calls).toEqual([{ guildId: "g1", period: "all" }]);
   expect(memberChecks.every((check) => check.guildId === "g1")).toBe(true);
 });
@@ -194,6 +202,8 @@ test("refuses to open a session where the command is off or the user left the gu
   const disabled = await startSession({ code: "code-ok", instanceId: "i-abc" });
   expect(disabled.status).toBe(403);
   expect(await disabled.json()).toEqual({ error: "command_disabled" });
+  // 길드 게이트가 닫히면 스냅샷 계산도 시작하지 않는다.
+  expect(calls).toEqual([]);
 
   state.enabled = true;
   state.member = false;
@@ -218,6 +228,7 @@ test("serves the snapshot only to a bearer session and rejects unknown periods",
   expect((await call("/api/graph?period=all", { headers: { cookie: "gfg_session=nope" } })).status).toBe(401);
 
   const session = await openSession();
+  calls.length = 0;
   const ok = await call("/api/graph?period=7d", { headers: authed(session.token, session.instanceId) });
   expect(ok.status).toBe(200);
   const body = await ok.json() as GraphSnapshot;
