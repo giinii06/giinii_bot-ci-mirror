@@ -178,9 +178,11 @@ export const createActivityHandler = (deps: ActivityWebDeps) => {
       if (!graphLimit(session.id, now)) return failure(429, "rate_limited");
       const period = url.searchParams.get("period") ?? "all";
       if (!isGraphPeriod(period)) return failure(422, "invalid_period");
+      const started = performance.now();
       const snapshot = await deps.snapshot(session.guildId, period).catch(() => null);
       if (!snapshot) return failure(404, "guild_unavailable");
-      return json(snapshot);
+      // 프록시 왕복과 서버 계산을 분리해서 읽는다. 브라우저는 같은 출처라 헤더를 볼 수 있다.
+      return json(snapshot, 200, { "server-timing": `graph;dur=${Math.round(performance.now() - started)}` });
     }
 
     if (path.startsWith(AVATAR_PREFIX)) {

@@ -5,7 +5,7 @@ import {
 } from "./voice-graph-data.js";
 import { buildVoiceRelations } from "./voice-graph-domain.js";
 import type { GraphLink, GraphNode, GraphPeriod, GraphSnapshot } from "./voice-graph-contract.js";
-import { resolveVoiceGraphMembers } from "./voice-graph-members.js";
+import { resolveVoiceGraphMembers, type MemberCache } from "./voice-graph-members.js";
 
 export type GraphResult = { snapshot: GraphSnapshot; avatarUrls: Map<string, string> };
 
@@ -26,6 +26,7 @@ export const buildGraphResult = async (
   guildId: string,
   period: GraphPeriod,
   now: number,
+  memberCache?: MemberCache,
 ): Promise<GraphResult | null> => {
   const guild = client.guilds.cache.get(guildId);
   if (!guild) return null;
@@ -50,7 +51,7 @@ export const buildGraphResult = async (
   }
 
   const relations = buildVoiceRelations(ids, pairSharedTimes(presence, ids));
-  const members = await resolveVoiceGraphMembers(guild, client, ids);
+  const members = await resolveVoiceGraphMembers(guild, client, ids, memberCache, now);
   const byId = new Map(members.map((member) => [member.userId, member]));
 
   const nodes: GraphNode[] = ids.map((id) => {
@@ -93,6 +94,7 @@ export const createActivityGraphService = (
   const cache = new Map<string, { builtAt: number; result: GraphResult }>();
   const inflight = new Map<string, Promise<GraphResult | null>>();
   const avatarAllowlist = new Map<string, Map<string, string>>();
+  const memberCache: MemberCache = new Map();
 
   const snapshot = async (guildId: string, period: GraphPeriod) => {
     const key = `${guildId}:${period}`;
@@ -103,7 +105,7 @@ export const createActivityGraphService = (
     const pending = inflight.get(key);
     if (pending) return pending;
 
-    const build = buildGraphResult(client, guildId, period, now)
+    const build = buildGraphResult(client, guildId, period, now, memberCache)
       .then((result) => {
         if (!result) return null;
         cache.set(key, { builtAt: now, result });
