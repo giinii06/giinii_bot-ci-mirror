@@ -30,6 +30,7 @@ const snapshot: GraphSnapshot = {
 const state = { now: 1_000_000, member: true, enabled: true };
 const calls: { guildId: string; period: string }[] = [];
 const memberChecks: { guildId: string; userId: string }[] = [];
+const avatarCalls: { guildId: string; userId: string }[] = [];
 
 // 인스턴스 조회와 코드 교환만 흉내 낸다. 실제 디스코드 API나 클라이언트 시크릿은 쓰지 않는다.
 const instances = new Map<string, ActivityInstance>([
@@ -62,7 +63,10 @@ const deps: ActivityWebDeps = {
     calls.push({ guildId, period });
     return guildId === "g1" ? { ...snapshot, period } : null;
   },
-  avatarUrl: (_guildId, userId) => userId === "111" ? "https://cdn.test/111.png" : null,
+  avatarUrl: (guildId, userId) => {
+    avatarCalls.push({ guildId, userId });
+    return userId === "111" ? "https://cdn.test/111.png" : null;
+  },
   checkMember: async (guildId, userId) => {
     memberChecks.push({ guildId, userId });
     return state.member && guildId === "g1" && userId === "u1";
@@ -103,6 +107,7 @@ beforeEach(() => {
   handler = createActivityHandler(deps);
   calls.length = 0;
   memberChecks.length = 0;
+  avatarCalls.length = 0;
   lateCalls = 0;
   state.now = 1_000_000;
   state.member = true;
@@ -229,6 +234,9 @@ test("proxies only avatars that belong to the current graph", async () => {
   expect(new Uint8Array(await allowed.arrayBuffer())).toEqual(new Uint8Array([137, 80, 78, 71]));
   expect((await call("/api/graph/avatar/222", { headers })).status).toBe(404);
   expect((await call("/api/graph/avatar/abc", { headers })).status).toBe(404);
+  // 아바타 조회도 세션의 길드로만 나간다. 다른 길드 ID가 섞이면 안 된다.
+  expect(avatarCalls.length).toBeGreaterThan(0);
+  expect(avatarCalls.every((entry) => entry.guildId === "g1")).toBe(true);
 });
 
 test("answers 404 for a malformed percent escape instead of failing", async () => {
