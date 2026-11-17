@@ -1,42 +1,12 @@
 import { createCanvas, GlobalFonts, loadImage } from "@napi-rs/canvas";
 import { readFileSync } from "node:fs";
+import { COMMUNITY_COLORS, MAX_GRAPH_NODES } from "./voice-graph-contract.js";
+import { buildVoiceRelations, type VoiceGraphLink, type VoiceGraphPair } from "./voice-graph-domain.js";
 
 GlobalFonts.register(readFileSync(new URL("./assets/BMDoHyeon-Regular.ttf", import.meta.url)), "BM DoHyeon");
 
 export type VoiceGraphMember = { userId: string; name: string; avatarUrl: string | null; voiceMs: number };
-export type VoiceGraphPair = { source: string; target: string; sharedMs: number };
-type VoiceGraphEdge = VoiceGraphPair & { kind: "mutual" | "one-sided" | "other" };
-
-const GROUP_COLORS = ["#7c6bd0", "#229b90", "#d88c49", "#568fce", "#c76c9b", "#7e9851", "#b29b38", "#be6262", "#4e9fae", "#938174"];
-
-const voiceCommunities = (ids: string[], pairs: VoiceGraphPair[]) => {
-  const groups = ids.map((userId) => new Set([userId]));
-  const degrees = new Map(ids.map((id) => [id, 0]));
-  const total = pairs.reduce((sum, pair) => sum + pair.sharedMs, 0);
-  for (const pair of pairs) {
-    degrees.set(pair.source, (degrees.get(pair.source) ?? 0) + pair.sharedMs);
-    degrees.set(pair.target, (degrees.get(pair.target) ?? 0) + pair.sharedMs);
-  }
-  while (total > 0) {
-    let best: { a: number; b: number; gain: number } | null = null;
-    for (const [a, first] of groups.entries()) {
-      for (let b = a + 1; b < groups.length; b++) {
-        const second = groups[b]!;
-        const between = pairs.reduce((sum, pair) => sum + (
-          first.has(pair.source) && second.has(pair.target) || first.has(pair.target) && second.has(pair.source)
-            ? pair.sharedMs : 0), 0);
-        const degreeA = [...first].reduce((sum, id) => sum + (degrees.get(id) ?? 0), 0);
-        const degreeB = [...second].reduce((sum, id) => sum + (degrees.get(id) ?? 0), 0);
-        const gain = between / total - degreeA * degreeB / (2 * total * total);
-        if (gain > 1e-12 && (!best || gain > best.gain)) best = { a, b, gain };
-      }
-    }
-    if (!best) break;
-    for (const id of groups[best.b]!) groups[best.a]!.add(id);
-    groups.splice(best.b, 1);
-  }
-  return groups.filter((group) => group.size > 1).map((group) => [...group]);
-};
+export type { VoiceGraphPair } from "./voice-graph-domain.js";
 
 const WIDTH = 1920;
 const HEIGHT = 1080;
@@ -45,33 +15,10 @@ const SPACING = 196;
 const BOUNDS = { left: 136, right: 1784, top: 242, bottom: 922 };
 
 export const buildVoiceGraph = (members: VoiceGraphMember[], pairs: VoiceGraphPair[]) => {
-  const selected = [...members].sort((a, b) => b.voiceMs - a.voiceMs || a.userId.localeCompare(b.userId)).slice(0, 20);
+  const selected = [...members].sort((a, b) => b.voiceMs - a.voiceMs || a.userId.localeCompare(b.userId)).slice(0, MAX_GRAPH_NODES);
   const ids = new Set(selected.map((member) => member.userId));
-  const unique = new Map<string, VoiceGraphPair>();
-  for (const pair of pairs) {
-    if (!ids.has(pair.source) || !ids.has(pair.target) || pair.source === pair.target || !(pair.sharedMs > 0)) continue;
-    const [source, target] = [pair.source, pair.target].sort();
-    if (source === undefined || target === undefined) continue;
-    const key = `${source}:${target}`;
-    const previous = unique.get(key);
-    if (!previous || previous.sharedMs < pair.sharedMs) unique.set(key, { source, target, sharedMs: pair.sharedMs });
-  }
-  const ranked = [...unique.values()].sort((a, b) => b.sharedMs - a.sharedMs || a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
-  const favorites = new Map(selected.map(({ userId }) => [userId, new Set(ranked
-    .filter(({ source, target }) => source === userId || target === userId)
-    .slice(0, 7).map(({ source, target }) => source === userId ? target : source))]));
-  const topThree = new Map(selected.map(({ userId }) => [userId, new Set(ranked
-    .filter(({ source, target }) => source === userId || target === userId)
-    .slice(0, 3).map(({ source, target }) => source === userId ? target : source))]));
-  const edges: VoiceGraphEdge[] = ranked
-    .filter(({ source, target }) => favorites.get(source)?.has(target) && favorites.get(target)?.has(source))
-    .map((pair) => {
-      const forward = topThree.get(pair.source)?.has(pair.target);
-      const reverse = topThree.get(pair.target)?.has(pair.source);
-      return { ...pair, kind: forward && reverse ? "mutual" : forward || reverse ? "one-sided" : "other" };
-    });
-  const groups = voiceCommunities([...ids], ranked);
-  const communities = new Map(groups.flatMap((group, index) => group.map((id) => [id, index] satisfies [string, number])));
+  const { ranked, links, topThree, groups, communities } = buildVoiceRelations([...ids], pairs);
+  const edges: VoiceGraphLink[] = links.filter((link) => link.visibleByDefault);
   const neighborCounts = new Map(selected.map(({ userId }) => [userId, 0]));
   const adjacent = new Set<string>();
   for (const pair of ranked) {
@@ -193,7 +140,7 @@ export const renderVoiceAffinityGraph = async (graph: ReturnType<typeof buildVoi
   ctx.clip();
   for (const [index, group] of graph.groups.entries()) {
     const nodes = group.flatMap((id) => { const node = byId.get(id); return node ? [node] : []; });
-    ctx.strokeStyle = ctx.fillStyle = GROUP_COLORS[index % GROUP_COLORS.length]!;
+    ctx.strokeStyle = ctx.fillStyle = COMMUNITY_COLORS[index % COMMUNITY_COLORS.length]!;
     ctx.globalAlpha = 0.065;
     ctx.lineWidth = 208;
     ctx.lineCap = "round";
@@ -232,7 +179,7 @@ export const renderVoiceAffinityGraph = async (graph: ReturnType<typeof buildVoi
     const tier = tiers[edge.kind];
     ctx.globalAlpha = tier.opacity;
     ctx.strokeStyle = a.community !== null && a.community === b.community
-      ? GROUP_COLORS[a.community % GROUP_COLORS.length]! : "#376caf";
+      ? COMMUNITY_COLORS[a.community % COMMUNITY_COLORS.length]! : "#376caf";
     ctx.lineWidth = tier.width + (edge.kind === "other" ? 0 : Math.sqrt(edge.sharedMs / maximum) * 4);
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
@@ -268,7 +215,7 @@ export const renderVoiceAffinityGraph = async (graph: ReturnType<typeof buildVoi
     ctx.shadowColor = "#7993bd50";
     ctx.shadowBlur = 20;
     ctx.shadowOffsetY = 8;
-    ctx.fillStyle = node.community === null ? "#ffffff" : GROUP_COLORS[node.community % GROUP_COLORS.length]!;
+    ctx.fillStyle = node.community === null ? "#ffffff" : COMMUNITY_COLORS[node.community % COMMUNITY_COLORS.length]!;
     ctx.beginPath();
     ctx.arc(node.x, node.y, RADIUS + 7, 0, Math.PI * 2);
     ctx.fill();

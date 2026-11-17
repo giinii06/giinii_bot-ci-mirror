@@ -21,6 +21,7 @@ const fakeDiscord = () => {
     id: String(BigInt(applicationId) + BigInt(++sequence)), application_id: applicationId, version: "1",
     default_member_permissions: command.default_member_permissions ?? null,
     contexts: command.contexts ?? [], integration_types: command.integration_types ?? [],
+    options: command.options ?? [],
   }));
   const state = new Map([
     [globalPath, response(removedCommands)],
@@ -48,10 +49,12 @@ test("removes legacy AI commands globally and from guilds while preserving voice
     const global = state.get(globalPath);
     expect(global.map((command) => command.name)).toEqual(["친밀도그래프", "친밀도", "통화량", "통계"]);
     expect(global.every((command) => command.contexts.join() === "0" && command.integration_types.join() === "0")).toBe(true);
+    expect(global.some((command) => command.name === "친밀도그래프3d")).toBe(false);
     expect(state.get(guildPath(targetGuildId))).toEqual([]);
     // 기니봇아 대화·기억 명령은 룰렛과 같이 전용 서버에만 등록한다.
     expect(state.get(guildPath(ALLOWED_GUILD_ID)).map((command) => command.name)).toEqual([
       "타겟", "관리자_타겟", "관리자머리끄댕이", "model", "reasoning", "mind", "memory", "shared-memory",
+      "친밀도그래프3d",
     ]);
     expect(writes).toHaveLength(3);
     await syncCommands(client);
@@ -68,5 +71,22 @@ test("a newly joined guild sync also ensures globals and leaves other guild regi
     expect(state.get(guildPath(targetGuildId))).toEqual([]);
     expect(state.get(guildPath(ALLOWED_GUILD_ID))).toEqual(allowedBefore);
     expect(writes).toEqual([globalPath, guildPath(targetGuildId)]);
+  } finally { await client.destroy(); }
+});
+
+test("preserves the Activity Entry Point command when replacing global commands", async () => {
+  const { client, state } = fakeDiscord();
+  state.get(globalPath).push({
+    name: "launch", description: "3D 친밀도 그래프 열기", type: 4, handler: 2,
+    id: "1000000000000000099", application_id: applicationId, version: "1",
+    default_member_permissions: null, contexts: [0], integration_types: [0],
+  });
+  try {
+    await syncCommands(client);
+    const global = state.get(globalPath);
+    const entryPoint = global.find((command) => command.name === "launch");
+    expect(entryPoint).toMatchObject({ type: 4, handler: 2 });
+    expect(global.filter((command) => command.type !== 4).map((command) => command.name))
+      .toEqual(["친밀도그래프", "친밀도", "통화량", "통계"]);
   } finally { await client.destroy(); }
 });

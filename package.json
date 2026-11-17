@@ -5,8 +5,10 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun --watch src/index.ts",
-    "check": "tsc --noEmit",
-    "test": "bun test"
+    "check": "tsc --noEmit && tsc -p activity/tsconfig.json",
+    "test": "bun test",
+    "build:activity": "vite build --config activity/vite.config.ts",
+    "dev:activity": "vite --config activity/vite.config.ts"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
@@ -15,8 +17,11 @@
     "three": "^0.187.0"
   },
   "devDependencies": {
+    "3d-force-graph": "^1.80.2",
+    "@discord/embedded-app-sdk": "^2.5.0",
     "@types/bun": "latest",
     "@types/three": "^0.187.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8"
   }
 }

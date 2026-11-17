@@ -1,0 +1,183 @@
+import ForceGraph3D, { type ForceGraph3DInstance } from "3d-force-graph";
+import * as THREE from "three";
+import { COMMUNITY_COLORS, type GraphLink, type GraphNode, type GraphSnapshot } from "../../src/voice-graph-contract.js";
+import { escapeHtml, initialsOf, loadImage, plateTexture } from "./avatar-plate.js";
+import { highlightFor, linkKey, type Selection } from "./selection.js";
+import { formatDuration } from "./ui.js";
+
+type RenderNode = GraphNode & { x?: number; y?: number; z?: number };
+type RenderLink = GraphLink & {
+  sourceId: string;
+  targetId: string;
+  source: string | RenderNode;
+  target: string | RenderNode;
+};
+
+export type GraphView = {
+  setSnapshot: (snapshot: GraphSnapshot, selection: Selection) => Promise<void>;
+  applySelection: (selection: Selection) => void;
+  dispose: () => void;
+};
+
+const NEUTRAL_COLOR = "#8d9bb5";
+const LINK_COLORS = { mutual: "#cfdcff", "one-sided": "#7d90b8", other: "#4b5a76" } as const;
+const LINK_WIDTHS = { mutual: 1.8, "one-sided": 0.9, other: 0.35 } as const;
+const NODE_RADIUS = 4;
+
+type NodeVisual = {
+  group: THREE.Group;
+  sphere: THREE.Mesh<THREE.SphereGeometry, THREE.MeshLambertMaterial>;
+  sprite: THREE.Sprite;
+};
+
+export const mountGraph = async (
+  container: HTMLElement,
+  initial: GraphSnapshot,
+  initialSelection: Selection,
+  onSelect: (userId: string | null) => void,
+): Promise<GraphView> => {
+  let snapshot = initial;
+  let selection = initialSelection;
+  let visuals = new Map<string, NodeVisual>();
+  let fitted = false;
+
+  const graph = new ForceGraph3D(container, { controlType: "orbit" }) as unknown as
+    ForceGraph3DInstance<RenderNode, RenderLink>;
+
+  const sphereGeometry = new THREE.SphereGeometry(NODE_RADIUS, 20, 14);
+
+  const buildVisual = async (node: GraphNode): Promise<NodeVisual> => {
+    const fallback = initialsOf(node.name);
+    let texture: THREE.Texture | null = null;
+    if (node.avatarPath) {
+      texture = await loadImage(node.avatarPath)
+        .then((image) => plateTexture(image, fallback))
+        .catch(() => plateTexture(null, fallback));
+    } else {
+      texture = plateTexture(null, fallback);
+    }
+
+    const color = node.community === null
+      ? NEUTRAL_COLOR
+      : COMMUNITY_COLORS[node.community % COMMUNITY_COLORS.length]!;
+    const sphere = new THREE.Mesh(sphereGeometry, new THREE.MeshLambertMaterial({
+      color,
+      emissive: new THREE.Color(color).multiplyScalar(0.18),
+      transparent: true,
+      opacity: 1,
+    }));
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+    }));
+    sprite.scale.set(NODE_RADIUS * 1.95, NODE_RADIUS * 1.95, 1);
+    sprite.position.z = NODE_RADIUS + 0.35;
+
+    const group = new THREE.Group();
+    group.add(sphere, sprite);
+    return { group, sphere, sprite };
+  };
+
+  const disposeVisuals = () => {
+    for (const visual of visuals.values()) {
+      visual.sphere.material.dispose();
+      visual.sprite.material.map?.dispose();
+      visual.sprite.material.dispose();
+      visual.group.clear();
+    }
+    visuals.clear();
+  };
+
+  const applySelection = (next: Selection) => {
+    selection = next;
+    const highlight = highlightFor(snapshot, next);
+    const focused = next.mode !== "all";
+    for (const [id, visual] of visuals) {
+      const active = highlight.nodes.has(id);
+      visual.sphere.material.opacity = active ? 1 : 0.14;
+      visual.sprite.material.opacity = active ? 1 : 0.1;
+    }
+    graph.linkVisibility((link) => focused
+      ? highlight.links.has(linkKey(link.sourceId, link.targetId))
+      : link.visibleByDefault);
+    graph.refresh();
+  };
+
+  const rebuild = async (next: GraphSnapshot, nextSelection: Selection) => {
+    disposeVisuals();
+    snapshot = next;
+    selection = nextSelection;
+    const built = await Promise.all(next.nodes.map(async (node) => [node.id, await buildVisual(node)] as const));
+    visuals = new Map(built);
+    const nodes: RenderNode[] = next.nodes.map((node) => ({ ...node }));
+    const links: RenderLink[] = next.links.map((link) => ({
+      ...link,
+      sourceId: link.source,
+      targetId: link.target,
+    }));
+    graph.graphData({ nodes, links });
+    applySelection(nextSelection);
+  };
+
+  graph
+    .backgroundColor("#0a1020")
+    .showNavInfo(false)
+    .nodeLabel((node) => `<div class="tooltip"><strong>${escapeHtml(node.name)}</strong>`
+      + `<span>${formatDuration(node.voiceMs)}</span></div>`)
+    .linkLabel((link) => `<div class="tooltip"><span>${formatDuration(link.sharedMs)} 함께</span></div>`)
+    .linkColor((link) => LINK_COLORS[link.kind])
+    .linkWidth((link) => LINK_WIDTHS[link.kind])
+    .linkVisibility((link) => link.visibleByDefault)
+    .linkDirectionalParticles(0)
+    .nodeThreeObject((node) => visuals.get(node.id)?.group ?? new THREE.Object3D())
+    .onNodeClick((node) => onSelect(node.id))
+    .onBackgroundClick((event) => {
+      if (event.detail >= 2) graph.zoomToFit(500, 70);
+      else onSelect(null);
+    })
+    .enableNodeDrag(false)
+    .cooldownTicks(160)
+    .cooldownTime(6000)
+    .d3AlphaDecay(0.035)
+    .d3VelocityDecay(0.4);
+
+  const mobile = window.matchMedia("(max-width: 720px)").matches;
+  graph.renderer().setPixelRatio(Math.min(window.devicePixelRatio || 1, mobile ? 1.5 : 2));
+
+  const resize = () => {
+    graph.width(container.clientWidth || window.innerWidth);
+    graph.height(container.clientHeight || window.innerHeight);
+  };
+  const onVisibility = () => {
+    if (document.hidden) graph.pauseAnimation();
+    else graph.resumeAnimation();
+  };
+  window.addEventListener("resize", resize);
+  document.addEventListener("visibilitychange", onVisibility);
+  resize();
+
+  graph.onEngineStop(() => {
+    if (fitted) return;
+    fitted = true;
+    graph.zoomToFit(600, 70);
+  });
+
+  await rebuild(initial, initialSelection);
+  graph.cameraPosition({ x: 0, y: 0, z: 420 }, undefined, 0);
+
+  return {
+    setSnapshot: rebuild,
+    applySelection,
+    dispose: () => {
+      window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", onVisibility);
+      graph.pauseAnimation();
+      disposeVisuals();
+      sphereGeometry.dispose();
+      graph._destructor();
+      container.replaceChildren();
+    },
+  };
+};

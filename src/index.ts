@@ -2,6 +2,9 @@ import {
   Client, Events, GatewayIntentBits, Partials,
   type ButtonInteraction, type ChatInputCommandInteraction
 } from "discord.js";
+import { createActivityGraphService } from "./activity-graph.js";
+import { createDiscordActivityAuth } from "./activity-discord.js";
+import { startActivityWebServer } from "./activity-web-server.js";
 import { ensureBackfillStarted, persistLiveMessage, startInitialBackfill } from "./analysis.js";
 import { ADMIN_USER_ID, handleAdminCommand } from "./admin-commands.js";
 import { isAllowedGuild, isCommandEnabled, isRouletteGuild } from "./command-rules.js";
@@ -15,7 +18,7 @@ import { seedProfileHistoryFromMessages, sweepGuildProfiles } from "./records.js
 import { handleRouletteCommand } from "./roulette.js";
 import { initDatabase } from "./storage.js";
 import { handleStatisticsCommand, handleVoiceAffinityCommand, handleVoiceAffinityComponent, handleVoiceVolumeCommand } from "./voice-affinity-command.js";
-import { handleVoiceAffinityGraphCommand } from "./voice-affinity-graph-command.js";
+import { handleVoiceAffinityGraph3dCommand, handleVoiceAffinityGraphCommand } from "./voice-affinity-graph-command.js";
 import { initChat, handleChatMessage, chatRouter, chatMind } from "./chat/index.js";
 import {
   handleModelAutocomplete, handleModelCommand, handleReasoningAutocomplete, handleReasoningCommand
@@ -37,10 +40,46 @@ const replyInteractionError = (interaction: ChatInputCommandInteraction | Button
   else if (!interaction.replied) void interaction.reply({ ephemeral: true, content: reply }).catch(() => undefined);
 };
 
+/**
+ * 3D 친밀도 그래프용 HTTP 표면. 봇 프로세스가 SQLite 연결을 공유하므로
+ * 컨테이너를 늘리지 않고 같은 Bun 런타임에서 정적 파일과 JSON만 내보낸다.
+ */
+const startActivityServer = (readyClient: Client) => {
+  const { enabled, clientId, clientSecret, hostname, port, distDir } = config.activity;
+  if (!enabled) return;
+  if (!clientId || !clientSecret) {
+    console.warn("DISCORD_CLIENT_ID or DISCORD_CLIENT_SECRET is empty; /친밀도그래프3d will stay disabled");
+    return;
+  }
+  const graph = createActivityGraphService(readyClient);
+  const discord = createDiscordActivityAuth({ clientId, clientSecret, botToken: config.discordToken });
+  try {
+    const server = startActivityWebServer({
+      clientId,
+      discord,
+      distDir,
+      hostname,
+      port,
+      snapshot: async (guildId, period) => (await graph.snapshot(guildId, period))?.snapshot ?? null,
+      avatarUrl: (guildId, userId) => graph.avatarUrl(guildId, userId),
+      checkMember: async (guildId, userId) => {
+        const guild = readyClient.guilds.cache.get(guildId);
+        if (!guild) return false;
+        return Boolean(await guild.members.fetch({ user: userId, force: true }).catch(() => null));
+      },
+      commandEnabled: (guildId) => isCommandEnabled(guildId, "친밀도그래프3d"),
+    });
+    console.log(`Activity web server listening on ${hostname}:${server.port}`);
+  } catch (error) {
+    console.error("Activity web server failed to start", error);
+  }
+};
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   const guildIds = [...readyClient.guilds.cache.keys()];
   initDatabase(guildIds);
+  startActivityServer(readyClient);
   void syncCommands(client).catch((error) => console.error("Slash command sync failed", error));
   await initChat(readyClient);
   initializeVoiceSessions(readyClient);
@@ -154,6 +193,10 @@ client.on(Events.InteractionCreate, (interaction) => {
           ? handleMemoryCommand(interaction, mind)
           : handleSharedMemoryCommand(interaction, mind);
       void run.catch((error) => replyInteractionError(interaction, error));
+      return;
+    }
+    if (interaction.commandName === "친밀도그래프3d") {
+      void handleVoiceAffinityGraph3dCommand(interaction).catch((error) => replyInteractionError(interaction, error));
       return;
     }
     if (interaction.commandName === "친밀도그래프") {

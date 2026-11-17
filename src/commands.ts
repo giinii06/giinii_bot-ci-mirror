@@ -1,4 +1,4 @@
-import { ApplicationIntegrationType, InteractionContextType, PermissionFlagsBits, SlashCommandBuilder, type APIApplicationCommand, type ApplicationCommandManager, type Client, type Guild } from "discord.js";
+import { ApplicationCommandType, ApplicationIntegrationType, InteractionContextType, PermissionFlagsBits, SlashCommandBuilder, type APIApplicationCommand, type ApplicationCommandDataResolvable, type ApplicationCommandManager, type Client, type Guild } from "discord.js";
 import { chatCommandBuilders } from "./chat/commands.js";
 import { mindCommandBuilders } from "./mind/commands.js";
 import { ALLOWED_GUILD_ID } from "./command-rules.js";
@@ -36,24 +36,50 @@ const voiceCommandBuilders = [
   new SlashCommandBuilder().setName("통계").setDescription("전체 통화량·채팅량·종합 활동량 TOP 7 카드 3장을 봅니다")
 ];
 
+/** 3D 친밀도 그래프. 브라우저 WebGL로 그리므로 전용 서버에만 등록한다. */
+const graph3dCommandBuilders = [
+  new SlashCommandBuilder().setName("친밀도그래프3d").setDescription("친밀도 그래프를 3D로 엽니다 (전용 서버)")
+];
+
 const globalCommands = voiceCommandBuilders.map((command) => command
   .setContexts(InteractionContextType.Guild).setIntegrationTypes(ApplicationIntegrationType.GuildInstall).toJSON());
+const graph3dCommands = graph3dCommandBuilders.map((command) => command.toJSON());
 const rouletteCommands = rouletteCommandBuilders.map((command) => command.toJSON());
 const chatCommands = chatCommandBuilders.map((command) => command.toJSON());
 const mindCommands = mindCommandBuilders.map((command) => command.toJSON());
-/** 전용 서버(ALLOWED_GUILD_ID)에만 등록하는 명령. 룰렛 3종과 기니봇아 대화·기억 명령. */
-const dedicatedGuildCommands = [...rouletteCommands, ...chatCommands, ...mindCommands];
+/** 전용 서버(ALLOWED_GUILD_ID)에만 등록하는 명령. 룰렛 3종과 기니봇아 대화·기억·3D 그래프 명령. */
+const dedicatedGuildCommands = [...rouletteCommands, ...chatCommands, ...mindCommands, ...graph3dCommands];
 export const commands = [...dedicatedGuildCommands, ...globalCommands];
 export const commandScopeCounts = { global: globalCommands.length, dedicated: dedicatedGuildCommands.length };
 
-/** 서버별 on/off 설정과 대조할 슬래시 명령어 이름 목록. 순서는 등록 순서와 같다. */
+/** 서버별 on/off 설정과 대조할 슬래시 명령어 이름 목록. */
 export const slashCommandNames = [
-  ...rouletteCommandBuilders, ...voiceCommandBuilders, ...chatCommandBuilders, ...mindCommandBuilders
+  ...rouletteCommandBuilders, ...voiceCommandBuilders, ...chatCommandBuilders, ...mindCommandBuilders,
+  ...graph3dCommandBuilders
 ].map((command) => command.name);
 
 const syncCommandSet = async (manager: Pick<ApplicationCommandManager, "fetch" | "set">, wanted: typeof commands, scope: string) => {
   const current = await manager.fetch();
-  if (current.size === wanted.length && wanted.every((command) => {
+  // Activities가 켜지면 Discord가 전역 Entry Point 명령을 만든다. set()은 목록을 통째로
+  // 교체하므로, 이 명령을 함께 보내지 않으면 Activity 실행 입구가 사라진다.
+  const preserved = [...current.values()]
+    .filter((command) => command.type === ApplicationCommandType.PrimaryEntryPoint)
+    .map((command) => {
+      const raw = command.toJSON() as unknown as {
+        name: string; description: string; type: ApplicationCommandType; handler?: number;
+        integration_types?: number[]; contexts?: number[];
+      };
+      return {
+        name: raw.name,
+        description: raw.description,
+        type: raw.type,
+        handler: raw.handler ?? 2,
+        integration_types: raw.integration_types,
+        contexts: raw.contexts,
+      };
+    });
+  const desired = [...preserved, ...wanted];
+  if (current.size === desired.length && wanted.every((command) => {
     const existing = current.find((entry) => entry.name === command.name);
     if (!existing) return false;
     // toJSON()은 값이 undefined인 키를 남긴다. 실제 전송 본문처럼 그 키를 떨어뜨려 비교한다.
@@ -63,7 +89,7 @@ const syncCommandSet = async (manager: Pick<ApplicationCommandManager, "fetch" |
     console.log(`Slash commands already up to date in ${scope} (${current.size}), skipped`);
     return;
   }
-  const registered = await manager.set(wanted);
+  const registered = await manager.set(desired as ApplicationCommandDataResolvable[]);
   console.log(`Registered ${registered.size} slash commands in ${scope}`);
 };
 

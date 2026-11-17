@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>친밀도 그래프 3D</title>
+  </head>
+  <body>
+    <div id="scene" aria-label="3D 친밀도 그래프"></div>
+    <header class="topbar">
+      <div class="brand"><strong>친밀도 그래프</strong><span>3D</span></div>
+      <div class="periods" role="group" aria-label="기간 선택">
+        <button type="button" data-period="7d" aria-pressed="false">7일</button>
+        <button type="button" data-period="30d" aria-pressed="false">30일</button>
+        <button type="button" data-period="all" aria-pressed="true">전체</button>
+      </div>
+    </header>
+    <aside id="panel" class="panel" aria-live="polite"></aside>
+    <div id="status" class="status" role="status" hidden></div>
+    <noscript>이 화면은 JavaScript와 WebGL이 필요합니다. 디스코드에서 /친밀도그래프로 이미지를 확인해 주세요.</noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

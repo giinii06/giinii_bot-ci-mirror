@@ -85,6 +85,8 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS voice_presence_lookup
     ON voice_presence_sessions (guild_id, user_id, channel_id, started_at, ended_at);
+  CREATE INDEX IF NOT EXISTS voice_presence_period_idx
+    ON voice_presence_sessions (guild_id, ended_at, started_at, user_id, channel_id);
   CREATE TABLE IF NOT EXISTS admin_target_roles (
     guild_id TEXT NOT NULL, role_id TEXT NOT NULL,
     PRIMARY KEY (guild_id, role_id)

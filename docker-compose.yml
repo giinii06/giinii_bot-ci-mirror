@@ -4,6 +4,11 @@ services:
     env_file: .env
     environment:
       DATABASE_PATH: /app/data/bot.sqlite
+      # 디스코드 클라이언트는 discordsays.com 프록시를 거쳐 들어온다. 그 프록시가 호스트의 Funnel을 본다.
+      # 컨테이너는 0.0.0.0으로 열고, 포트는 호스트 루프백에만 게시해 외부 노출을 Funnel 하나로 좁힌다.
+      ACTIVITY_HTTP_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:8787:8787"
     volumes:
       - ./data:/app/data
       - ./.env:/app/.env
