@@ -11,6 +11,7 @@ const WIDTH = 1600;
 const SCALE = 1.5;
 const MARGIN = 34;
 const ROW_HEIGHT = 70;
+export const PAGE_SIZE = 7;
 const INK = "#252a43";
 const MUTED = "#535c78";
 
@@ -258,7 +259,7 @@ export const renderVoiceAffinity = (
   rankingMax = entries[0]?.sharedMs ?? 1,
 ) => {
   const spec = MODES[mode];
-  const visible = entries.slice(0, 7);
+  const visible = entries.slice(0, PAGE_SIZE);
   const podium = startRank === 1 ? visible.slice(0, 3) : [];
   const rows = visible.slice(podium.length);
   const panelTop = podium.length ? 430 : 122;
@@ -310,3 +311,16 @@ export const renderVoiceAffinity = (
 
   return canvas.toBuffer("image/png");
 };
+
+export const rankingCards = (
+  title: string,
+  entries: VoiceAffinityEntry[],
+  mode: VoiceCardMode,
+  name: string,
+) => Array.from({ length: Math.ceil(entries.length / PAGE_SIZE) }, (_, page) => ({
+  name,
+  attachment: renderVoiceAffinity(
+    title, entries.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
+    page * PAGE_SIZE + 1, entries.length, mode, entries[0]?.sharedMs,
+  ),
+}));

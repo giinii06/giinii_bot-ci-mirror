@@ -30,7 +30,7 @@ export const rouletteCommandNames = new Set(rouletteCommandBuilders.map((command
 
 const voiceCommandBuilders = [
   new SlashCommandBuilder().setName("친밀도그래프").setDescription("통화량 상위 20명의 친밀도 그래프를 FHD 이미지로 봅니다"),
-  new SlashCommandBuilder().setName("친밀도").setDescription("같은 음성 채널에 함께 있었던 사람 TOP 7을 봅니다")
+  new SlashCommandBuilder().setName("친밀도").setDescription("같은 음성 채널에 함께 있었던 사람 TOP 21을 봅니다")
     .addUserOption((option) => option.setName("유저").setDescription("친밀도를 확인할 유저").setRequired(true)),
   new SlashCommandBuilder().setName("통화량").setDescription("서버 전체 통화량 TOP 21을 봅니다"),
   new SlashCommandBuilder().setName("통계").setDescription("전체 통화량·채팅량·종합 활동량 TOP 7 카드 3장을 봅니다")

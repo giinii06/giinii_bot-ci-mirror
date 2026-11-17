@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { renderVoiceAffinity } from "../src/voice-affinity-card.js";
+import { rankingCards, renderVoiceAffinity } from "../src/voice-affinity-card.js";
 import { buildVoiceAffinity } from "../src/voice-affinity.js";
 
 const pngSize = (png: Uint8Array) => {
@@ -100,4 +100,23 @@ test("gives every mode the same geometry for the same row count", () => {
     .map((mode) => pngSize(renderVoiceAffinity("테스트", entries, 1, 5, mode)));
 
   expect(new Set(sizes.map((size) => size.height)).size).toBe(1);
+});
+
+test("pages the affinity ranking seven people at a time", () => {
+  const threePages = rankingCards("테스트", makeEntries(21), "affinity", "voice-affinity.png");
+
+  expect(threePages).toHaveLength(3);
+  expect(threePages.every((card) => card.name === "voice-affinity.png")).toBe(true);
+  expect(rankingCards("테스트", makeEntries(7), "affinity", "voice-affinity.png")).toHaveLength(1);
+});
+
+test("drops the podium from the second page onward", () => {
+  const cards = rankingCards("테스트", makeEntries(21), "affinity", "voice-affinity.png");
+  const [first, second, third] = cards.map((card) => card.attachment);
+  const [firstSize, secondSize, thirdSize] = cards.map((card) => pngSize(card.attachment));
+
+  expect(second.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+  expect(secondSize.height).toBeLessThan(firstSize.height);
+  expect(secondSize).toEqual(thirdSize);
+  expect([first.equals(second), second.equals(third), first.equals(third)]).toEqual([false, false, false]);
 });

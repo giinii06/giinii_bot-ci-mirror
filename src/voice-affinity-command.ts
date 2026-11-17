@@ -1,7 +1,7 @@
 import { loadImage } from "@napi-rs/canvas";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction, type ChatInputCommandInteraction, type Guild } from "discord.js";
 import { all } from "./storage.js";
-import { renderVoiceAffinity, type VoiceAffinityEntry, type VoiceCardMode } from "./voice-affinity-card.js";
+import { PAGE_SIZE, rankingCards, renderVoiceAffinity, type VoiceAffinityEntry, type VoiceCardMode } from "./voice-affinity-card.js";
 import { buildVoiceAffinity, type VoiceInterval } from "./voice-affinity.js";
 
 type CardPage = { name: string; attachment: Buffer };
@@ -9,7 +9,6 @@ type StoredCards = { userId: string; cards: CardPage[] };
 
 const voiceAffinityPages = new Map<string, StoredCards>();
 const MAX_STORED_CARD_PAGES = 20;
-const PAGE_SIZE = 7;
 const RANK_LIMIT = 21;
 
 type StatisticsRow = { user_id: string; chat_count: number; voice_seconds: number };
@@ -42,19 +41,6 @@ const sendCardPages = async (interaction: ChatInputCommandInteraction, cards: Ca
   return message;
 };
 
-const rankingCards = (
-  title: string,
-  entries: VoiceAffinityEntry[],
-  mode: VoiceCardMode,
-  name: string,
-) => Array.from({ length: Math.ceil(entries.length / PAGE_SIZE) }, (_, page) => ({
-  name,
-  attachment: renderVoiceAffinity(
-    title, entries.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
-    page * PAGE_SIZE + 1, entries.length, mode, entries[0]?.sharedMs,
-  ),
-}));
-
 const rankingProfile = async (guild: Guild, userId: string): Promise<Omit<VoiceAffinityEntry, "sharedMs">> => {
   const member = await guild.members.fetch(userId).catch(() => null);
   const user = member?.user ?? await guild.client.users.fetch(userId).catch(() => null);
@@ -85,7 +71,7 @@ export const handleVoiceAffinityCommand = async (interaction: ChatInputCommandIn
     guild.id, "SELECT user_id, channel_id, started_at, ended_at FROM voice_presence_sessions WHERE guild_id = ? AND user_id != ?",
     guild.id, target.id,
   );
-  const affinities = buildVoiceAffinity(targetSessions, otherSessions, now).slice(0, PAGE_SIZE);
+  const affinities = buildVoiceAffinity(targetSessions, otherSessions, now).slice(0, RANK_LIMIT);
   await interaction.deferReply();
   const [entries, targetMember] = await Promise.all([
     Promise.all(affinities.map(async ({ user_id, shared_ms }) => ({
@@ -94,9 +80,12 @@ export const handleVoiceAffinityCommand = async (interaction: ChatInputCommandIn
     guild.members.fetch(target.id).catch(() => null),
   ]);
   const targetName = targetMember?.displayName ?? target.globalName ?? target.username;
-  return interaction.editReply({
-    files: [{ name: "voice-affinity.png", attachment: renderVoiceAffinity(targetName, entries) }],
-  });
+  if (!entries.length) {
+    return interaction.editReply({
+      files: [{ name: "voice-affinity.png", attachment: renderVoiceAffinity(targetName, entries) }],
+    });
+  }
+  return sendCardPages(interaction, rankingCards(targetName, entries, "affinity", "voice-affinity.png"));
 };
 
 export const handleVoiceVolumeCommand = async (interaction: ChatInputCommandInteraction) => {
@@ -179,7 +168,7 @@ export const handleVoiceAffinityComponent = async (interaction: ButtonInteractio
   }
   const card = stored?.cards[page];
   if (!stored || !card) {
-    return interaction.reply({ content: "카드 결과가 만료되었습니다. `/통화량` 또는 `/통계`를 다시 실행하세요.", ephemeral: true });
+    return interaction.reply({ content: "카드 결과가 만료되었습니다. `/통화량`, `/통계`, `/친밀도`를 다시 실행하세요.", ephemeral: true });
   }
   return interaction.update({
     attachments: [],
