@@ -2,10 +2,10 @@ import { loadImage } from "@napi-rs/canvas";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction, type ChatInputCommandInteraction, type Guild } from "discord.js";
 import { all } from "./storage.js";
 import { PAGE_SIZE, rankingCards, renderVoiceAffinity, type VoiceAffinityEntry, type VoiceCardMode } from "./voice-affinity-card.js";
-import { buildVoiceAffinity, type VoiceInterval } from "./voice-affinity.js";
+import { buildVoiceAffinity, type VoiceAffinity, type VoiceInterval } from "./voice-affinity.js";
 
 type CardPage = { name: string; attachment: Buffer };
-type StoredCards = { userId: string; cards: CardPage[] };
+type StoredCards = { userId: string; cards: CardPage[]; page: number; pageCount: number };
 
 const voiceAffinityPages = new Map<string, StoredCards>();
 const MAX_STORED_CARD_PAGES = 20;
@@ -15,14 +15,14 @@ type StatisticsRow = { user_id: string; chat_count: number; voice_seconds: numbe
 type ChatCountRow = { user_id: string; chat_count: number };
 type VoiceSecondsRow = { user_id: string; voice_seconds: number };
 
-const voiceAffinityComponents = (page: number, pageCount: number) => [new ActionRowBuilder<ButtonBuilder>().addComponents(
+const voiceAffinityComponents = (page: number, pageCount: number, availablePages = pageCount) => [new ActionRowBuilder<ButtonBuilder>().addComponents(
   new ButtonBuilder().setCustomId(`voice-affinity:${page - 1}`).setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
   new ButtonBuilder().setCustomId(`voice-affinity:${page}`).setLabel(`${page + 1} / ${pageCount}`).setStyle(ButtonStyle.Secondary).setDisabled(),
-  new ButtonBuilder().setCustomId(`voice-affinity:${page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page === pageCount - 1),
+  new ButtonBuilder().setCustomId(`voice-affinity:${page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page >= availablePages - 1),
 )];
 
-const rememberCards = (messageId: string, userId: string, cards: CardPage[]) => {
-  voiceAffinityPages.set(messageId, { userId, cards });
+const rememberCards = (messageId: string, userId: string, cards: CardPage[], pageCount: number) => {
+  voiceAffinityPages.set(messageId, { userId, cards, page: 0, pageCount });
   while (voiceAffinityPages.size > MAX_STORED_CARD_PAGES) {
     const oldest = voiceAffinityPages.keys().next().value;
     if (oldest === undefined) break;
@@ -37,8 +37,44 @@ const sendCardPages = async (interaction: ChatInputCommandInteraction, cards: Ca
     files: [cards[0]!],
     components: voiceAffinityComponents(0, cards.length),
   });
-  rememberCards(message.id, interaction.user.id, cards);
+  rememberCards(message.id, interaction.user.id, cards, cards.length);
   return message;
+};
+
+export const sendAffinityCards = async (
+  interaction: ChatInputCommandInteraction,
+  targetName: string,
+  affinities: VoiceAffinity[],
+  loadProfile: (userId: string) => Promise<Omit<VoiceAffinityEntry, "sharedMs">>,
+) => {
+  const total = affinities.length;
+  const pageCount = Math.ceil(total / PAGE_SIZE);
+  const rankingMax = affinities[0]!.shared_ms;
+  const cards: CardPage[] = [];
+  let messageId: string | undefined;
+  for (let page = 0; page < pageCount; page++) {
+    const entries = await Promise.all(
+      affinities.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+        .map(async ({ user_id, shared_ms }) => ({ ...await loadProfile(user_id), sharedMs: shared_ms })),
+    );
+    cards.push({
+      name: "voice-affinity.png",
+      attachment: renderVoiceAffinity(targetName, entries, page * PAGE_SIZE + 1, total, "affinity", rankingMax),
+    });
+    if (page === 0) {
+      if (pageCount === 1) return interaction.editReply({ files: [cards[0]!] });
+      const message = await interaction.editReply({
+        files: [cards[0]!],
+        components: voiceAffinityComponents(0, pageCount, 1),
+      });
+      messageId = message.id;
+      rememberCards(messageId, interaction.user.id, cards, pageCount);
+      continue;
+    }
+    const stored = messageId ? voiceAffinityPages.get(messageId) : undefined;
+    if (!stored) return;
+    await interaction.editReply({ components: voiceAffinityComponents(stored.page, stored.pageCount, stored.cards.length) });
+  }
 };
 
 const rankingProfile = async (guild: Guild, userId: string): Promise<Omit<VoiceAffinityEntry, "sharedMs">> => {
@@ -73,19 +109,14 @@ export const handleVoiceAffinityCommand = async (interaction: ChatInputCommandIn
   );
   const affinities = buildVoiceAffinity(targetSessions, otherSessions, now).slice(0, RANK_LIMIT);
   await interaction.deferReply();
-  const [entries, targetMember] = await Promise.all([
-    Promise.all(affinities.map(async ({ user_id, shared_ms }) => ({
-      ...await rankingProfile(guild, user_id), sharedMs: shared_ms,
-    }))),
-    guild.members.fetch(target.id).catch(() => null),
-  ]);
+  const targetMember = await guild.members.fetch(target.id).catch(() => null);
   const targetName = targetMember?.displayName ?? target.globalName ?? target.username;
-  if (!entries.length) {
+  if (!affinities.length) {
     return interaction.editReply({
-      files: [{ name: "voice-affinity.png", attachment: renderVoiceAffinity(targetName, entries) }],
+      files: [{ name: "voice-affinity.png", attachment: renderVoiceAffinity(targetName, []) }],
     });
   }
-  return sendCardPages(interaction, rankingCards(targetName, entries, "affinity", "voice-affinity.png"));
+  return sendAffinityCards(interaction, targetName, affinities, (userId) => rankingProfile(guild, userId));
 };
 
 export const handleVoiceVolumeCommand = async (interaction: ChatInputCommandInteraction) => {
@@ -170,9 +201,10 @@ export const handleVoiceAffinityComponent = async (interaction: ButtonInteractio
   if (!stored || !card) {
     return interaction.reply({ content: "카드 결과가 만료되었습니다. `/통화량`, `/통계`, `/친밀도`를 다시 실행하세요.", ephemeral: true });
   }
+  stored.page = page;
   return interaction.update({
     attachments: [],
     files: [card],
-    components: voiceAffinityComponents(page, stored.cards.length),
+    components: voiceAffinityComponents(page, stored.pageCount, stored.cards.length),
   });
 };
