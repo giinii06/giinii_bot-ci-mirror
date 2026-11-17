@@ -50,39 +50,38 @@ export const fetchGraph = async (
 
 /**
  * 아바타는 `<img>`가 읽는다. `<img>`에는 Authorization을 붙일 수 없으므로 베어러로 먼저 받아
- * object URL로 바꿔 두고, `avatarPath`를 그 URL로 갈아 끼운다. 토큰을 쿼리로 넘기지 않는다.
- * 돌려준 URL은 화면에 올린 뒤에 해제한다. 실패한 아바타는 null이 되어 이니셜로 떨어진다.
+ * object URL로 바꿔 둔다. 토큰을 쿼리로 넘기지 않는다.
+ *
+ * 첫 3D 화면은 아바타를 기다리지 않는다. 디스코드 프록시에서 아바타 한 장이 5초까지 걸리므로
+ * 전부 기다리면 그만큼 검은 화면이 남는다. 요청은 지금 시작하고, 도착한 것만 나중에 끼운다.
+ * `urls`는 살아 있는 목록이라 도착하는 대로 늘어난다. 화면에 붙인 뒤에 해제한다.
  */
-export const hydrateAvatars = async (
+export type AvatarSource = {
+  urls: string[];
+  resolve: (userId: string) => Promise<string | null>;
+};
+
+export const startAvatars = (
   snapshot: GraphSnapshot,
   token: string,
   instanceId: string,
   signal?: AbortSignal,
-): Promise<string[]> => {
-  const created: string[] = [];
-  try {
-    await Promise.all(snapshot.nodes.map(async (node) => {
-      const path = node.avatarPath;
-      if (!path) return;
-      // 스냅샷이 외부 URL을 들고 오면 베어러 토큰이 그쪽으로 나간다. 서버 경로만 받는다.
-      if (!path.startsWith("/api/graph/avatar/")) {
-        node.avatarPath = null;
-        return;
-      }
+): AvatarSource => {
+  const urls: string[] = [];
+  const pending = new Map<string, Promise<string | null>>();
+  for (const node of snapshot.nodes) {
+    const path = node.avatarPath;
+    // 이 경로는 인증이 필요하다. 3D 쪽이 그대로 <img>에 넣지 않도록 비운다.
+    node.avatarPath = null;
+    if (!path?.startsWith("/api/graph/avatar/")) continue;
+    pending.set(node.id, (async () => {
       const response = await fetch(path, { headers: authorized(token, instanceId), signal }).catch(() => null);
       signal?.throwIfAborted();
-      if (!response?.ok) {
-        node.avatarPath = null;
-        return;
-      }
+      if (!response?.ok) return null;
       const url = URL.createObjectURL(await response.blob());
-      created.push(url);
-      node.avatarPath = url;
-    }));
-    return created;
-  } catch (error) {
-    // 중간에 끊기면 이미 만든 URL만 정리하고 다시 던진다. 부른 쪽이 해제할 목록은 없다.
-    for (const url of created) URL.revokeObjectURL(url);
-    throw error;
+      urls.push(url);
+      return url;
+    })().catch(() => null));
   }
+  return { urls, resolve: (userId) => pending.get(userId) ?? Promise.resolve(null) };
 };

@@ -1,6 +1,7 @@
 import ForceGraph3D, { type ForceGraph3DInstance } from "3d-force-graph";
 import * as THREE from "three";
 import { COMMUNITY_COLORS, type GraphLink, type GraphNode, type GraphSnapshot } from "../../src/voice-graph-contract.js";
+import type { AvatarSource } from "./api.js";
 import { escapeHtml, initialsOf, loadImage, plateTexture } from "./avatar-plate.js";
 import { highlightFor, linkKey, type Selection } from "./selection.js";
 import { formatDuration } from "./ui.js";
@@ -14,7 +15,7 @@ type RenderLink = GraphLink & {
 };
 
 export type GraphView = {
-  setSnapshot: (snapshot: GraphSnapshot, selection: Selection) => Promise<void>;
+  setSnapshot: (snapshot: GraphSnapshot, selection: Selection, avatars: AvatarSource) => Promise<void>;
   applySelection: (selection: Selection) => void;
   dispose: () => void;
 };
@@ -35,6 +36,7 @@ export const mountGraph = async (
   initial: GraphSnapshot,
   initialSelection: Selection,
   onSelect: (userId: string | null) => void,
+  avatars: AvatarSource,
 ): Promise<GraphView> => {
   let snapshot = initial;
   let selection = initialSelection;
@@ -46,17 +48,9 @@ export const mountGraph = async (
 
   const sphereGeometry = new THREE.SphereGeometry(NODE_RADIUS, 20, 14);
 
-  const buildVisual = async (node: GraphNode): Promise<NodeVisual> => {
+  /** 첫 장면은 이니셜로 즉시 만들고, 도착한 아바타만 나중에 끼운다. */
+  const buildVisual = (node: GraphNode): NodeVisual => {
     const fallback = initialsOf(node.name);
-    let texture: THREE.Texture | null = null;
-    if (node.avatarPath) {
-      texture = await loadImage(node.avatarPath)
-        .then((image) => plateTexture(image, fallback))
-        .catch(() => plateTexture(null, fallback));
-    } else {
-      texture = plateTexture(null, fallback);
-    }
-
     const color = node.community === null
       ? NEUTRAL_COLOR
       : COMMUNITY_COLORS[node.community % COMMUNITY_COLORS.length]!;
@@ -67,7 +61,7 @@ export const mountGraph = async (
       opacity: 1,
     }));
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: texture,
+      map: plateTexture(null, fallback),
       transparent: true,
       opacity: 1,
       depthWrite: false,
@@ -78,6 +72,25 @@ export const mountGraph = async (
     const group = new THREE.Group();
     group.add(sphere, sprite);
     return { group, sphere, sprite };
+  };
+
+  /**
+   * 늦게 도착한 아바타를 지금 화면의 노드에만 끼운다. 그 사이 새 스냅샷으로 갈렸으면
+   * 그 노드는 이미 다른 인스턴스이므로 버린다. 같은 사람의 새 화면이면 그대로 써도 된다.
+   */
+  const applyAvatar = async (node: GraphNode, url: string | null) => {
+    if (!url) return;
+    const fallback = initialsOf(node.name);
+    const texture = await loadImage(url).then((image) => plateTexture(image, fallback)).catch(() => null);
+    if (!texture) return;
+    const visual = visuals.get(node.id);
+    if (!visual) {
+      texture.dispose();
+      return;
+    }
+    visual.sprite.material.map?.dispose();
+    visual.sprite.material.map = texture;
+    visual.sprite.material.needsUpdate = true;
   };
 
   const disposeVisuals = () => {
@@ -105,13 +118,15 @@ export const mountGraph = async (
     graph.refresh();
   };
 
-  const rebuild = async (next: GraphSnapshot, nextSelection: Selection) => {
+  const rebuild = async (next: GraphSnapshot, nextSelection: Selection, nextAvatars: AvatarSource) => {
     disposeVisuals();
     snapshot = next;
     selection = nextSelection;
-    const built = await Promise.all(next.nodes.map(async (node) => [node.id, await buildVisual(node)] as const));
-    visuals = new Map(built);
     const nodes: RenderNode[] = next.nodes.map((node) => ({ ...node }));
+    visuals = new Map(next.nodes.map((node) => [node.id, buildVisual(node)] as const));
+    for (const node of next.nodes) {
+      void nextAvatars.resolve(node.id).then((url) => applyAvatar(node, url));
+    }
     const links: RenderLink[] = next.links.map((link) => ({
       ...link,
       sourceId: link.source,
@@ -164,7 +179,7 @@ export const mountGraph = async (
     graph.zoomToFit(600, 70);
   });
 
-  await rebuild(initial, initialSelection);
+  await rebuild(initial, initialSelection, avatars);
   graph.cameraPosition({ x: 0, y: 0, z: 420 }, undefined, 0);
 
   return {

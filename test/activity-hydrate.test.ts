@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { hydrateAvatars } from "../activity/src/api.js";
+import { startAvatars } from "../activity/src/api.js";
 import type { GraphSnapshot } from "../src/voice-graph-contract.js";
 
 const graph = (): GraphSnapshot => ({
@@ -29,9 +29,10 @@ test("never sends the bearer to an avatar path outside the server route", async 
   try {
     const snapshot = graph();
     snapshot.nodes[0]!.avatarPath = "https://evil.test/avatar.png";
-    const urls = await hydrateAvatars(snapshot, "tok", "i-abc");
+    const source = startAvatars(snapshot, "tok", "i-abc");
 
-    expect(urls).toEqual([]);
+    expect(await source.resolve("111")).toBeNull();
+    expect(source.urls).toEqual([]);
     expect(snapshot.nodes[0]!.avatarPath).toBeNull();
     expect(fetched).toBe(false);
   } finally {
@@ -39,7 +40,7 @@ test("never sends the bearer to an avatar path outside the server route", async 
   }
 });
 
-test("fetches a protected avatar with the bearer and swaps in an object URL", async () => {
+test("fetches a protected avatar with the bearer and resolves an object URL", async () => {
   const originalFetch = globalThis.fetch;
   const originalCreate = URL.createObjectURL;
   const originalRevoke = URL.revokeObjectURL;
@@ -60,12 +61,45 @@ test("fetches a protected avatar with the bearer and swaps in an object URL", as
 
   try {
     const snapshot = graph();
-    const urls = await hydrateAvatars(snapshot, "tok", "i-abc");
+    const source = startAvatars(snapshot, "tok", "i-abc");
 
-    expect(urls).toEqual(["blob:test/1"]);
-    expect(snapshot.nodes[0]!.avatarPath).toBe("blob:test/1");
+    expect(await source.resolve("111")).toBe("blob:test/1");
+    expect(source.urls).toEqual(["blob:test/1"]);
+    expect(snapshot.nodes[0]!.avatarPath).toBeNull();
     expect(snapshot.nodes[1]!.avatarPath).toBeNull();
+    expect(await source.resolve("222")).toBeNull();
     expect(seen).toEqual([{ url: "/api/graph/avatar/111", auth: "Bearer tok", instance: "i-abc" }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  }
+});
+
+test("returns before the avatar fetches finish", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCreate = URL.createObjectURL;
+  const originalRevoke = URL.revokeObjectURL;
+  let release: (() => void) | null = null;
+
+  globalThis.fetch = (() => new Promise<Response>((resolve) => {
+    release = () => resolve(new Response(new Blob([new Uint8Array([1])], { type: "image/png" })));
+  })) as unknown as typeof fetch;
+  URL.createObjectURL = (() => "blob:test/late") as typeof URL.createObjectURL;
+  URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL;
+
+  try {
+    const snapshot = graph();
+    const source = startAvatars(snapshot, "tok", "i-abc");
+
+    // A blocking hydrator would not return until the fetch resolved. This line proves it did.
+    expect(source.urls).toEqual([]);
+    const pending = source.resolve("111");
+    expect(release).not.toBeNull();
+    release!();
+
+    expect(await pending).toBe("blob:test/late");
+    expect(source.urls).toEqual(["blob:test/late"]);
   } finally {
     globalThis.fetch = originalFetch;
     URL.createObjectURL = originalCreate;

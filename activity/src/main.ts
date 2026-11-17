@@ -1,8 +1,8 @@
 import "./style.css";
 import type { GraphPeriod, GraphSnapshot } from "../../src/voice-graph-contract.js";
-import { ApiError, fetchGraph, hydrateAvatars } from "./api.js";
+import { ApiError, fetchGraph, startAvatars, type AvatarSource } from "./api.js";
 import { NotInDiscordError, connectActivity } from "./discord.js";
-import { mountGraph, type GraphView } from "./graph.js";
+import type { GraphView } from "./graph.js";
 import { initialSelection, pruneSelection, selectNode, type Selection } from "./selection.js";
 import { bindPeriods, renderPanel, renderTableFallback, setStatus } from "./ui.js";
 
@@ -16,6 +16,7 @@ const scene = must<HTMLElement>("#scene");
 const panel = must<HTMLElement>("#panel");
 const status = must<HTMLElement>("#status");
 const topbar = must<HTMLElement>(".topbar");
+const bootPanel = must<HTMLElement>("#boot");
 
 const supportsWebGL = () => {
   try {
@@ -26,6 +27,17 @@ const supportsWebGL = () => {
   }
 };
 
+const canRender3d = supportsWebGL();
+
+/**
+ * 3D 청크는 1.6MB다. 디스코드 프록시가 콜드 캐시에서 이 파일을 16초 넘게 받아 가므로
+ * 인증과 데이터 요청이 도는 동안 미리 당겨 둔다. 정적 로딩 표시가 그 사이를 채운다.
+ */
+type GraphModule = typeof import("./graph.js");
+let graphModule: Promise<GraphModule> | null = null;
+const loadGraph = () => (graphModule ??= import("./graph.js"));
+if (canRender3d) void loadGraph();
+
 const messageFor = (error: unknown) => {
   if (error instanceof NotInDiscordError) return "디스코드 안에서 /친밀도그래프3d로 열어 주세요.";
   if (error instanceof ApiError) {
@@ -34,6 +46,12 @@ const messageFor = (error: unknown) => {
     if (error.status === 429) return "요청이 너무 많아요. 잠시 후 다시 시도해 주세요.";
   }
   return "그래프를 불러오지 못했어요.";
+};
+
+/** 첫 화면은 정적 로딩 표시가 맡는다. 실패하면 같은 자리에서 이유를 보여준다. */
+const failBoot = (message: string) => {
+  bootPanel.classList.add("boot-error");
+  bootPanel.textContent = message;
 };
 
 let sessionToken: string | null = null;
@@ -67,16 +85,20 @@ const handleSelect = (userId: string | null) => {
   renderPanel(panel, snapshot, selection, { onClear: clearSelection });
 };
 
-const mount = async (next: GraphSnapshot) => {
-  if (!supportsWebGL()) {
+const mount = async (next: GraphSnapshot, avatars: AvatarSource) => {
+  if (!canRender3d) {
+    bootPanel.remove();
     renderTableFallback(scene, next,
       "이 브라우저에서 WebGL을 켤 수 없어요. 하드웨어 가속을 켜거나 디스코드에서 /친밀도그래프로 이미지를 확인해 주세요.");
     return;
   }
   try {
-    view = await mountGraph(scene, next, selection, handleSelect);
+    const { mountGraph } = await loadGraph();
+    view = await mountGraph(scene, next, selection, handleSelect, avatars);
+    bootPanel.remove();
   } catch (error) {
     console.error(error);
+    bootPanel.remove();
     renderTableFallback(scene, next, "3D 장면을 초기화하지 못했어요. 같은 데이터를 목록으로 보여드려요.");
   }
 };
@@ -96,29 +118,27 @@ async function load(nextPeriod: GraphPeriod) {
   try {
     const next = await fetchGraph(nextPeriod, token, instanceId, local.signal);
     if (id !== requestId) return;
-    const nextAvatars = await hydrateAvatars(next, token, instanceId, local.signal);
-    if (id !== requestId) {
-      releaseAvatars(nextAvatars);
-      return;
-    }
+    const avatars = startAvatars(next, token, instanceId, local.signal);
     snapshot = next;
     selection = pruneSelection(selection, next);
     try {
-      if (view) await view.setSnapshot(next, selection);
-      else await mount(next);
+      if (view) await view.setSnapshot(next, selection, avatars);
+      else await mount(next, avatars);
     } catch (error) {
-      releaseAvatars(nextAvatars);
+      releaseAvatars(avatars.urls);
       throw error;
     }
     // 새 화면이 붙기 전에 이전 URL을 해제하면 텍스처가 빈 채로 남는다. 순서를 지킨다.
     const previous = avatarUrls;
-    avatarUrls = nextAvatars;
+    avatarUrls = avatars.urls;
     releaseAvatars(previous);
     renderPanel(panel, next, selection, { onClear: clearSelection });
     setStatus(status, null);
   } catch (error) {
     if (local.signal.aborted) return;
-    setStatus(status, messageFor(error), "error");
+    const message = messageFor(error);
+    if (view) setStatus(status, message, "error");
+    else failBoot(message);
   } finally {
     if (id === requestId) syncPeriodButtons(nextPeriod, false);
   }
@@ -130,7 +150,7 @@ const boot = async () => {
     sessionToken = session.token;
     sessionInstance = session.instanceId;
   } catch (error) {
-    setStatus(status, messageFor(error), "error");
+    failBoot(messageFor(error));
     syncPeriodButtons(period, true);
     return;
   }
