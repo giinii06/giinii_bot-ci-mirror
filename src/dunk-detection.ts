@@ -4,7 +4,7 @@ import {
 import { ADMIN_USER_ID } from "./admin-commands.js";
 import { ALLOWED_GUILD_ID, isAllowedGuild } from "./command-rules.js";
 import { createNoticeEmbed } from "./embeds.js";
-import { run, sql } from "./storage.js";
+import { all, run, sql } from "./storage.js";
 
 export type DunkSettings = { guildId: string; logChannelId: string | null; thresholdSeconds: number };
 
@@ -19,7 +19,7 @@ export type DunkEvent = DunkHit & { witnessIds: string[] };
 
 export type DunkTracker = {
   noteBotMove: (guildId: string, userId: string, now: number) => void;
-  track: (transition: VoiceTransition, thresholdSeconds: number) => DunkHit | null;
+  track: (transition: VoiceTransition, thresholdSeconds: number, ignoredChannelIds?: ReadonlySet<string>) => DunkHit | null;
 };
 
 export const DEFAULT_THRESHOLD_SECONDS = 60;
@@ -29,6 +29,8 @@ export const BOT_MOVE_TTL_MS = 10_000;
 
 const INSTALL_COMMAND = "!들낙감지설치";
 const THRESHOLD_COMMAND = "!들낙시간지정";
+const IGNORE_COMMAND = "!들낙무시";
+const NO_IGNORED_CHANNELS: ReadonlySet<string> = new Set();
 
 export const getDunkSettings = (guildId: string): DunkSettings => {
   const row = sql<{ log_channel_id: string | null; threshold_seconds: number }>(
@@ -40,6 +42,11 @@ export const getDunkSettings = (guildId: string): DunkSettings => {
     thresholdSeconds: row?.threshold_seconds ?? DEFAULT_THRESHOLD_SECONDS
   };
 };
+
+export const getDunkIgnoredChannels = (guildId: string): Set<string> =>
+  new Set(all<{ channel_id: string }>(
+    guildId, "SELECT channel_id FROM dunk_ignored_channels WHERE guild_id = ?", guildId
+  ).map((row) => row.channel_id));
 
 /**
  * 입장 시각은 메모리에만 둔다. 재시작으로 사라지면 그 한 건을 놓칠 뿐이고,
@@ -61,7 +68,7 @@ export const createDunkTracker = (): DunkTracker => {
     noteBotMove: (guildId, userId, now) => {
       botMoves.set(keyOf(guildId, userId), now + BOT_MOVE_TTL_MS);
     },
-    track: (transition, thresholdSeconds) => {
+    track: (transition, thresholdSeconds, ignoredChannelIds = NO_IGNORED_CHANNELS) => {
       const { guildId, userId, isBot, oldChannelId, newChannelId, now } = transition;
       if (isBot) return null;
       if (oldChannelId === newChannelId) return null;
@@ -72,7 +79,7 @@ export const createDunkTracker = (): DunkTracker => {
         const suppressed = consumeBotMove(key, now);
         const joined = pendingJoins.get(key);
         pendingJoins.delete(key);
-        if (joined && joined.channelId === oldChannelId && !suppressed) {
+        if (!ignoredChannelIds.has(oldChannelId) && joined && joined.channelId === oldChannelId && !suppressed) {
           const elapsed = now - joined.joinedAt;
           if (elapsed <= thresholdSeconds * 1000) {
             hit = { userId, channelId: oldChannelId, seconds: Math.max(1, Math.round(elapsed / 1000)) };
@@ -80,8 +87,11 @@ export const createDunkTracker = (): DunkTracker => {
         }
       }
       // 봇이 A에서 B로 옮긴 경우 떠난 쪽만 막고, 새 방은 계속 추적해야 다음 이탈을 잡는다.
-      if (newChannelId && !consumeBotMove(key, now)) {
-        pendingJoins.set(key, { channelId: newChannelId, joinedAt: now });
+      if (newChannelId) {
+        const suppressed = consumeBotMove(key, now);
+        if (!suppressed && !ignoredChannelIds.has(newChannelId)) {
+          pendingJoins.set(key, { channelId: newChannelId, joinedAt: now });
+        }
       }
       return hit;
     }
@@ -138,7 +148,7 @@ export const handleDunkVoiceUpdate = (oldState: VoiceState, newState: VoiceState
     oldChannelId: oldState.channelId,
     newChannelId: newState.channelId,
     now: Date.now()
-  }, settings.thresholdSeconds);
+  }, settings.thresholdSeconds, getDunkIgnoredChannels(guildId));
   if (!hit) return;
   const oldChannel = oldState.channel
     ?? (oldState.channelId ? newState.guild.channels.cache.get(oldState.channelId) : null);
@@ -149,7 +159,7 @@ export const handleDunkVoiceUpdate = (oldState: VoiceState, newState: VoiceState
 
 export const isDunkCommand = (content: string) => {
   const [head] = content.trim().split(/\s+/);
-  return head === INSTALL_COMMAND || head === THRESHOLD_COMMAND;
+  return head === INSTALL_COMMAND || head === THRESHOLD_COMMAND || head === IGNORE_COMMAND;
 };
 
 /** 바꾼 컬럼만 덮어쓰고 나머지는 저장된 값을 유지한다. */
@@ -217,6 +227,58 @@ const handleThreshold = async (message: Message, guildId: string, args: string[]
     `들낙 기준을 ${seconds}초로 바꿨어요. 이 시간 안에 들어왔다 나가면 감지합니다.${installHint}`)] });
 };
 
+const CHANNEL_ID_PATTERN = /^(?:(\d{17,20})|<#(\d{17,20})>)$/;
+
+const parseChannelId = (value: string) => {
+  const match = CHANNEL_ID_PATTERN.exec(value);
+  return match?.[1] ?? match?.[2] ?? null;
+};
+
+const handleIgnore = async (message: Message, guildId: string, args: string[]) => {
+  if (args.length === 0) {
+    const ignored = [...getDunkIgnoredChannels(guildId)];
+    await message.reply({ embeds: [createNoticeEmbed("들낙 무시 채널",
+      ignored.length ? ignored.map((id) => `<#${id}>`).join("\n") : "무시하는 음성 채널이 없어요.")] });
+    return;
+  }
+  const remove = args[0] === "해제";
+  const value = remove ? args[1] : args[0];
+  if (!value || (remove ? args.length !== 2 : args.length !== 1)) {
+    await message.reply({ embeds: [createNoticeEmbed("사용법",
+      `\`${IGNORE_COMMAND} [음성채널 ID]\` 로 무시할 채널을 추가합니다.\n\`${IGNORE_COMMAND} 해제 [음성채널 ID]\` 로 뺍니다.\n\`${IGNORE_COMMAND}\` 만 쓰면 목록을 봅니다.`)] });
+    return;
+  }
+  const channelId = parseChannelId(value);
+  if (!channelId) {
+    await message.reply({ embeds: [createNoticeEmbed("채널 ID를 확인해 주세요",
+      `음성 채널 ID나 <#채널> 멘션을 넣어 주세요.\n예) \`${IGNORE_COMMAND} 123456789012345678\``, "error")] });
+    return;
+  }
+  if (remove) {
+    const result = run(guildId,
+      "DELETE FROM dunk_ignored_channels WHERE guild_id = ? AND channel_id = ?", guildId, channelId);
+    await message.reply({ embeds: [createNoticeEmbed("들낙 무시 해제",
+      result.changes > 0 ? `<#${channelId}> 를 무시 목록에서 뺐어요.` : `<#${channelId}> 는 무시 목록에 없어요.`)] });
+    return;
+  }
+  const channel = message.guild?.channels.cache.get(channelId)
+    ?? await message.guild?.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isVoiceBased()) {
+    await message.reply({ embeds: [createNoticeEmbed("음성 채널이 아니에요",
+      "이 서버에 있는 음성 채널만 무시할 수 있어요.", "error")] });
+    return;
+  }
+  if (getDunkIgnoredChannels(guildId).has(channelId)) {
+    await message.reply({ embeds: [createNoticeEmbed("들낙 무시 채널",
+      `<#${channelId}> 는 이미 무시하고 있어요.`)] });
+    return;
+  }
+  run(guildId, "INSERT INTO dunk_ignored_channels (guild_id, channel_id, added_at, added_by) VALUES (?, ?, ?, ?)",
+    guildId, channelId, Date.now(), message.author.id);
+  await message.reply({ embeds: [createNoticeEmbed("들낙 무시 채널",
+    `<#${channelId}> 에서는 들낙 감지를 하지 않아요.\n\`${IGNORE_COMMAND}\` 로 목록을 볼 수 있어요.`)] });
+};
+
 export const handleDunkCommand = async (message: Message): Promise<boolean> => {
   if (message.author.bot) return false;
   const content = message.content.trim();
@@ -236,6 +298,7 @@ export const handleDunkCommand = async (message: Message): Promise<boolean> => {
   }
   const [head, ...args] = content.split(/\s+/);
   if (head === INSTALL_COMMAND) await handleInstall(message, guildId, args);
-  else await handleThreshold(message, guildId, args);
+  else if (head === THRESHOLD_COMMAND) await handleThreshold(message, guildId, args);
+  else await handleIgnore(message, guildId, args);
   return true;
 };

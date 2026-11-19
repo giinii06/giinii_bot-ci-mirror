@@ -114,6 +114,11 @@ const SCHEMA = `
     updated_at INTEGER NOT NULL,
     updated_by TEXT
   );
+  CREATE TABLE IF NOT EXISTS dunk_ignored_channels (
+    guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+    added_at INTEGER NOT NULL, added_by TEXT,
+    PRIMARY KEY (guild_id, channel_id)
+  );
 `;
 
 const openDatabases = new Map<string, Database>();

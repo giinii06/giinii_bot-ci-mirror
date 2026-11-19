@@ -10,13 +10,23 @@ process.env.DATABASE_PATH = join(directory, "bot.sqlite");
 
 const storage = await import("../src/storage.js");
 const {
-  createDunkTracker, formatDunkMessage, getDunkSettings, handleDunkCommand, handleDunkVoiceUpdate, isDunkCommand
+  createDunkTracker, formatDunkMessage, getDunkIgnoredChannels, getDunkSettings, handleDunkCommand, handleDunkVoiceUpdate, isDunkCommand
 } = await import("../src/dunk-detection.js");
 const { ALLOWED_GUILD_ID } = await import("../src/command-rules.js");
 const { ADMIN_USER_ID } = await import("../src/admin-commands.js");
 
 const GUILD = ALLOWED_GUILD_ID;
 const LEAVER = "u-leaver";
+const VOICE_CHANNEL = "111111111111111111";
+const TEXT_CHANNEL = "222222222222222222";
+const channels = new Map<string, { id: string; isVoiceBased: () => boolean }>([
+  [VOICE_CHANNEL, { id: VOICE_CHANNEL, isVoiceBased: () => true }],
+  [TEXT_CHANNEL, { id: TEXT_CHANNEL, isVoiceBased: () => false }]
+]);
+const guild = {
+  id: GUILD,
+  channels: { cache: channels, fetch: async (id: string) => channels.get(id) ?? null }
+};
 
 const transition = (overrides: Partial<Parameters<ReturnType<typeof createDunkTracker>["track"]>[0]> = {}) => ({
   guildId: GUILD, userId: LEAVER, isBot: false, oldChannelId: null, newChannelId: "A", now: 0, ...overrides
@@ -84,6 +94,31 @@ test("suppresses only the leaving side of a bot move and still tracks the new ro
     .toEqual({ userId: LEAVER, channelId: "B", seconds: 2 });
 });
 
+test("ignores joins and leaves in an ignored channel", () => {
+  const tracker = createDunkTracker();
+  const ignored = new Set(["A"]);
+  tracker.track(transition({ newChannelId: "A", now: 0 }), 60, ignored);
+  expect(tracker.track(transition({ oldChannelId: "A", newChannelId: null, now: 1_000 }), 60, ignored)).toBeNull();
+});
+
+test("still reports the leave from a normal channel into an ignored one", () => {
+  const tracker = createDunkTracker();
+  tracker.track(transition({ newChannelId: "A", now: 0 }), 60);
+  expect(tracker.track(transition({ oldChannelId: "A", newChannelId: "B", now: 2_000 }), 60, new Set(["B"])))
+    .toEqual({ userId: LEAVER, channelId: "A", seconds: 2 });
+  expect(tracker.track(transition({ oldChannelId: "B", newChannelId: null, now: 3_000 }), 60, new Set(["B"])))
+    .toBeNull();
+});
+
+test("starts tracking after leaving an ignored channel for a normal one", () => {
+  const tracker = createDunkTracker();
+  const ignored = new Set(["A"]);
+  tracker.track(transition({ newChannelId: "A", now: 0 }), 60, ignored);
+  expect(tracker.track(transition({ oldChannelId: "A", newChannelId: "B", now: 1_000 }), 60, ignored)).toBeNull();
+  expect(tracker.track(transition({ oldChannelId: "B", newChannelId: null, now: 3_000 }), 60, ignored))
+    .toEqual({ userId: LEAVER, channelId: "B", seconds: 2 });
+});
+
 test("formats the log line with and without witnesses", () => {
   expect(formatDunkMessage({ userId: "111", channelId: "222", seconds: 7, witnessIds: ["333", "444"] }))
     .toBe("<@111> (이)가 <@333>, <@444> 등등이 있던 통방 <#222> 을 7초만에 들낙했습니다!");
@@ -91,9 +126,10 @@ test("formats the log line with and without witnesses", () => {
     .toBe("<@111> (이)가 <#222> 을 7초만에 들낙했습니다!");
 });
 
-test("recognises only the two dunk commands", () => {
+test("recognises the dunk commands", () => {
   expect(isDunkCommand("!들낙감지설치")).toBe(true);
   expect(isDunkCommand("!들낙시간지정 30")).toBe(true);
+  expect(isDunkCommand(`!들낙무시 ${VOICE_CHANNEL}`)).toBe(true);
   expect(isDunkCommand("  !들낙감지설치  ")).toBe(true);
   expect(isDunkCommand("!들낙")).toBe(false);
   expect(isDunkCommand("안녕 !들낙감지설치")).toBe(false);
@@ -108,6 +144,7 @@ const fakeMessage = (content: string, options: {
   const message = {
     content,
     guildId: options.guildId ?? GUILD,
+    guild,
     channelId: options.channelId ?? "log-channel",
     author: { bot: options.bot ?? false, id: options.userId ?? "plain-user" },
     member: { permissions: { has: () => options.serverAdmin === true } },
@@ -191,6 +228,31 @@ test("lets the bot admin set a valid threshold", async () => {
 test("keeps the channel and threshold after every database closes", () => {
   storage.closeAllDatabases();
   expect(getDunkSettings(GUILD)).toEqual({ guildId: GUILD, logChannelId: "log-2", thresholdSeconds: 30 });
+});
+
+test("adds, lists, and removes an ignored voice channel", async () => {
+  const add = fakeMessage(`!들낙무시 <#${VOICE_CHANNEL}>`, { serverAdmin: true });
+  expect(await handleDunkCommand(add.message)).toBe(true);
+  expect(embedData(add.replies).title).toBe("들낙 무시 채널");
+  expect([...getDunkIgnoredChannels(GUILD)]).toEqual([VOICE_CHANNEL]);
+
+  const list = fakeMessage("!들낙무시", { serverAdmin: true });
+  await handleDunkCommand(list.message);
+  expect(embedData(list.replies).description).toContain(`<#${VOICE_CHANNEL}>`);
+
+  const remove = fakeMessage(`!들낙무시 해제 ${VOICE_CHANNEL}`, { serverAdmin: true });
+  await handleDunkCommand(remove.message);
+  expect(getDunkIgnoredChannels(GUILD).size).toBe(0);
+  expect(embedData(remove.replies).title).toBe("들낙 무시 해제");
+});
+
+test("rejects a text channel and a malformed channel id for dunk ignore", async () => {
+  for (const content of [`!들낙무시 ${TEXT_CHANNEL}`, "!들낙무시 abc", "!들낙무시 123"]) {
+    const { message, replies } = fakeMessage(content, { serverAdmin: true });
+    expect(await handleDunkCommand(message)).toBe(true);
+    expect(["음성 채널이 아니에요", "채널 ID를 확인해 주세요"]).toContain(embedData(replies).title!);
+  }
+  expect(getDunkIgnoredChannels(GUILD).size).toBe(0);
 });
 
 test("ignores ordinary messages and bot authors", async () => {
