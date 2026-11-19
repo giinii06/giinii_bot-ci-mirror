@@ -5,6 +5,7 @@ import {
 } from "@discordjs/voice";
 import { EmbedBuilder, PermissionFlagsBits, type ChatInputCommandInteraction, type Guild, type GuildMember, type VoiceBasedChannel } from "discord.js";
 import { rouletteAudioPaths } from "./config.js";
+import { noteBotVoiceMove } from "./dunk-detection.js";
 import { all, run, sql } from "./storage.js";
 
 const rouletteRuns = new Set<string>();
@@ -60,6 +61,7 @@ const playRouletteAudio = async (guild: Guild, channel: VoiceBasedChannel, membe
       player.play(resource);
     });
   } finally {
+    noteBotVoiceMove(guild.id, member.id);
     await Promise.all([
       Promise.resolve().then(() => connection.destroy()),
       member.voice.disconnect("관리자 러시안 룰렛 종료")
@@ -167,9 +169,12 @@ const runAdminRoulette = async (interaction: ChatInputCommandInteraction, guild:
     if (!isDefenseSuccess()) {
       await sendRouletteMessage(interaction, countdownChannels,
         rouletteEmbed(`${defenderMentions} 방어 실패! 으!@!@`, 0xed4245));
-      await Promise.all(defenders.map((defender) => defender.voice.disconnect("관리자 러시안 룰렛 방어권 실패").catch((error) => {
-        console.error("Defense failure disconnect failed", error);
-      })));
+      await Promise.all(defenders.map((defender) => {
+        noteBotVoiceMove(guild.id, defender.id);
+        return defender.voice.disconnect("관리자 러시안 룰렛 방어권 실패").catch((error) => {
+          console.error("Defense failure disconnect failed", error);
+        });
+      }));
       return;
     }
     defenders.forEach(({ id }) => autoDefendedIds.add(id));

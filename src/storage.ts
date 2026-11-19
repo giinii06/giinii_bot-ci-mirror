@@ -107,6 +107,13 @@ const SCHEMA = `
     updated_at INTEGER NOT NULL, updated_by TEXT,
     PRIMARY KEY (guild_id, command_name)
   );
+  CREATE TABLE IF NOT EXISTS dunk_settings (
+    guild_id TEXT PRIMARY KEY,
+    log_channel_id TEXT,
+    threshold_seconds INTEGER NOT NULL DEFAULT 60,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT
+  );
 `;
 
 const openDatabases = new Map<string, Database>();

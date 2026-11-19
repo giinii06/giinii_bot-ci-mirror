@@ -11,6 +11,7 @@ import { isAllowedGuild, isCommandEnabled, isRouletteGuild } from "./command-rul
 import { initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
 import { commandScopeCounts, rouletteCommandNames, syncCommands } from "./commands.js";
 import { config } from "./config.js";
+import { handleDunkCommand, handleDunkVoiceUpdate } from "./dunk-detection.js";
 import { createNoticeEmbed } from "./embeds.js";
 import { startMediaWorker } from "./media.js";
 import { startSeedWorker } from "./seed.js";
@@ -111,6 +112,7 @@ client.on(Events.GuildCreate, (guild) => {
 client.on(Events.MessageCreate, async (message) => {
   if (message.inGuild()) {
     if (await handleAdminCommand(message, client)) return;
+    if (await handleDunkCommand(message)) return;
     if (!message.author.bot && message.content === "!sync") {
       if (message.author.id !== ADMIN_USER_ID) return;
       void message.reply(`전역 명령 ${commandScopeCounts.global}개와 전용 서버 명령 ${commandScopeCounts.dedicated}개를 동기화합니다. 완료되면 알려줄게요.`);
@@ -131,8 +133,13 @@ client.on(Events.MessageCreate, async (message) => {
   await handleChatMessage(message);
 });
 
-client.on(Events.VoiceStateUpdate, (_, newState) => {
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   void handleVoiceStateUpdate(newState).catch((error) => console.error("Voice activity update failed", error));
+  try {
+    handleDunkVoiceUpdate(oldState, newState);
+  } catch (error) {
+    console.error("Dunk detection failed", error);
+  }
 });
 
 client.on(Events.InteractionCreate, (interaction) => {
