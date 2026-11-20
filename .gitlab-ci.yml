@@ -40,7 +40,12 @@ typecheck:
 unit_tests:
   extends: .default_bun_job
   stage: verify
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git
+    - bun --version
+    - bun install --frozen-lockfile
   script:
+    - bun test test/storage.test.ts
     - bun test
 
 build_activity:
