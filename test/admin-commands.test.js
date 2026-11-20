@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { ADMIN_USER_ID, handleAdminCommand } from "../src/admin-commands.ts";
+process.env.ADMIN_USER_ID = "123456789012345678";
+const { ADMIN_USER_ID, handleAdminCommand } = await import("../src/admin-commands.ts");
 
 const fakeMessage = (content, authorId) => {
   const replies = [];

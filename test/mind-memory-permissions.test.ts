@@ -11,7 +11,7 @@ import {
   OTHER_GUILD,
   USER,
   actorOf,
-  fakeCommandInteraction,
+  fakeTextCommandMessage,
   memoryDecisionOf,
   mindDb,
   rootDb
@@ -102,7 +102,7 @@ describe("기억 권한", () => {
     });
 
     expect(result.status).toBe("blocked");
-    expect(result.reason).toContain("/memory delete");
+    expect(result.reason).toContain("!memory delete");
     expect(store.byId(mine!.id)).not.toBeNull();
   });
 
@@ -195,47 +195,30 @@ describe("기억 권한", () => {
   });
 });
 
-describe("관리자 공용 기억 명령", () => {
-  test("관리자가 아니면 어떤 하위 명령도 실행하지 않는다", async () => {
+describe("관리자 공용 기억 텍스트 명령", () => {
+  test("관리자가 아니면 변경·조회 모두 막는다", async () => {
     const mind = engine();
-    const { interaction, replies } = fakeCommandInteraction({
-      subcommand: "list",
-      admin: false
-    });
-
-    await handleSharedMemoryCommand(interaction, mind);
-
-    expect(replies).toEqual(["관리자만 사용할 수 있습니다."]);
+    const { message, replies } = fakeTextCommandMessage({ admin: false });
+    await handleSharedMemoryCommand(message, mind, "list");
+    await handleSharedMemoryCommand(message, mind, "add fact 비밀");
+    expect(replies).toEqual(["서버 관리자만 사용할 수 있습니다.", "서버 관리자만 사용할 수 있습니다."]);
+    expect(mind.listGuildMemories()).toHaveLength(0);
   });
 
   test("관리자는 공용 기억을 추가하고 목록에서 본다", async () => {
     const mind = engine();
-    const add = fakeCommandInteraction({
-      subcommand: "add",
-      admin: true,
-      string: (name) => (name === "category" ? "server_convention" : "이 서버는 아침에 조용하다")
-    });
-
-    await handleSharedMemoryCommand(add.interaction, mind);
-    expect(add.replies[0]).toContain("공용 기억 1번을 저장했어");
-
-    const list = fakeCommandInteraction({ subcommand: "list", admin: true });
-    await handleSharedMemoryCommand(list.interaction, mind);
-    expect(list.replies[0]).toContain("이 서버는 아침에 조용하다");
+    const { message, replies } = fakeTextCommandMessage({ admin: true });
+    await handleSharedMemoryCommand(message, mind, "add server_convention 이 서버는 아침에 조용하다");
+    expect(replies[0]).toContain("공용 기억 1번 저장 완료");
+    await handleSharedMemoryCommand(message, mind, "list");
+    expect(replies[1]).toContain("이 서버는 아침에 조용하다");
   });
 
-  test("관리자 별명의 링크는 일반 텍스트로 저장한다", async () => {
+  test("관리자 별명에 들어간 링크는 안전한 일반 텍스트로 저장한다", async () => {
     const mind = engine();
-    const { interaction, replies } = fakeCommandInteraction({
-      subcommand: "nickname",
-      admin: true,
-      user: () => ({ id: OTHER, displayName: "민지" }),
-      string: () => "https://example.com"
-    });
-
-    await handleSharedMemoryCommand(interaction, mind);
-
-    expect(replies[0]).toContain("https://example.com");
+    const { message, replies } = fakeTextCommandMessage({ admin: true });
+    await handleSharedMemoryCommand(message, mind, `nickname <@${OTHER}> https://example.com`);
+    expect(replies[0]).toContain("별명 설정 완료");
     expect(mind.listGuildMemories()[0]?.structuredValue).toBe("https://example.com");
   });
 });

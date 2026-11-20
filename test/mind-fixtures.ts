@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import type { ChatInputCommandInteraction } from "discord.js";
+import type { Message } from "discord.js";
 import { MIND_SCHEMA, ROOT_SCHEMA } from "../src/mind/schema.js";
 import type {
   BotUserRelationship,
@@ -165,36 +165,18 @@ export const choice = (
   probabilities: probabilities ?? { [key]: confidence }
 });
 
-export const fakeCommandInteraction = (input: {
-  subcommand: string;
-  userId?: string;
-  admin?: boolean;
-  integer?: (name: string) => number;
-  string?: (name: string) => string;
-  boolean?: (name: string) => boolean;
-  user?: (name: string) => { id: string; displayName: string } | null;
-}): { interaction: ChatInputCommandInteraction; replies: string[] } => {
+export const fakeTextCommandMessage = (input: {
+  admin?: boolean; userId?: string;
+} = {}): { message: Message; replies: string[] } => {
   const replies: string[] = [];
-  const interaction = {
-    user: { id: input.userId ?? USER },
+  const message = {
+    author: { id: input.userId ?? USER, bot: false },
     guildId: GUILD,
-    inCachedGuild: () => true,
-    memberPermissions: { has: () => input.admin ?? false },
-    options: {
-      getSubcommand: () => input.subcommand,
-      getInteger: (name: string) => input.integer?.(name) ?? 0,
-      getString: (name: string) => input.string?.(name) ?? "",
-      getBoolean: (name: string) => input.boolean?.(name) ?? false,
-      getUser: (name: string) => input.user?.(name) ?? null,
-      getMember: () => null
-    },
-    reply: async (payload: { content?: string }) => {
-      replies.push(payload.content ?? "");
-    }
+    member: { permissions: { has: () => input.admin ?? false } },
+    guild: { members: { fetch: async (id: string) =>
+      id === OTHER ? { id: OTHER, displayName: "민지" } : null
+    } },
+    reply: async (payload: { content: string }) => { replies.push(payload.content); }
   };
-
-  return {
-    interaction: interaction as unknown as ChatInputCommandInteraction,
-    replies
-  };
+  return { message: message as unknown as Message, replies };
 };

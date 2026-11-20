@@ -8,7 +8,8 @@
     "check": "tsc --noEmit && tsc -p activity/tsconfig.json",
     "test": "bun test",
     "build:activity": "vite build --config activity/vite.config.ts",
-    "dev:activity": "vite --config activity/vite.config.ts"
+    "dev:activity": "vite --config activity/vite.config.ts",
+    "cleanup:slash": "bun run scripts/cleanup-slash.ts"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",

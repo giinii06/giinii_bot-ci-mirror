@@ -26,7 +26,7 @@ import {
   choice,
   contextOf,
   decisionOf,
-  fakeCommandInteraction,
+  fakeTextCommandMessage,
   memoryRecordOf,
   mindDb,
   relationshipOf,
@@ -493,7 +493,7 @@ describe("명시적 기억 작업", () => {
     expect(store.byId(saved.id)?.content).toBe("민지는 커피를 좋아한다");
   });
 
-  test("차단된 삭제는 슬래시 명령을 안내하게 만든다", () => {
+  test("차단된 삭제는 접두사 명령을 안내하게 만든다", () => {
     const text = describeMemoryResult({
       status: "blocked",
       added: [],
@@ -678,7 +678,7 @@ describe("MindEngine", () => {
     expect(mind.listMemories(USER)).toHaveLength(1);
   });
 
-  test("슬래시 기억 삭제는 그대로 동작한다", async () => {
+  test("접두사 기억 삭제는 사용자 본인 기억만 지운다", async () => {
     const mind = engine();
     const saved = mind.memories.addPersonal({
       ownerUserId: USER,
@@ -686,16 +686,10 @@ describe("MindEngine", () => {
       content: "민지는 커피를 좋아한다"
     });
     if (!saved) throw new Error("저장 실패");
-
-    const { interaction, replies } = fakeCommandInteraction({
-      subcommand: "delete",
-      integer: () => saved.id
-    });
-
-    await handleMemoryCommand(interaction, mind);
-
+    const { message, replies } = fakeTextCommandMessage();
+    await handleMemoryCommand(message, mind, `delete ${saved.id}`);
     expect(mind.memories.byId(saved.id)).toBeNull();
-    expect(replies[0]).toContain("지웠어");
+    expect(replies[0]).toContain("삭제 완료");
   });
 
   test("같은 메시지는 관계를 두 번 갱신하지 않는다", async () => {

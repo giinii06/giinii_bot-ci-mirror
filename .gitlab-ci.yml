@@ -65,22 +65,7 @@ build_activity:
     expire_in: 7 days
     access: developer
 
-build_web:
-  stage: build
-  before_script:
-    - bun --version
-    - cd web
-    - bun install --frozen-lockfile
-  script:
-    - bun run build
-  artifacts:
-    when: on_success
-    paths:
-      - web/dist/
-    expire_in: 7 days
-    access: developer
-
-# Original colbymchenry/codegraph, not a separate imitation engine.
+# Original colbymchenry//codegraph, not a separate imitation engine.
 # Optional so ordinary pushes never spend time/money building a code index.
 codegraph_analysis:
   stage: analysis

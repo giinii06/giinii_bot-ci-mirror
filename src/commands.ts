@@ -1,31 +1,11 @@
 import { ApplicationCommandType, ApplicationIntegrationType, InteractionContextType, PermissionFlagsBits, SlashCommandBuilder, type APIApplicationCommand, type ApplicationCommandDataResolvable, type ApplicationCommandManager, type Client, type Guild } from "discord.js";
-import { chatCommandBuilders } from "./chat/commands.js";
-import { mindCommandBuilders } from "./mind/commands.js";
 import { ALLOWED_GUILD_ID } from "./command-rules.js";
 
 const rouletteCommandBuilders = [
-  new SlashCommandBuilder().setName("타겟").setDescription("관리자 러시안 룰렛의 타겟 역할을 관리합니다")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addStringOption((option) => option.setName("인자").setDescription("지정, 삭제, 조회 중 하나를 선택하세요").setRequired(true)
-      .addChoices(
-        { name: "지정", value: "지정" },
-        { name: "삭제", value: "삭제" },
-        { name: "조회", value: "조회" }
-      ))
-    .addRoleOption((option) => option.setName("역할").setDescription("지정할 타겟 역할").setRequired(false)),
-  new SlashCommandBuilder().setName("관리자_타겟").setDescription("관리자 러시안 룰렛의 대상 역할을 관리합니다")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addStringOption((option) => option.setName("인자").setDescription("지정, 삭제, 조회 중 하나를 선택하세요").setRequired(true)
-      .addChoices(
-        { name: "지정", value: "지정" },
-        { name: "삭제", value: "삭제" },
-        { name: "조회", value: "조회" }
-      ))
-    .addRoleOption((option) => option.setName("역할").setDescription("지정하거나 삭제할 관리자 역할").setRequired(false)),
   new SlashCommandBuilder().setName("관리자머리끄댕이").setDescription("관리자를 대상으로 러시안 룰렛을 실행합니다")
 ];
 
-/** 룰렛 명령 3종. 전용 길드에서만 실행한다. */
+/** 룰렛 슬래시 명령 1종. 전용 길드에서만 실행한다. */
 export const rouletteCommandNames = new Set(rouletteCommandBuilders.map((command) => command.name));
 
 const voiceCommandBuilders = [
@@ -45,17 +25,14 @@ const globalCommands = voiceCommandBuilders.map((command) => command
   .setContexts(InteractionContextType.Guild).setIntegrationTypes(ApplicationIntegrationType.GuildInstall).toJSON());
 const graph3dCommands = graph3dCommandBuilders.map((command) => command.toJSON());
 const rouletteCommands = rouletteCommandBuilders.map((command) => command.toJSON());
-const chatCommands = chatCommandBuilders.map((command) => command.toJSON());
-const mindCommands = mindCommandBuilders.map((command) => command.toJSON());
-/** 전용 서버(ALLOWED_GUILD_ID)에만 등록하는 명령. 룰렛 3종과 기니봇아 대화·기억·3D 그래프 명령. */
-const dedicatedGuildCommands = [...rouletteCommands, ...chatCommands, ...mindCommands, ...graph3dCommands];
+/** 전용 서버(ALLOWED_GUILD_ID)에만 등록하는 명령. 룰렛 실행 및 3D 그래프 명령. */
+const dedicatedGuildCommands = [...rouletteCommands, ...graph3dCommands];
 export const commands = [...dedicatedGuildCommands, ...globalCommands];
 export const commandScopeCounts = { global: globalCommands.length, dedicated: dedicatedGuildCommands.length };
 
 /** 서버별 on/off 설정과 대조할 슬래시 명령어 이름 목록. */
 export const slashCommandNames = [
-  ...rouletteCommandBuilders, ...voiceCommandBuilders, ...chatCommandBuilders, ...mindCommandBuilders,
-  ...graph3dCommandBuilders
+  ...rouletteCommandBuilders, ...voiceCommandBuilders, ...graph3dCommandBuilders
 ].map((command) => command.name);
 
 const syncCommandSet = async (manager: Pick<ApplicationCommandManager, "fetch" | "set">, wanted: typeof commands, scope: string) => {
