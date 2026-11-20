@@ -1,0 +1,109 @@
+# Alchemy verification pipeline. CI validates commits; the Alchemy agent interprets
+# failed logs, edits code on a review branch, and reruns CI (up to 3 iterations).
+image: oven/bun:1.4.5
+
+stages:
+  - verify
+  - build
+  - analysis
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+    - when: never
+
+variables:
+  CI: "true"
+  DISCORD_TOKEN: "ci-test-placeholder"
+
+.default_bun_job:
+  before_script:
+    - bun --version
+    - bun install --frozen-lockfile
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+typecheck:
+  extends: .default_bun_job
+  stage: verify
+  script:
+    - bun run check
+
+unit_tests:
+  extends: .default_bun_job
+  stage: verify
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git
+    - bun --version
+    - bun install --frozen-lockfile
+  script:
+    # Each test file must get a fresh Bun process. storage.test.ts configures
+    # DATABASE_PATH at startup; shared modules from other suites can cache it.
+    # Bun 1.3.14 also crashed with a native segmentation fault when running the
+    # remaining 23 files in one process. Never silently omit failing tests.
+    - |
+      find test -type f \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.jsx' \) -print0 |
+        xargs -0 -r -n1 bun test
+
+build_activity:
+  extends: .default_bun_job
+  stage: build
+  script:
+    - bun run build:activity
+  artifacts:
+    when: on_success
+    paths:
+      - activity/dist/
+    expire_in: 7 days
+    access: developer
+
+build_web:
+  stage: build
+  before_script:
+    - bun --version
+    - cd web
+    - bun install --frozen-lockfile
+  script:
+    - bun run build
+  artifacts:
+    when: on_success
+    paths:
+      - web/dist/
+    expire_in: 7 days
+    access: developer
+
+# Original colbymchenry/codegraph, not a separate imitation engine.
+# Optional so ordinary pushes never spend time/money building a code index.
+codegraph_analysis:
+  stage: analysis
+  image: node:22-bookworm
+  variables:
+    CODEGRAPH_TELEMETRY: "0"
+  when: manual
+  allow_failure: true
+  before_script:
+    - node --version
+    - npm --version
+    - npm install --global @colbymchenry/codegraph
+  script:
+    - mkdir -p codegraph-report
+    - printf '%s\n' "$CI_COMMIT_SHA" > codegraph-report/sha.txt
+    - codegraph --version | tee codegraph-report/version.txt
+    - codegraph init --local-only
+    - codegraph status --json | tee codegraph-report/status.json
+    - codegraph files --json > codegraph-report/files.json
+    - codegraph explore "AI chat message pipeline and context memory" | tee codegraph-report/explore.txt
+  artifacts:
+    when: always
+    paths:
+      - codegraph-report/
+    expire_in: 7 days
+    access: developer
