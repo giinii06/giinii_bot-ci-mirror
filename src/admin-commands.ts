@@ -4,8 +4,8 @@ import { disabledCommandNames, isCommandEnabled, setCommandEnabled } from "./com
 import { all } from "./storage.js";
 import { splitForEmbeds } from "./text.js";
 
-/** 관리 명령을 실행할 수 있는 유일한 유저. */
-export const ADMIN_USER_ID = "1425196889288212691";
+/** .env의 봇 소유자 ID. 미설정이면 모든 소유자 전용 명령이 잠긴다. */
+export const ADMIN_USER_ID = process.env.ADMIN_USER_ID?.trim() ?? "";
 
 const enabledMark = "✅";
 const disabledMark = "⛔";
@@ -28,7 +28,7 @@ const denyEmbed = (message: string) => new EmbedBuilder()
  */
 export const isAdminCommand = (content: string) => COMMAND_PREFIXES.some((prefix) => content === prefix || content.startsWith(`${prefix} `));
 
-const isAdmin = (message: Message) => message.author.id === ADMIN_USER_ID;
+const isAdmin = (message: Message) => ADMIN_USER_ID !== "" && message.author.id === ADMIN_USER_ID;
 
 const storedMessageCount = (guildId: string) =>
   all<{ n: number }>(guildId, "SELECT COUNT(*) AS n FROM discord_messages WHERE guild_id = ?", guildId)[0]?.n ?? 0;

@@ -10,6 +10,7 @@ import { ADMIN_USER_ID, handleAdminCommand } from "./admin-commands.js";
 import { isAllowedGuild, isCommandEnabled, isRouletteGuild } from "./command-rules.js";
 import { initializeVoiceSessions, handleVoiceStateUpdate, startVoiceTracker } from "./activity.js";
 import { commandScopeCounts, rouletteCommandNames, syncCommands } from "./commands.js";
+import { handlePrefixCommand } from "./prefix-commands.js";
 import { config } from "./config.js";
 import { handleDunkCommand, handleDunkVoiceUpdate } from "./dunk-detection.js";
 import { createNoticeEmbed } from "./embeds.js";
@@ -20,11 +21,7 @@ import { handleRouletteCommand } from "./roulette.js";
 import { initDatabase } from "./storage.js";
 import { handleStatisticsCommand, handleVoiceAffinityCommand, handleVoiceAffinityComponent, handleVoiceVolumeCommand } from "./voice-affinity-command.js";
 import { handleVoiceAffinityGraph3dCommand, handleVoiceAffinityGraphCommand } from "./voice-affinity-graph-command.js";
-import { initChat, handleChatMessage, chatRouter, chatMind } from "./chat/index.js";
-import {
-  handleModelAutocomplete, handleModelCommand, handleReasoningAutocomplete, handleReasoningCommand
-} from "./chat/commands.js";
-import { handleMemoryCommand, handleMindCommand, handleSharedMemoryCommand } from "./mind/commands.js";
+import { initChat, handleChatMessage } from "./chat/index.js";
 
 const client = new Client({
   intents: [
@@ -113,6 +110,7 @@ client.on(Events.MessageCreate, async (message) => {
   if (message.inGuild()) {
     if (await handleAdminCommand(message, client)) return;
     if (await handleDunkCommand(message)) return;
+    if (await handlePrefixCommand(message)) return;
     if (!message.author.bot && message.content === "!sync") {
       if (message.author.id !== ADMIN_USER_ID) return;
       void message.reply(`전역 명령 ${commandScopeCounts.global}개와 전용 서버 명령 ${commandScopeCounts.dedicated}개를 동기화합니다. 완료되면 알려줄게요.`);
@@ -143,63 +141,10 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 });
 
 client.on(Events.InteractionCreate, (interaction) => {
-  if (interaction.isAutocomplete()) {
-    const router = chatRouter();
-    if (!router || !isAllowedGuild(interaction.guildId)) {
-      void interaction.respond([]).catch(() => undefined);
-      return;
-    }
-    if (interaction.commandName === "model") {
-      void handleModelAutocomplete(interaction, router).catch((error) => console.error("Model autocomplete failed", error));
-      return;
-    }
-    if (interaction.commandName === "reasoning") {
-      void handleReasoningAutocomplete(interaction, router).catch((error) => console.error("Reasoning autocomplete failed", error));
-    }
-    return;
-  }
   if (interaction.isChatInputCommand()) {
     if (interaction.inCachedGuild() && !isCommandEnabled(interaction.guildId, interaction.commandName)) {
       void interaction.reply({ embeds: [createNoticeEmbed("이 서버에서는 비활성화된 명령어예요",
         `/${interaction.commandName} 명령어는 이 서버에서 꺼져 있습니다. 다른 서버에서는 쓸 수 있어요.`)], ephemeral: true });
-      return;
-    }
-    if (interaction.commandName === "model" || interaction.commandName === "reasoning") {
-      if (!interaction.inCachedGuild() || !isAllowedGuild(interaction.guildId)) {
-        void interaction.reply({ ephemeral: true, content: "기니봇아 대화는 지정된 서버에서만 쓸 수 있습니다." }).catch(() => undefined);
-        return;
-      }
-      const router = chatRouter();
-      if (!router) {
-        void interaction.reply({ ephemeral: true, content: "OPENROUTER_API_KEY가 비어 있어 기니봇아 대화 기능이 꺼져 있습니다." }).catch(() => undefined);
-        return;
-      }
-      const run = interaction.commandName === "model"
-        ? handleModelCommand(interaction, router)
-        : handleReasoningCommand(interaction, router);
-      void run.catch((error) => replyInteractionError(interaction, error));
-      return;
-    }
-    if (
-      interaction.commandName === "mind" ||
-      interaction.commandName === "memory" ||
-      interaction.commandName === "shared-memory"
-    ) {
-      if (!interaction.inCachedGuild() || !isAllowedGuild(interaction.guildId)) {
-        void interaction.reply({ ephemeral: true, content: "기억과 판단 엔진은 지정된 서버에서만 쓸 수 있습니다." }).catch(() => undefined);
-        return;
-      }
-      const mind = chatMind();
-      if (!mind) {
-        void interaction.reply({ ephemeral: true, content: "기니봇아 대화 기능이 아직 초기화되지 않았습니다." }).catch(() => undefined);
-        return;
-      }
-      const run = interaction.commandName === "mind"
-        ? handleMindCommand(interaction, mind)
-        : interaction.commandName === "memory"
-          ? handleMemoryCommand(interaction, mind)
-          : handleSharedMemoryCommand(interaction, mind);
-      void run.catch((error) => replyInteractionError(interaction, error));
       return;
     }
     if (interaction.commandName === "친밀도그래프3d") {

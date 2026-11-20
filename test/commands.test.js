@@ -53,10 +53,9 @@ test("removes legacy AI commands globally and from guilds while preserving voice
     expect(global.every((command) => command.contexts.join() === "0" && command.integration_types.join() === "0")).toBe(true);
     expect(global.some((command) => command.name === "친밀도그래프3d")).toBe(false);
     expect(state.get(guildPath(targetGuildId))).toEqual([]);
-    // 기니봇아 대화·기억 명령은 룰렛과 같이 전용 서버에만 등록한다.
+    // 텍스트 명령으로 이동한 항목은 더 이상 등록하지 않는다.
     expect(state.get(guildPath(ALLOWED_GUILD_ID)).map((command) => command.name)).toEqual([
-      "타겟", "관리자_타겟", "관리자머리끄댕이", "model", "reasoning", "mind", "memory", "shared-memory",
-      "친밀도그래프3d",
+      "관리자머리끄댕이", "친밀도그래프3d",
     ]);
     expect(writes).toHaveLength(3);
     await syncCommands(client);

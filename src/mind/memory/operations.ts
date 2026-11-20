@@ -148,7 +148,7 @@ const deleteMemory = (input: MemoryCommitInput): MemoryOperationResult => {
   }
   return empty(
     "blocked",
-    "자연어로는 기억을 삭제할 수 없습니다. /memory delete 슬래시 명령을 써야 합니다"
+    "자연어로는 기억을 삭제할 수 없습니다. !memory delete 슬래시 명령을 써야 합니다"
   );
 };
 
