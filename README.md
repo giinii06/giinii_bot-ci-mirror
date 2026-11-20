@@ -21,8 +21,7 @@
 13. [백업·복원·데이터 이동](#13-백업복원데이터-이동)
 14. [테스트와 변경 작업](#14-테스트와-변경-작업)
 15. [운영·관측·장애 대응](#15-운영관측장애-대응)
-16. [GitLab ↔ GitHub 동기화](#16-gitlab--github-동기화)
-17. [보안·개인정보·제약](#17-보안개인정보제약)
+16. [보안·개인정보·제약](#16-보안개인정보제약)
 
 ## 1. 무엇을 제공하나
 
@@ -615,7 +614,7 @@ flowchart LR
 - `scripts/restore-db.ts`는 manifest 크기·SHA-256을 검증하고 **기존 대상이 있으면 기본적으로 복원을 건너뜁니다.** `--force`는 대상 덮어쓰기이므로 운영 중에는 사용하지 마세요.
 - 구형 단일 DB/시드는 `split-db-by-guild.ts`, `restore-legacy-db.ts`의 별도 이행 경로가 있습니다. 복구 전에 두 포맷을 혼동하지 마세요.
 - `scripts/chunk-media.ts`는 이미 저장된 큰 파일을 별도 청크로 변환합니다. DB 시드와 미디어 시드는 **서로 다릅니다**.
-- `data/`는 `.gitignore` 대상입니다. **Git 미러링은 DB 백업이 아닙니다.** 안전한 위치로 암호화/접근 제어한 백업을 별도로 보관하세요.
+- `data/`는 `.gitignore` 대상입니다. **소스 코드 저장소는 DB 백업이 아닙니다.** 안전한 위치로 암호화/접근 제어한 백업을 별도로 보관하세요.
 - WAL 사용 중인 SQLite 파일을 단순 복사하는 대신 앱 정지 후 복사하거나 SQLite backup API/스냅샷을 쓰세요(`src/storage.ts`의 `snapshotDatabase` 참고). 복원은 격리 환경에서 먼저 시험하세요.
 - 파일 크기 가드는 기본 **30 MiB 초과**를 차단하도록 설계됐습니다. `.githooks/pre-commit` 훅을 사용하고 `scripts/check-large-files.ts`를 검증하세요.
 
@@ -655,30 +654,11 @@ bun run scripts/check-large-files.ts --tracked
 | 음성 통계 어긋남 | `voice_presence_sessions` 구간, 60초 루프 | 재시작/채널 이동 및 오래 열린 세션 확인 |
 | 미디어 다운로드 실패 | `media_files.status`, 파일 권한, 저장 공간 | worker 오류/크기 제한/만료된 URL 점검 |
 | 3D Activity 실행 실패 | `ACTIVITY_ENABLED`, Client Secret, dist, HTTPS 매핑 | API/인증/프록시, Discord 내 iframe 테스트 |
-| GitLab↔GitHub 불일치 | 미러 상태, GitHub Actions 로그 | 브랜치 분기/토큰 scope/권한 확인, force 금지 |
 | 배포 후 DB가 비어 보임 | `./data` 마운트와 `DATABASE_PATH` | 볼륨/경로/시드 확인; 백업 없이는 삭제 금지 |
 
 서버에서 시작할 때 `docker compose ps`와 `docker compose logs --tail=100 bot`가 기본입니다. SQLite는 **서버별**이므로 조사할 길드 ID를 먼저 확정하세요. 오류 로그에 토큰, 메시지 본문, 사용자 식별자, API 응답을 불필요하게 공개하지 마세요.
 
-## 16. GitLab ↔ GitHub 동기화
-
-현재 저장소의 동기화 구성은 다음과 같습니다.
-
-~~~mermaid
-flowchart LR
-    GL[GitLab main / 원본] -- Push Mirror --> GH[GitHub main / 미러]
-    GH -- push 이벤트 --> ACT[GitHub Actions]
-    ACT -- fast-forward push, force 없음 --> GL
-~~~
-
-- GitLab → GitHub: GitLab Repository Push Mirroring.
-- GitHub → GitLab: `.github/workflows/sync-to-gitlab.yml`의 `Sync GitHub to GitLab`, GitHub Repository Secret `GITLAB` 사용.
-- 기존 미러 토큰과 GitHub Actions에서 사용하는 GitLab 토큰은 **서로 다른 인증 정보**입니다. 토큰을 README에 기록하지 마세요.
-- **동시 수정/서로 다른 조상**이면 자동 병합이 아니라 Push 실패가 정상입니다. GitLab 미러의 `Keep divergent refs`를 활성화해 GitHub 커밋 강제 덮어쓰기를 피하세요.
-- 한 방향의 성공만으로 양방향 정합성이 보장되지는 않습니다. 양쪽 최신 SHA를 비교하고 실패 로그를 살피세요.
-- Git 미러는 **소스 코드·브랜치 커밋**을 다루며 Discord DB·미디어·GitLab 이슈/MR 등을 백업하거나 동기화하지 않습니다.
-
-## 17. 보안·개인정보·제약
+## 16. 보안·개인정보·제약
 
 1. **저장 데이터는 민감할 수 있음:** 채팅 본문, 멘션, 프로필 이력, 파일, 음성 체류 기록, AI 기억은 서버 활동을 재구성할 수 있습니다. 실제 이용자에게 수집 항목과 운영 방침을 알리고 데이터 접근권한을 최소화하세요.
 2. **분리된 삭제 범위:** `/memory delete`·`/memory clear`는 AI 개인 기억 관리 기능이지 모든 기록 삭제 요청 처리 시스템이 아닙니다. 채팅 원본·미디어·로그/백업의 삭제는 별도 운영 절차가 필요합니다.
