@@ -250,6 +250,12 @@ const drawRow = (
   label(ctx, format(entry.sharedMs), 1405, y + 34, 26, 226, "center");
 };
 
+// @napi-rs/canvas uses a native worker for async PNG encoding. Running several
+// encoders simultaneously crashed Bun in Linux CI (even with isolated test files).
+// Serialize encodes without blocking the Discord event loop. A rejected encode
+// must not prevent later requests from making progress.
+let pendingPngEncode: Promise<void> = Promise.resolve();
+
 export const renderVoiceAffinity = async (
   targetName: string,
   entries: VoiceAffinityEntry[],
@@ -309,7 +315,9 @@ export const renderVoiceAffinity = async (
     }
   }
 
-  return canvas.encode("png");
+  const encoded = pendingPngEncode.then(() => canvas.encode("png"));
+  pendingPngEncode = encoded.then(() => undefined, () => undefined);
+  return encoded;
 };
 
 export const rankingCards = async (
