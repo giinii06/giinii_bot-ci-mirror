@@ -385,3 +385,5 @@ bun run build:activity
 
 - 브라우저 하드웨어 가속이 꺼져 있으면 WebGL을 만들 수 없습니다. 목록은 같은 데이터를 표로 보여줍니다.
 - 서버는 3D 대체 렌더링을 하지 않습니다. 이미지는 `/친밀도그래프`를 씁니다.
+
+Bidirectional sync test
