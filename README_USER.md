@@ -327,6 +327,41 @@ flowchart LR
 5. 룰렛 등 실질적인 역할/음성 변경 기능의 사용 동의.
 6. 문제가 생긴 경우 봇 운영자의 Docker/DB 로그 확인.
 
+### 서버 운영자: Docker Compose로 24시간 호스팅
+
+서버에 봇을 직접 설치하는 분만 참고하세요. **일반 Discord 이용자는 호스팅할 필요가 없습니다.** 이 저장소는 Ubuntu/Linux VPS나 macOS에서 **Docker Compose**로 실행할 수 있고, 별도의 DB 서버 없이 SQLite와 로컬 미디어 디렉터리를 사용합니다.
+
+~~~bash
+# Docker Engine + Compose 플러그인 설치 후, GitLab SSH 키 등록이 끝난 환경
+git clone git@gitlab.com:blond11qq/giinii_bot.git
+cd giinii_bot
+cp .env.example .env
+chmod 600 .env
+# .env에 DISCORD_TOKEN을 설정하고 저장하세요
+
+docker compose up -d --build
+docker compose ps
+docker compose logs -f --tail=100 bot
+~~~
+
+~~~mermaid
+flowchart LR
+    A[Docker Compose] --> B[Bun + Discord Bot]
+    B --> C[(./data/guilds SQLite)]
+    B --> D[(./data/media)]
+    B --> E[선택: 3D Activity API]
+~~~
+
+- **필수:** Docker/Compose, Discord 봇 토큰, Discord Developer Portal의 Message Content Intent 및 적절한 채널 권한.
+- **저장:** `./data`는 컨테이너 밖에 남으므로 재빌드해도 DB가 유지됩니다. 별도로 백업하세요.
+- **AI:** 필요할 때만 `CHAT_OPENROUTER_API_KEY`를 추가하세요.
+- **3D Activity:** 기본 `8787`은 호스트 루프백 전용이며, 외부 접속은 HTTPS 프록시 및 Discord Activity 설정을 추가해야 합니다.
+- **업데이트:** `git pull --ff-only origin main` 후 `docker compose up -d --build`.
+- **멈춤/재시작:** `docker compose stop bot` / `docker compose start bot`.
+- **비밀 유지:** `.env`를 공개하거나 Git에 커밋하지 마세요.
+
+설치 전제부터 서버 초기 세팅·로그·백업·복구·포트·문제 해결까지의 **전체 Docker 호스팅 매뉴얼은 [개발자 README 12장](README.md#12-docker-compose로-호스팅하기-ubuntu-서버--macos)**을 참고하세요.
+
 ## 10. FAQ / 문제 해결
 
 **Q. `/` 명령이 안 보여요.**  

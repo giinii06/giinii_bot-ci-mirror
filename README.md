@@ -393,27 +393,212 @@ sequenceDiagram
 
 서버에 GPU가 없어도 됩니다. WebGL을 못 쓰는 클라이언트는 표 형식의 폴백을 표시합니다. 운영 포트 `8787`을 무턱대고 공인망에 직접 노출하지 마세요.
 
-## 12. Docker와 배포
+## 12. Docker Compose로 호스팅하기 (Ubuntu 서버 / macOS)
 
-~~~bash
-docker compose up -d --build
-docker compose ps
-docker compose logs --tail=100 bot
+이 저장소에는 **운영에 사용할 수 있는 `Dockerfile`과 `docker-compose.yml`이 이미 들어 있습니다.** Docker Compose 하나로 Bun 런타임·ffmpeg·3D Activity 정적 빌드를 묶어 실행할 수 있습니다. **24시간 운영은 절전 없이 계속 켜져 있는 Ubuntu/Linux 서버나 VPS**가 편리하며, macOS의 Docker Desktop도 개발 및 홈서버용으로 사용할 수 있습니다.
+
+> 일반적인 Discord Gateway 봇은 외부에서 접속할 HTTP 포트가 필요하지 않습니다. **`8787` 포트는 3D Discord Activity API용**이며, 기본 Compose는 보안을 위해 **호스트의 `127.0.0.1`에만** 바인딩합니다. 봇이 대화·통계만 제공한다면 외부에 포트를 열지 마세요.
+
+### 12.1 Docker 호스팅 구조
+
+~~~mermaid
+flowchart TB
+    Discord[Discord Gateway / 명령] <-->|외부로 나가는 연결| Bot
+    subgraph Host[Ubuntu VPS 또는 macOS 호스트]
+      subgraph Docker[Docker Compose]
+        Bot[bot 서비스 - Bun + ffmpeg]
+        API[Activity HTTP :8787]
+        Bot --- API
+      end
+      Data[(./data → /app/data)]
+      Env[.env / SOUL.md]
+      Proxy[선택: HTTPS reverse proxy]
+    end
+    Bot --> Data
+    Env --> Bot
+    Proxy -->|호스트 루프백 8787| API
+    DiscordActivity[Discord Activity iframe] -->|HTTPS /api| Proxy
 ~~~
 
-`Dockerfile`은 1단계에서 SPA를 빌드하고 2단계에서 프로덕션 의존성·`ffmpeg`·봇을 준비합니다. 실행 시 `scripts/restore-db.ts`로 시드를 확인한 뒤 `bun run start`를 수행합니다.
+| 항목 | 실제 설정 | 의미 |
+| --- | --- | --- |
+| 서비스 이름 | `bot` | `docker compose logs bot`으로 조회 |
+| 런타임 이미지 | `oven/bun:1.3.14` | 이미지 빌드 때 Bun/의존성 설치 |
+| 음성 처리 | 컨테이너에 `ffmpeg` 설치 | 호스트에 ffmpeg 설치할 필요 없음 |
+| Activity 빌드 | Dockerfile 첫 빌드 단계 | `activity/dist` 자동 생성 |
+| 데이터 볼륨 | `./data:/app/data` | **컨테이너를 재생성해도 서버별 DB·미디어 보존** |
+| 설정 | `env_file: .env`, `./.env:/app/.env` | 서버 비밀값을 Git에 올리지 않음 |
+| 캐릭터 | `./SOUL.md:/app/SOUL.md:ro` | 읽기 전용 파일 마운트 |
+| 포트 | `127.0.0.1:8787:8787` | Activity API는 호스트 로컬에서만 접근 |
+| 재시작 | `restart: unless-stopped` | Docker 데몬이 재실행되면 컨테이너도 재시작(수동 중지 예외) |
 
-`docker-compose.yml`의 `bot` 서비스:
-- `.env`를 환경과 볼륨으로 제공.
-- `./data:/app/data`로 DB·미디어 영속화.
-- `./SOUL.md:/app/SOUL.md:ro`로 성격 파일 읽기 전용 연결.
-- `127.0.0.1:8787:8787`로 Activity HTTP를 호스트 루프백에만 공개.
-- `restart: unless-stopped`.
-- Compose에서 `DATABASE_PATH=/app/data/bot.sqlite`를 지정하므로 서버별 DB 경로는 `/app/data/guilds/`.
+이 프로젝트는 **Discord 봇·SQLite·Activity HTTP가 한 컨테이너**에서 실행됩니다. 별도의 PostgreSQL이나 Redis 컨테이너는 필요하지 않습니다. `web/`의 React/Cloudflare Pages 홈페이지는 이 Compose 서비스에서 배포하지 않습니다.
 
-배포 스킬 `.codebuddy/skills/deploy/SKILL.md`는 **사전 git 상태 확인 → main Push → 서버 `git pull --ff-only` → `docker compose up -d --build` → 컨테이너/로그 확인** 순서입니다. 문서·API 커밋이 생겼다고 운영 서버가 자동 재시작되는 것은 아닙니다. 운영 배포는 별도 단계입니다.
+### 12.2 서버 준비: Docker 설치
 
-**배포 직전 확인:** 최신 코드 fast-forward 가능 여부, DB 백업, .env/Secret 존재, 봇 권한/인텐트, API 외부 접근 및 도메인/인증서, 이미지 빌드, `Logged in as` 로그, 동기화/백필 상태. 강제 Push/무조건 DB 삭제는 금지합니다.
+**Ubuntu/Linux 서버:** [Docker 공식 Ubuntu 설치 안내](https://docs.docker.com/engine/install/ubuntu/)를 따라 Docker Engine, Buildx, Compose 플러그인을 설치하세요. 배포판별 패키지가 다를 수 있으므로 구형 `docker-compose` 명령 대신 **`docker compose`(띄어쓰기)**를 기준으로 합니다.
+
+**macOS:** [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/)을 설치하고 실행하세요. Mac이 잠자기 상태가 되면 Discord 연결이 끊길 수 있으므로 24시간 서비스에는 절전 정책을 검토하세요.
+
+~~~bash
+# Docker와 Compose가 설치됐는지 확인
+docker --version
+docker compose version
+docker info
+~~~
+
+`docker info`에서 데몬 접근 거부가 나면 Docker Desktop 실행 여부 또는 Linux 사용자 권한을 확인하세요. Linux에서 `docker` 그룹에 사용자를 추가하면 사실상 높은 시스템 권한이 생기므로 신뢰할 수 있는 계정에만 허용하세요.
+
+### 12.3 저장소 다운로드 및 비밀값 설정
+
+GitLab 저장소는 **Private**입니다. 아래 예시는 **GitLab에 SSH 공개키를 등록한 운영 계정**을 전제로 합니다. HTTPS 클론도 가능하지만 비밀번호 대신 필요한 범위의 토큰 인증이 필요할 수 있습니다.
+
+~~~bash
+git clone git@gitlab.com:blond11qq/giinii_bot.git
+cd giinii_bot
+
+cp .env.example .env
+chmod 600 .env
+mkdir -p data
+
+# .env 파일을 에디터로 열어 실제 값을 설정
+micro .env
+~~~
+
+`micro`가 설치되지 않았다면 사용 가능한 다른 편집기를 쓰세요. **최소 필수 값은 `DISCORD_TOKEN`**입니다. `DISCORD_BOT_TOKEN`이 설정되면 이 값이 우선합니다. Discord Developer Portal에서 **Message Content Intent**를 켜고, 서버에 봇을 초대해 필요한 채널 읽기/메시지/음성 권한을 부여하세요.
+
+~~~dotenv
+# .env 핵심 예시 — 토큰을 실제 값으로 교체 (이 예시는 커밋 금지)
+DISCORD_TOKEN=replace_with_discord_bot_token
+
+# AI 대화를 쓸 때만: 전용 서버에서 동작
+CHAT_OPENROUTER_API_KEY=
+
+# 3D Discord Activity를 쓸 때만
+# ACTIVITY_ENABLED=true
+# DISCORD_CLIENT_SECRET=replace_with_client_secret
+# DISCORD_CLIENT_ID=your_discord_application_id
+~~~
+
+선택 기능이 필요 없다면 OpenRouter/Activity 키를 비워 둬도 메시지 수집·음성 통계·룰렛 등 비-AI 기능은 동작합니다. `.env`에는 비밀키를 포함하므로 **Git에 추가하거나 스크린샷/로그에 공개하지 마세요.**
+
+**경로 주의:** Compose는 `DATABASE_PATH=/app/data/bot.sqlite`를 컨테이너에 **강제 설정**합니다. 따라서 서버별 실제 DB는 `./data/guilds/<guildId>.sqlite`에 생성됩니다. 호스트 컴퓨터의 `./data`를 백업해야 하며, `/app/data`는 컨테이너 내부 경로입니다.
+
+### 12.4 최초 빌드·기동·검증
+
+~~~bash
+# 저장소 루트(= docker-compose.yml이 있는 폴더)에서 실행
+docker compose config --quiet
+docker compose up -d --build
+
+# 컨테이너 상태 및 시작 로그
+docker compose ps
+docker compose logs --tail=100 bot
+
+# 실시간 로그: Ctrl+C는 로그 보기만 끝내며 컨테이너는 계속 실행
+docker compose logs -f --tail=100 bot
+~~~
+
+정상 기동 시 `Logged in as ...`가 보이고, 최초에는 Discord 기록을 백필할 수 있습니다. 로그의 `Backfilling`/`Backfill ready`는 기록 수집 상태를 나타냅니다. 데이터가 많으면 처음 실행 시간이 길어질 수 있습니다. `docker compose ps`에서 `Up`만 보여도 Discord 로그인까지 성공했다고 단정하지 말고 **로그도 확인**하세요.
+
+~~~mermaid
+sequenceDiagram
+    actor Admin as 운영자
+    participant Compose as Docker Compose
+    participant Bot as Bot Container
+    participant Data as ./data/guilds
+    participant Discord
+    Admin->>Compose: docker compose up -d --build
+    Compose->>Bot: 이미지 빌드 / 컨테이너 시작
+    Bot->>Data: DB 시드 복원 시도(기존 파일은 건너뜀)
+    Bot->>Discord: 토큰으로 로그인
+    Discord-->>Bot: ClientReady
+    Bot->>Data: 초기화·수집·음성 집계
+    Bot-->>Admin: Logged in as / Backfill 로그
+~~~
+
+`Dockerfile`의 시작 명령은 `scripts/restore-db.ts /app/data/seed /app/data/guilds`를 실행한 뒤 봇을 시작합니다. **시드가 없으면 빈 DB로 시작**하고, **기존 DB가 있으면 기본적으로 덮어쓰지 않습니다**. 재배포 뒤 `skipping seed restore`는 정상적인 로그입니다.
+
+### 12.5 자주 사용하는 운영 명령
+
+| 작업 | 명령 |
+| --- | --- |
+| 현재 상태 | `docker compose ps` |
+| 최근 로그 | `docker compose logs --tail=100 bot` |
+| 실시간 로그 | `docker compose logs -f bot` |
+| 컨테이너만 재시작 | `docker compose restart bot` |
+| 봇 중지 | `docker compose stop bot` |
+| 기존 컨테이너 다시 시작 | `docker compose start bot` |
+| 설정/소스 변경 후 재빌드 | `docker compose up -d --build` |
+| 컨테이너 종료·제거 | `docker compose down` (호스트 `./data`는 남음) |
+| 디스크 용량 확인 | `du -sh data && df -h .` |
+
+**구성/환경변수를 바꿨다면 `restart`만 쓰지 말고 `up -d --build`로 컨테이너를 다시 생성하세요.** `restart`는 Compose 설정이나 이미지를 갱신하지 않습니다.
+
+### 12.6 GitLab 업데이트 → 컨테이너 새 버전 적용
+
+~~~bash
+cd giinii_bot
+git status --short
+git pull --ff-only origin main
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=80 bot
+~~~
+
+- `git status --short`에 예상하지 못한 수정이 있으면 덮어쓰지 말고 원인을 확인하세요.
+- `--ff-only`는 로컬 브랜치가 갈라졌을 때 억지로 병합하지 않고 중단합니다.
+- 이미지 재빌드/컨테이너 재생성은 `./data` 바인드 마운트를 유지합니다.
+- **문서 커밋만 했어도 운영 서버가 자동 배포되지는 않습니다.** 새 커밋을 서버에서 Pull하거나 별도의 CD가 있어야 합니다.
+- `git reset --hard`, 강제 Push, `rm -rf data` 같은 명령으로 운영 자료를 잃지 마세요.
+
+프로젝트의 배포 자동화 지침은 `.codebuddy/skills/deploy/SKILL.md`에 있습니다. 이 스킬은 Pull, Compose 재빌드, 로그 검증을 수행하도록 정의돼 있지만 실제 배포가 수행되었다는 뜻은 아닙니다.
+
+### 12.7 백업·복원 — 데이터 영속성 보호
+
+가장 중요한 데이터는 **`./data/guilds/`의 SQLite, `./data/media/`의 수집 파일**, 그리고 서버별 설정입니다. Git 저장소/미러링은 이 데이터를 보관하지 않습니다. SQLite는 WAL을 쓰므로 **실행 중 단순한 DB 파일 복사보다는 서버 정지 후 백업**하거나 `snapshotDatabase` 등 SQLite 스냅샷 기능을 사용하세요.
+
+~~~bash
+# 저장소 루트에서 실행. 백업은 Git 저장소 밖에 보관
+mkdir -p ../giinii_backups
+chmod 700 ../giinii_backups
+
+# 수집 중 쓰기를 멈추고 DB/WAL/미디어를 함께 압축
+docker compose stop bot
+tar -czf "../giinii_backups/giinii-data-$(date +%Y%m%d-%H%M%S).tar.gz" data
+docker compose start bot
+~~~
+
+**경고:** 압축이 실패하면 봇이 중지된 채 남을 수 있으니 `docker compose ps`로 상태를 확인하세요. 백업 파일에는 채팅·음성 통계·미디어 등 민감한 정보가 있을 수 있으므로 **암호화하고 별도 안전 저장소로 복제**하세요. `.env`의 비밀값은 비밀번호 관리자 등 별도 안전 경로로 백업하고, 공개 저장소나 백업 공유 링크에 포함하지 마세요.
+
+**복원 흐름(운영 중 실행 금지):** 봇 중지 → 현재 `data` 디렉터리를 별도 보관 → 검증된 백업 압축 파일을 저장소 루트에 풀어 `data/` 복구 → 권한 점검 → `docker compose up -d --build` → 로그인·통계 확인. 기존 자료에 `tar`를 무심코 덮어쓰지 마세요. `scripts/restore-db.ts`는 청크 시드 복원용이며 일반 tar 백업 복원과는 다릅니다. 상세는 [13장](#13-백업복원데이터-이동).
+
+### 12.8 3D Discord Activity를 외부에서 열고 싶다면
+
+Docker Compose의 기본 포트는 **`127.0.0.1:8787:8787`**로 설정되어 있어 외부 네트워크에서 직접 연결할 수 없습니다. Activity를 사용하려면 다음 추가 설정이 필요합니다.
+
+1. `.env`에 `ACTIVITY_ENABLED=true`와 `DISCORD_CLIENT_SECRET`을 지정합니다.
+2. Discord Developer Portal에서 Activities 및 URL Mapping을 설정합니다.
+3. **호스트의 HTTPS 역방향 프록시**(예: Caddy/Nginx)가 공개 도메인의 요청을 호스트 루프백 `127.0.0.1:8787`로 전달하게 합니다.
+4. `docker compose up -d --build`로 재생성하고 Discord 내에서 `/친밀도그래프3d`를 실행해 검증합니다.
+
+**포트 8787을 `0.0.0.0:8787:8787`로 바꿔 직접 공개하지 마세요.** Discord iframe·OAuth·Activity 인스턴스 검증은 `src/activity-web-server.ts`에 있습니다. 상세 인증·URL 매핑 조건은 [11장](#11-3d-discord-activity)을 참고하세요.
+
+### 12.9 장애가 나면 먼저 확인
+
+| 증상 | 확인 | 대응 |
+| --- | --- | --- |
+| `docker compose`를 찾지 못함 | `docker compose version` | Compose 플러그인 설치 |
+| 데몬 연결 실패 | `docker info` | Docker 서비스/Desktop 실행·권한 점검 |
+| `no configuration file provided` | 현재 작업 디렉터리 | `docker-compose.yml`이 있는 저장소 루트에서 실행 |
+| `env file .env not found` | `ls -la .env` | `cp .env.example .env` 후 실제 토큰 설정 |
+| Discord 로그인이 실패함 | `docker compose logs bot` | 토큰·Gateway Intent·네트워크 점검 |
+| 데이터가 비어 보임 | `docker compose config`, `ls data/guilds` | 호스트 볼륨 경로, 다른 작업 디렉터리 여부 확인 |
+| `8787` 포트 충돌 | `docker compose ps`, 호스트 포트 점유 | 다른 서비스 정리 또는 **호스트 포트만** 변경 |
+| 3D Activity가 흰 화면 | `ACTIVITY_ENABLED`, Secret, HTTPS URL Mapping | 11장 Activity 설정과 API 로그 점검 |
+| 재시작 후 코드가 옛 버전 | `git rev-parse --short HEAD` | Pull 후 `up -d --build` 확인 |
+
+**정리:** 평소 운영에는 `docker compose up -d --build`와 `docker compose logs -f bot`만 알면 시작할 수 있습니다. 그러나 **24시간 호스팅에는 지속 실행·백업·디스크 감시·토큰 보안까지 운영 책임이 포함**됩니다.
 
 ## 13. 백업·복원·데이터 이동
 
