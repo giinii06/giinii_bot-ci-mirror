@@ -45,13 +45,13 @@ unit_tests:
     - bun --version
     - bun install --frozen-lockfile
   script:
-    # storage.test.ts sets DATABASE_PATH before dynamic imports. Running it after
-    # another test file in the same Bun process can reuse cached src/config state.
-    # Isolate it, then run all remaining tests in a separate Bun process.
-    - bun test test/storage.test.ts
+    # Each test file must get a fresh Bun process. storage.test.ts configures
+    # DATABASE_PATH at startup; shared modules from other suites can cache it.
+    # Bun 1.3.14 also crashed with a native segmentation fault when running the
+    # remaining 23 files in one process. Never silently omit failing tests.
     - |
-      find test -type f \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.jsx' \) ! -name storage.test.ts -print0 |
-        xargs -0 -r bun test
+      find test -type f \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.jsx' \) -print0 |
+        xargs -0 -r -n1 bun test
 
 build_activity:
   extends: .default_bun_job
