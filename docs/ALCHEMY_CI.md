@@ -7,7 +7,6 @@ Pipeline is pinned to the current GitLab branch/SHA and runs on GitLab-hosted (o
 - `typecheck`: `bun run check`, which runs TS checks of the bot and Activity.
 - `unit_tests`: `bun test`.
 - `build_activity`: `bun run build:activity`; saves `activity/dist` as an artifact on success.
-- `build_web`: runs `bun install --frozen-lockfile` from `web/` and then `bun run build`; saves `web/dist`.
 - `codegraph_analysis`: optional manual job running upstream `@colbymchenry/codegraph` on a GitLab Runner. It saves the source SHA, CodeGraph version, status, file inventory, and an `explore` report. It **does not run a persistent MCP server** and is not the ChatGPT Sites imitation project.
 
 The CI jobs run in isolated containers; no local Mac or VPS required. The GitLab project still needs an enabled runner and available CI minutes.

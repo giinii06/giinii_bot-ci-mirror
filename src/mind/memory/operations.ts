@@ -138,17 +138,17 @@ const deleteMemory = (input: MemoryCommitInput): MemoryOperationResult => {
     if (input.decision.category === "nickname") {
       return empty(
         "blocked",
-        "공용 별명은 /shared-memory nickname 또는 delete 슬래시 명령으로만 관리합니다"
+        "공용 별명은 !shared-memory nickname 또는 !shared-memory delete 명령으로만 관리합니다"
       );
     }
     return empty(
       "blocked",
-      "공용 기억은 /shared-memory delete 슬래시 명령으로만 지울 수 있습니다"
+      "공용 기억은 !shared-memory delete 명령으로만 지울 수 있습니다"
     );
   }
   return empty(
     "blocked",
-    "자연어로는 기억을 삭제할 수 없습니다. !memory delete 슬래시 명령을 써야 합니다"
+    "자연어로는 기억을 삭제할 수 없습니다. !memory delete 명령을 써야 합니다"
   );
 };
 

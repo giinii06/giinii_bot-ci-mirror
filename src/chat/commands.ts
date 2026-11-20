@@ -5,7 +5,7 @@ import { REASONING_EFFORTS, isReasoningEffort, type OpenRouterClient } from "./r
 const disabledNotice = "OPENROUTER_API_KEY가 비어 있어 AI 대화 기능이 꺼져 있습니다.";
 const send = (message: Message, content: string) =>
   message.reply({ content, allowedMentions: { parse: [], repliedUser: false } });
-const formatEfforts = (efforts: string[]) => efforts.map((effort) => `${effort}`).join(", ");
+const formatEfforts = (efforts: string[]) => efforts.map((effort) => "`" + effort + "`").join(", ");
 
 export const handleModelCommand = async (message: Message, router: OpenRouterClient, input: string): Promise<void> => {
   if (!isChatEnabled()) {
@@ -14,7 +14,7 @@ export const handleModelCommand = async (message: Message, router: OpenRouterCli
   }
   const name = input.trim();
   if (!name) {
-    await send(message, `현재 모델: \\`${router.currentModel}\\`\n변경: !model <모델 ID>`);
+    await send(message, `현재 모델: \`${router.currentModel}\`\n변경: !model <모델 ID>`);
     return;
   }
   const models = await router.listModels().catch(() => []);
@@ -27,7 +27,7 @@ export const handleModelCommand = async (message: Message, router: OpenRouterCli
   }
   router.setModel(name);
   console.log(`[model] ${message.author.id} → ${name}`);
-  await send(message, `모델 변경: \\`${name}\\`${match && !match.free ? " (유료 크레딧 필요 가능)" : ""}`);
+  await send(message, `모델 변경: \`${name}\`${match && !match.free ? " (유료 크레딧 필요 가능)" : ""}`);
 };
 
 export const handleReasoningCommand = async (message: Message, router: OpenRouterClient, input: string): Promise<void> => {
@@ -39,7 +39,7 @@ export const handleReasoningCommand = async (message: Message, router: OpenRoute
     .find((model) => model.id === router.currentModel)?.supportedEfforts ?? null;
   const effort = input.trim().toLowerCase();
   if (!effort) {
-    await send(message, `현재 추론: \\`${router.reasoningEffort}\\`\n지원 값: ${formatEfforts(supported ?? [...REASONING_EFFORTS])}`);
+    await send(message, `현재 추론: \`${router.reasoningEffort}\`\n지원 값: ${formatEfforts(supported ?? [...REASONING_EFFORTS])}`);
     return;
   }
   if (!isReasoningEffort(effort)) {
@@ -52,5 +52,5 @@ export const handleReasoningCommand = async (message: Message, router: OpenRoute
   }
   router.setReasoningEffort(effort);
   console.log(`[reasoning] ${message.author.id} → ${effort}`);
-  await send(message, `추론 정도: \\`${effort}\\``);
+  await send(message, `추론 정도: \`${effort}\``);
 };

@@ -170,7 +170,7 @@ client.on(Events.InteractionCreate, (interaction) => {
     if (interaction.inGuild()) {
       const guild = interaction.guild;
       if (guild && rouletteCommandNames.has(interaction.commandName)) {
-        // 룰렛 4종은 전용 길드에서만 실행. DB on/off와 AND 조건이며, 하드코딩이 우선한다.
+        // 룰렛 명령은 전용 길드에서만 실행. DB on/off와 AND 조건이며, 하드코딩이 우선한다.
         if (!isRouletteGuild(interaction.guildId)) {
           void interaction.reply({ embeds: [createNoticeEmbed("이 서버에서는 비활성화된 명령어예요",
             `/${interaction.commandName} 명령어는 지정된 서버에서만 쓸 수 있어요.`)], ephemeral: true });
