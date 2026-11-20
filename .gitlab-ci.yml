@@ -1,6 +1,6 @@
 # Alchemy verification pipeline. CI validates commits; the Alchemy agent interprets
 # failed logs, edits code on a review branch, and reruns CI (up to 3 iterations).
-image: oven/bun:1.3.14
+image: oven/bun:1.4.5
 
 stages:
   - verify
