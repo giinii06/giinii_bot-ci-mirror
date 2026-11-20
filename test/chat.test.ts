@@ -352,7 +352,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("되물어야 한다");
   });
 
-  test("차단된 삭제는 슬래시 명령을 안내하게 한다", () => {
+  test("차단된 삭제는 접두사 명령을 안내하게 한다", () => {
     const prompt = buildSystemPrompt({
       instructions: "지침",
       frame: frame({ memoryStatus: "blocked" }),

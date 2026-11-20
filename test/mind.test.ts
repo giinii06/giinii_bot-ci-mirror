@@ -493,7 +493,7 @@ describe("명시적 기억 작업", () => {
     expect(store.byId(saved.id)?.content).toBe("민지는 커피를 좋아한다");
   });
 
-  test("차단된 삭제는 슬래시 명령을 안내하게 만든다", () => {
+  test("차단된 삭제는 접두사 명령을 안내하게 만든다", () => {
     const text = describeMemoryResult({
       status: "blocked",
       added: [],

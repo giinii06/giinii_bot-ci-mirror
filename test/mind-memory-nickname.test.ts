@@ -225,6 +225,6 @@ describe("별명 저장과 교체", () => {
     });
 
     expect(result.status).toBe("blocked");
-    expect(result.reason).toContain("/shared-memory delete");
+    expect(result.reason).toContain("!shared-memory delete");
   });
 });
