@@ -85,6 +85,8 @@ build_web:
 codegraph_analysis:
   stage: analysis
   image: node:22-bookworm
+  variables:
+    CODEGRAPH_TELEMETRY: "0"
   when: manual
   allow_failure: true
   before_script:
@@ -97,7 +99,7 @@ codegraph_analysis:
     - codegraph --version | tee codegraph-report/version.txt
     - codegraph init --local-only
     - codegraph status --json | tee codegraph-report/status.json
-    - codegraph files . --json > codegraph-report/files.json
+    - codegraph files --json > codegraph-report/files.json
     - codegraph explore "AI chat message pipeline and context memory" | tee codegraph-report/explore.txt
   artifacts:
     when: always
