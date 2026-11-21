@@ -1,29 +1,23 @@
-# Alchemy verification workflow
+# giinii_bot CI — GitHub Actions is authoritative
 
-Pipeline is pinned to the current GitLab branch/SHA and runs on GitLab-hosted (or configured self-managed) runners. It is not an auto-fix engine by itself.
+**Owner decision (2026-11-22): GitLab's official hosted/shared CI Runner will NOT run project tests. GitHub Actions is the selected CI compute provider.** GitLab remains the private code repository, branch/MR store and CI bridge/status coordinator.
 
-## Jobs
+## Effective configuration (verified from GitLab)
+- Project `blond11qq/giinii_bot` uses **`ci_config_path=.gitlab/ci-hub-request.yml@blond11qq/ci-hub-smoke`**. This is a remote CI configuration, not the checked-in `.gitlab-ci.yml`.
+- The active remote YAML's `dispatch_github_actions` bridge triggers `blond11qq/ci-hub-smoke`. GitLab trigger success **does not prove a test ran**.
+- The receiving source includes `.github/workflows/gitlab-request.yml` with `workflow_dispatch` inputs `pipeline`, `sha`, `stack` (`bun|go|rust|docs`), and `directory`.
+- Existing `.gitlab-ci.yml` is a legacy example; it is **not the effective CI execution plan** while the project CI config path points elsewhere.
 
-- `typecheck`: `bun run check`, which runs TS checks of the bot and Activity.
-- `unit_tests`: `bun test`.
-- `build_activity`: `bun run build:activity`; saves `activity/dist` as an artifact on success.
-- `codegraph_analysis`: optional manual job running upstream `@colbymchenry/codegraph` on a GitLab Runner. It saves the source SHA, CodeGraph version, status, file inventory, and an `explore` report. It **does not run a persistent MCP server** and is not the ChatGPT Sites imitation project.
+## Candidate SHA -> GitHub Actions verification
+1. Commit phase candidate on the authorized GitLab branch; re-read exact SHA.
+2. Invoke `GitLab.create_pipeline` for that branch and require returned SHA equality.
+3. Query `list_commit_statuses` using that **SHA**, new pipeline ID and `name=github-actions/ci-hub-request`. Inspect other GitHub context statuses separately.
+4. Follow the status target URL to the **actual GitHub Actions run**. Read job names, run inputs, checkout SHA, logs and conclusion. `workflow_dispatch` run's event SHA may be from the GitHub default branch, so `inputs.sha` and checkout commit identity are decisive.
+5. Report `bun run check`, isolated Bun tests, `bun run build:activity`, Rust `cargo test`/clippy/fmt, and Linux ARM64 Docker tests **only when actually executed** in Actions. Never infer Rust success from Bun checks.
+6. If a dispatched GitHub run fails, inspect its job logs (checkout/mirror availability, workflow input/permissions, reusable workflow, source assertions) before fixing any code. If GitHub access is not available, document `blocked/unverified` without asserting an invented cause.
+7. Repeat per Phase with exact SHA evidence, review, checkpoint commit; Draft MR remains unmerged/un-deployed.
 
-The CI jobs run in isolated containers; no local Mac or VPS required. The GitLab project still needs an enabled runner and available CI minutes.
+## Observed Rust migration bridge issue
+Plan SHA `20031870cf236d25cec80911fb2f958f81dd8d87`: [GitLab pipeline 3098258203](https://gitlab.com/blond11qq/giinii_bot/-/pipelines/3098258203) dispatched, but `github-actions/ci-hub-request=failed`; [GitHub run 44952152159](https://github.com/giinii06/giinii_bot-ci-mirror/actions/runs/44952152159). Phase-00 checkpoint SHA `8bbe947c00826060b549247ec08a9bc8a3ad2450`: [pipeline 3098263558](https://gitlab.com/blond11qq/giinii_bot/-/pipelines/3098263558), same `failed` external context; [GitHub run 44952420764](https://github.com/giinii06/giinii_bot-ci-mirror/actions/runs/44952420764).
 
-## Alchemy code change loop
-
-1. Read exact GitLab default-branch or MR HEAD SHA and relevant source.
-2. Use pstack-style analysis skills and Context7 for external APIs. Optionally run original CodeGraph CI job for investigation and inspect its logs/artifacts.
-3. Create a feature branch, write a minimal code change and tests, commit.
-4. Wait/check matching SHA pipeline via GitLab connector. Check **each job status**.
-5. On failure, read failed job logs. Classify failure (code/test, external dependency, runner/timeout). Patch only a root-cause code/test failure; create a new commit; verify new HEAD SHA. Repeat at most **3 fix attempts**. Never blindly rerun unchanged broken code.
-6. If the runner or tool is unavailable, say CI was not executed and stop instead of claiming a green build.
-7. On green pipeline, open or update a merge request. **Never auto-merge or deploy** unless explicitly requested.
-8. Report exact commit SHA, pipeline URL, job results, number of attempts, and any unresolved failure.
-
-## Notes
-
-- GitLab CI `retry` in the YAML retries *infrastructure failures* once; the **Alchemy agent** owns the fix-and-retest workflow. A job passing with `allow_failure: true` does **not** mean an optional CodeGraph analysis succeeded.
-- `DISCORD_TOKEN` in CI is a nonsecret dummy. Tests should use mocked Discord or AI APIs; jobs must not call production services.
-- Avoid storing tokens, `.env`, user data, or private source dumps in public logs or artifacts.
+GitLab Runner unavailability is **not** the blocker. The problem is that actual GitHub Actions job evidence is unavailable and the external request context failed. Do not change GitLab Runner configuration, visibility or mirroring without separate explicit authorization. Do not merge or deploy.
