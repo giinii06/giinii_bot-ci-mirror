@@ -1,15 +1,15 @@
 # Phase 00 — Baseline & compatibility contracts
 
-**Status:** not_started
-**Implemented:** no
-**Tested:** no
-**Committed:** no
+**Status:** blocked
+**Implemented:** yes (documentation and source contract inventory only)
+**Tested:** blocked — exact-SHA Bun checks not executed; external bridge context failed
+**Committed:** yes (initial plan/docs commit)
 **Waiver evidence:** none
 **Depends on:** none
 **Source base SHA:** `8f17c21059a807fcfe34e08040bab0a3272a95ed`
-**Implementation commit SHA:** pending
-**Verified pipeline SHA / ID / URL:** pending
-**Evidence/checkpoint SHA:** pending
+**Implementation commit SHA:** `20031870cf236d25cec80911fb2f958f81dd8d87` (docs-only)
+**Verified pipeline SHA / ID / URL:** `20031870cf236d25cec80911fb2f958f81dd8d87` / `3098258203` / https://gitlab.com/blond11qq/giinii_bot/-/pipelines/3098258203 — no executed Bun/Rust tests; bridge failed
+**Evidence/checkpoint SHA:** plan commit 20031870; blocked-status docs checkpoint recorded in later commit history
 **Repair rounds used:** 0 / 20 (global)
 
 ## Purpose and acceptance
@@ -51,4 +51,14 @@ Freeze observable Bun/TypeScript behavior and its contracts before any Rust impl
 - Requirements compliance review (self vs independent): pending.
 - Quality and security review (self vs independent): pending.
 - Important findings and resolutions: pending.
-- Final status: **not_started**. Nothing in this plan is evidence of test execution.
+- Final status: **blocked**. No matching-SHA executed baseline test evidence. Do not advance to Phase 01.
+
+## Observed result and two-lens self-review — 2026-11-22
+
+**Source inventory completed:** reviewed `src/commands.ts`, `src/prefix-commands.ts`, `src/command-rules.ts`, `src/storage.ts`, `src/activity-auth.ts`, `src/activity-web-server.ts`, `src/config.ts` at base SHA; captured contracts.md and potential test fixtures. No runtime code changed.
+
+**CI evidence:** [GitLab pipeline #3098258203](https://gitlab.com/blond11qq/giinii_bot/-/pipelines/3098258203) at `20031870cf236d25cec80911fb2f958f81dd8d87` reported only `dispatch_github_actions=success`; `github-actions/ci-hub-request=failed` for the **same pipeline and SHA**; no test/build job logs. Failed request cannot be diagnosed as a Rust source defect, and a `success` dispatch cannot count as `bun test`. Base branch old Bun jobs passed on a different SHA; do not reuse as matching branch evidence.
+
+**Requirements self-review:** contract inventory references the existing slash/prefix/permissions, SQLite and Activity routes, TypeScript UI unchanged, new Rust config and ARM64-first. Missing detailed fixture assertions will be implemented only after executable checks are available. **Quality/security self-review:** no tokens, production data, DB updates, branch overwrites or CI settings changed. Important operational risk: project CI currently only dispatches and lacks observed test execution. No independent review claimed.
+
+**TDD:** Phase 00 is source/docs-only; no new production behavior so RED is N/A. Future Rust code phases require real RED/GREEN. `Tested=blocked` until actual matching-SHA baseline check execution. No waiver given.

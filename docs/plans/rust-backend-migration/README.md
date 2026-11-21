@@ -5,14 +5,14 @@
 **Working branch:** `refactor/rust-backend-migration-20261122`
 **Plan commit:** see GitLab commit history of this directory (intentionally not self-referential)
 **Agreement:** [13 user decisions](decisions.md), [approved architecture](design.md)
-**Progress:** 0 / 10 completed; first phase 00 not_started; status initial snapshot 2026-11-22.
+**Progress:** 0 / 10 completed; Phase 00 **blocked** by unverified/failed external CI; 2026-11-22. No Phase 01 implementation started.
 **Authorization:** create branch, plan, implement phase-by-phase, test, commit, Draft MR; **no merge, deploy, production DB operations, mirroring, visibility or runner changes**.
 
 ## Strict phase ledger
 
 | Phase | Outcome | Status | Implemented | Tested | Committed | Dependency |
 | --- | --- | --- | --- | --- | --- | --- |
-| 00 | [Baseline & compatibility contracts](phase-00-baseline-contracts.md) | not_started | no | no | no | none |
+| 00 | [Baseline & compatibility contracts](phase-00-baseline-contracts.md) | blocked | yes (docs) | blocked | yes (plan) | none |
 | 01 | [Rust workspace, configuration & diagnostics](phase-01-rust-foundation.md) | not_started | no | no | no | 00 |
 | 02 | [SQLite compatibility & migrations](phase-02-sqlite-compatibility.md) | not_started | no | no | no | 01 |
 | 03 | [Discord Gateway, permissions and commands](phase-03-discord-gateway.md) | not_started | no | no | no | 02 |
@@ -38,3 +38,13 @@
 
 ## Evidence record
 Plan creation: not yet code execution. Phase results and exact candidate SHA/pipeline/log/commit evidence will be appended after each real action. No background work, no unverified successes.
+
+## Actual Phase 00 checkpoint — 2026-11-22
+
+- Base source: `main` `8f17c21059a807fcfe34e08040bab0a3272a95ed`; source branch contains only `docs/plans/rust-backend-migration/*` additions before this checkpoint.
+- Plan/contract docs committed at [`20031870cf23`](https://gitlab.com/blond11qq/giinii_bot/-/commit/20031870cf236d25cec80911fb2f958f81dd8d87); this is **not** Rust source implementation.
+- GitLab pipeline [#3098258203](https://gitlab.com/blond11qq/giinii_bot/-/pipelines/3098258203) for plan SHA `20031870cf236d25cec80911fb2f958f81dd8d87`: pipeline reports `success` because `dispatch_github_actions` succeeded; **no Bun/Rust build/test/typecheck jobs** appear in that pipeline's job listing.
+- Same SHA + pipeline ID external context `github-actions/ci-hub-request` later resolved `failed`; [linked external run](https://github.com/giinii06/giinii_bot-ci-mirror/actions/runs/44952152159). No actual individual GitHub test logs/checks are available through current GitLab evidence.
+- Existing base `main` pipeline [#3098171535](https://gitlab.com/blond11qq/giinii_bot/-/pipelines/3098171535) has Bun `typecheck`, `unit_tests`, `build_activity` jobs marked success **for base SHA only**, alongside a failing unrelated `github-actions/ci-hub` status. They are baseline context, **not** a passing check on this branch SHA.
+- Current CI project setting points to external `.gitlab/ci-hub-request.yml@blond11qq/ci-hub-smoke` and project shared runners are disabled as observed. No project settings or runner changes were made. Neither adding a Rust CI file locally nor green dispatch alone establishes actual Rust verification.
+- **Stop gate enforced:** Phase 00 `Tested: blocked`. No Phase 01 code, no migration, no production writes. To resume, restore an authorized CI path actually running Bun/Rust tests on branch SHAs and obtain category-specific logs; do not alter project runner/mirror/settings without separate user authorization.
